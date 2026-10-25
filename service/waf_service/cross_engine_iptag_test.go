@@ -13,6 +13,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/common/request"
 	req "SamWaf/model/request"
+	"context"
 	"strings"
 	"testing"
 
@@ -91,7 +92,7 @@ func runIPTagCases(t *testing.T, coredb *gorm.DB, statsdb *gorm.DB) {
 
 	// —— 规则筛选列表：只剩真攻击标签，且 count 单独返回 ——
 	t.Run("tag_list_excludes_benign", func(t *testing.T) {
-		list, err := svc.GetAllAttackIPTagListApi(false)
+		list, err := svc.GetAllAttackIPTagListApi(context.Background(), false)
 		fatalIf(t, err)
 		if len(list) != 2 {
 			t.Fatalf("规则标签期望 2 条(SQL注入/XSS跨站注入)，实际 %d 条: %+v", len(list), list)
@@ -117,7 +118,7 @@ func runIPTagCases(t *testing.T, coredb *gorm.DB, statsdb *gorm.DB) {
 
 	// —— IP 聚合列表：被排除的标签算放行，只有这些标签的 IP 整条不出现 ——
 	t.Run("ip_list_benign_counts_as_pass", func(t *testing.T) {
-		list, total, err := svc.GetAttackIpListApi(req.WafAttackIpTagSearch{PageInfo: request.PageInfo{PageIndex: 1, PageSize: 10}})
+		list, total, err := svc.GetAttackIpListApi(context.Background(), req.WafAttackIpTagSearch{PageInfo: request.PageInfo{PageIndex: 1, PageSize: 10}})
 		fatalIf(t, err)
 		eq64(t, "风险 IP 总数", total, 2)
 		if len(list) != 2 {
@@ -145,7 +146,7 @@ func runIPTagCases(t *testing.T, coredb *gorm.DB, statsdb *gorm.DB) {
 		global.GCONFIG_ATTACK_TAG_EXCLUDE = ""
 		defer func() { global.GCONFIG_ATTACK_TAG_EXCLUDE = "ACME证书校验,静态文件访问成功" }()
 
-		tagList, err := svc.GetAllAttackIPTagListApi(false)
+		tagList, err := svc.GetAllAttackIPTagListApi(context.Background(), false)
 		fatalIf(t, err)
 		if _, ok := findAllTag(tagList, "ACME证书校验"); !ok {
 			t.Fatalf("清空排除后 ACME证书校验 应回到规则列表: %+v", tagList)
@@ -154,7 +155,7 @@ func runIPTagCases(t *testing.T, coredb *gorm.DB, statsdb *gorm.DB) {
 			t.Fatalf("「正常」永远不该出现在规则列表里: %+v", tagList)
 		}
 
-		ipList, total, err := svc.GetAttackIpListApi(req.WafAttackIpTagSearch{PageInfo: request.PageInfo{PageIndex: 1, PageSize: 10}})
+		ipList, total, err := svc.GetAttackIpListApi(context.Background(), req.WafAttackIpTagSearch{PageInfo: request.PageInfo{PageIndex: 1, PageSize: 10}})
 		fatalIf(t, err)
 		eq64(t, "清空排除后的风险 IP 总数", total, 4)
 		acmeIP, ok := findAttackIP(ipList, "2.2.2.2")
@@ -167,7 +168,7 @@ func runIPTagCases(t *testing.T, coredb *gorm.DB, statsdb *gorm.DB) {
 
 	// —— withBenign：批量删除弹窗要能看到被排除的标签，否则历史数据没法清 ——
 	t.Run("with_benign_lists_excluded_tags", func(t *testing.T) {
-		list, err := svc.GetAllAttackIPTagListApi(true)
+		list, err := svc.GetAllAttackIPTagListApi(context.Background(), true)
 		fatalIf(t, err)
 		for _, want := range []string{"ACME证书校验", "静态文件访问成功", "SQL注入"} {
 			if _, ok := findAllTag(list, want); !ok {
@@ -181,7 +182,7 @@ func runIPTagCases(t *testing.T, coredb *gorm.DB, statsdb *gorm.DB) {
 
 	// —— 按规则筛选仍然正常 ——
 	t.Run("filter_by_rule", func(t *testing.T) {
-		list, total, err := svc.GetAttackIpListApi(req.WafAttackIpTagSearch{Rule: "SQL注入", PageInfo: request.PageInfo{PageIndex: 1, PageSize: 10}})
+		list, total, err := svc.GetAttackIpListApi(context.Background(), req.WafAttackIpTagSearch{Rule: "SQL注入", PageInfo: request.PageInfo{PageIndex: 1, PageSize: 10}})
 		fatalIf(t, err)
 		eq64(t, "按 SQL注入 筛选的总数", total, 1)
 		if len(list) != 1 || list[0].IP != "1.1.1.1" {
