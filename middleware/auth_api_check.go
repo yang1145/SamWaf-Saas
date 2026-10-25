@@ -203,6 +203,8 @@ func Auth() gin.HandlerFunc {
 			c.Set("loginIP", currentIP)
 			// 写入角色，供 RBAC 鉴权中间件判定（空角色兜底为超级管理员，向后兼容）
 			c.Set("userRole", enums.NormalizeRole(tokenInfo.Role))
+			// 写入权限组ID（空=账号走旧四角色判定），供 RequirePermission 判定
+			c.Set("userGroupId", tokenInfo.GroupId)
 
 			// 共享库多租户（阶段0）：把令牌携带的租户身份写入请求上下文，
 			// 供 GORM 租户回调（wafdb.before_query）随 db.WithContext 按请求隔离数据。

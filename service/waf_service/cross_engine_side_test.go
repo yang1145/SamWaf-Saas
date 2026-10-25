@@ -14,6 +14,7 @@ import (
 	"SamWaf/innerbean"
 	"SamWaf/model"
 	"SamWaf/model/request"
+	"context"
 	"testing"
 	"time"
 )
@@ -23,16 +24,16 @@ func runSideCases(t *testing.T, x *xdb) {
 		pw := "Aa1!Aa1!Aa1!Xy9#" // 尽量满足默认复杂度策略（大小写+数字+特殊+长度）
 		acc1 := "acc1_" + sfx()
 		acc2 := "acc2_" + sfx()
-		if err := WafAccountServiceApp.AddApi(request.WafAccountAddReq{LoginAccount: acc1, LoginPassword: pw, Role: enums.ROLE_SUPER_ADMIN, Status: 1}); err != nil {
+		if err := WafAccountServiceApp.AddApi(context.Background(), request.WafAccountAddReq{LoginAccount: acc1, LoginPassword: pw, Role: enums.ROLE_SUPER_ADMIN, Status: 1}); err != nil {
 			t.Fatalf("Account AddApi(acc1) 失败: %v", err)
 		}
 		// 第二个账号，绕开 DelApi「只剩一个账号不能删」的保护
-		fatalIf(t, WafAccountServiceApp.AddApi(request.WafAccountAddReq{LoginAccount: acc2, LoginPassword: pw, Role: enums.ROLE_AUDIT_ADMIN, Status: 1}))
+		fatalIf(t, WafAccountServiceApp.AddApi(context.Background(), request.WafAccountAddReq{LoginAccount: acc2, LoginPassword: pw, Role: enums.ROLE_AUDIT_ADMIN, Status: 1}))
 
 		var bean model.Account
 		firstBy(t, x.core, &bean, "login_account = ?", acc1)
 		// 改状态 1→0（超管操作）
-		fatalIf(t, WafAccountServiceApp.ModifyApi(request.WafAccountEditReq{
+		fatalIf(t, WafAccountServiceApp.ModifyApi(context.Background(), request.WafAccountEditReq{
 			Id: bean.Id, LoginAccount: acc1, Role: enums.ROLE_SUPER_ADMIN, Status: 0, Remarks: "r2",
 		}, enums.ROLE_SUPER_ADMIN))
 		got := WafAccountServiceApp.GetDetailByIdApi(bean.Id)

@@ -131,63 +131,85 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 	RouterGroup := r.Group("")
 	RouterGroup.Use(middleware.Auth(), middleware.ReplayProtect(), middleware.OpenApiLogMiddleware(), middleware.IPWhitelist(), middleware.DomainWhitelist(), middleware.SecApi(), middleware.GinGlobalExceptionMiddleWare())
 	{
-		// 共享/运维类接口：任意已登录角色可访问
-		router.ApiGroupApp.InitHostRouter(RouterGroup)
-		router.ApiGroupApp.InitHostGroupRouter(RouterGroup)
-		router.ApiGroupApp.InitLogRouter(RouterGroup)
-		router.ApiGroupApp.InitEngineRouter(RouterGroup)
-		router.ApiGroupApp.InitStatRouter(RouterGroup)
+		// ── 基础组：任意已登录角色（与登录态强绑定的自助/推送接口，不设权限码）──
 		router.ApiGroupApp.InitLoginOutRouter(RouterGroup)
 		router.ApiGroupApp.InitWebSocketRouter(RouterGroup)
-		router.ApiGroupApp.InitSysInfoRouter(RouterGroup)
-		router.ApiGroupApp.InitWafCommonRouter(RouterGroup)
-		router.ApiGroupApp.InitOneKeyModRouter(RouterGroup)
-		router.ApiGroupApp.InitLicenseRouter(RouterGroup)
-		router.ApiGroupApp.InitLoadBalanceRouter(RouterGroup)
-		router.ApiGroupApp.InitSslConfigRouter(RouterGroup)
-		router.ApiGroupApp.InitBatchTaskRouter(RouterGroup)
-		router.ApiGroupApp.InitSslOrderRouter(RouterGroup)
-		router.ApiGroupApp.InitWafSslExpireRouter(RouterGroup)
-		router.ApiGroupApp.InitWafHttpAuthBaseRouter(RouterGroup)
-		router.ApiGroupApp.InitWafHttpAuthSessionRouter(RouterGroup)
-		router.ApiGroupApp.InitWafTaskRouter(RouterGroup)
-		router.ApiGroupApp.InitWafBlockingPageRouter(RouterGroup)
-		router.ApiGroupApp.InitGPTRouter(RouterGroup)
-		router.ApiGroupApp.InitAnalysisRouter(RouterGroup)
-		router.ApiGroupApp.InitWafPrivateInfoRouter(RouterGroup)
-		router.ApiGroupApp.InitWafPrivateGroupRouter(RouterGroup)
-		router.ApiGroupApp.InitWafCacheRuleRouter(RouterGroup)
-		router.ApiGroupApp.InitWafTamperRuleRouter(RouterGroup)
-		router.ApiGroupApp.InitWafTunnelRouter(RouterGroup)
-		router.ApiGroupApp.InitWafVpConfigRouter(RouterGroup)
-		router.ApiGroupApp.InitWafFileRouter(RouterGroup)
-		router.ApiGroupApp.InitWafSystemMonitorRouter(RouterGroup)
-		router.ApiGroupApp.InitWafCaServerInfoRouter(RouterGroup)
-		router.ApiGroupApp.InitNotifyChannelRouter(RouterGroup)
-		router.ApiGroupApp.InitNotifySubscriptionRouter(RouterGroup)
-		router.ApiGroupApp.InitNotifyLogRouter(RouterGroup)
-		router.ApiGroupApp.InitFirewallIPBlockRouter(RouterGroup)
-		router.ApiGroupApp.InitHostGuardRouter(RouterGroup)
-		router.ApiGroupApp.InitHostConnRouter(RouterGroup)
-		router.ApiGroupApp.InitThreatIPRouter(RouterGroup)
-		router.ApiGroupApp.InitCDNIPRouter(RouterGroup)
-		router.ApiGroupApp.InitIPLookupRouter(RouterGroup)
-		router.ApiGroupApp.InitLogFileWriteRouter(RouterGroup)
-		router.ApiGroupApp.InitIPLocationRouter(RouterGroup)
-		router.ApiGroupApp.InitWafDataRetentionRouter(RouterGroup)
-		router.ApiGroupApp.InitWafHostPathRuleRouter(RouterGroup)
-		// 界面偏好：按登录账号隔离（账号归属即授权边界），任意已登录角色均可存取本人的界面偏好
 		router.ApiGroupApp.InitWafUIPreferenceRouter(RouterGroup)
-
 		// 升级须知：只读查询 + 本机处理状态标记，首页提示条对所有角色都要可见
 		router.ApiGroupApp.InitUpgradeNoticeRouter(RouterGroup)
+		// 引擎状态查询：页面顶栏健康角标，登录即可见
+		router.ApiGroupApp.InitEngineRouter(RouterGroup)
 
 		// 自助改密：任意已登录角色均可修改本人密码（含首次登录/到期强制改密场景），不受角色域限制
 		RouterGroup.POST("/api/v1/account/changemypwd", api.APIGroupAPP.WafAccountApi.ChangeMyPasswordApi)
 
+		// ── 权限码分组：绑定权限组的账号按组内权限码判定；未绑定组的账号走
+		//    legacyRoles（与旧共享域"任意角色"等价），存量账号行为不变。──
+		legacyAll := []string{enums.ROLE_SYSTEM_ADMIN, enums.ROLE_SECURITY_ADMIN, enums.ROLE_AUDIT_ADMIN}
+
+		// 仪表盘与总览
+		dashboardGroup := RouterGroup.Group("")
+		dashboardGroup.Use(middleware.RequirePermission(enums.PERM_DASHBOARD, legacyAll...))
+		{
+			router.ApiGroupApp.InitStatRouter(dashboardGroup)
+			router.ApiGroupApp.InitAnalysisRouter(dashboardGroup)
+			router.ApiGroupApp.InitSysInfoRouter(dashboardGroup)
+			router.ApiGroupApp.InitWafSystemMonitorRouter(dashboardGroup)
+			router.ApiGroupApp.InitLicenseRouter(dashboardGroup)
+			router.ApiGroupApp.InitWafCommonRouter(dashboardGroup)
+		}
+
+		// 站点与转发配置
+		hostGroup := RouterGroup.Group("")
+		hostGroup.Use(middleware.RequirePermission(enums.PERM_HOST_MANAGE, legacyAll...))
+		{
+			router.ApiGroupApp.InitHostRouter(hostGroup)
+			router.ApiGroupApp.InitHostGroupRouter(hostGroup)
+			router.ApiGroupApp.InitWafHostPathRuleRouter(hostGroup)
+			router.ApiGroupApp.InitLoadBalanceRouter(hostGroup)
+			router.ApiGroupApp.InitSslConfigRouter(hostGroup)
+			router.ApiGroupApp.InitSslOrderRouter(hostGroup)
+			router.ApiGroupApp.InitWafSslExpireRouter(hostGroup)
+			router.ApiGroupApp.InitWafCaServerInfoRouter(hostGroup)
+			router.ApiGroupApp.InitCDNIPRouter(hostGroup)
+			router.ApiGroupApp.InitWafTunnelRouter(hostGroup)
+			router.ApiGroupApp.InitWafCacheRuleRouter(hostGroup)
+			router.ApiGroupApp.InitWafBlockingPageRouter(hostGroup)
+			router.ApiGroupApp.InitWafHttpAuthBaseRouter(hostGroup)
+			router.ApiGroupApp.InitWafHttpAuthSessionRouter(hostGroup)
+			router.ApiGroupApp.InitOneKeyModRouter(hostGroup)
+			router.ApiGroupApp.InitWafVpConfigRouter(hostGroup)
+			router.ApiGroupApp.InitHostConnRouter(hostGroup)
+			router.ApiGroupApp.InitWafFileRouter(hostGroup)
+		}
+
+		// 访问日志与导出
+		logGroup := RouterGroup.Group("")
+		logGroup.Use(middleware.RequirePermission(enums.PERM_LOG_VIEW, legacyAll...))
+		{
+			router.ApiGroupApp.InitLogRouter(logGroup)
+			router.ApiGroupApp.InitLogFileWriteRouter(logGroup)
+			router.ApiGroupApp.InitIPLocationRouter(logGroup)
+			router.ApiGroupApp.InitIPLookupRouter(logGroup)
+		}
+
+		// 系统配置与运维
+		systemOpsGroup := RouterGroup.Group("")
+		systemOpsGroup.Use(middleware.RequirePermission(enums.PERM_SYSTEM_OPS, legacyAll...))
+		{
+			router.ApiGroupApp.InitBatchTaskRouter(systemOpsGroup)
+			router.ApiGroupApp.InitWafTaskRouter(systemOpsGroup)
+			router.ApiGroupApp.InitNotifyChannelRouter(systemOpsGroup)
+			router.ApiGroupApp.InitNotifySubscriptionRouter(systemOpsGroup)
+			router.ApiGroupApp.InitNotifyLogRouter(systemOpsGroup)
+			router.ApiGroupApp.InitWafDataRetentionRouter(systemOpsGroup)
+			router.ApiGroupApp.InitGPTRouter(systemOpsGroup)
+		}
 		// === 安全管理员域：WAF 防护策略/规则（三权分立强制点）===
+		// 从旧共享域并入防篡改/隐私信息(DLP)/防爆破/系统防火墙联动/威胁情报——
+		// 它们都是防护决策资源；未绑定权限组的账号 legacy 含 SECURITY_ADMIN 行为不变
 		securityAdminGroup := RouterGroup.Group("")
-		securityAdminGroup.Use(middleware.RequireRole(enums.ROLE_SECURITY_ADMIN))
+		securityAdminGroup.Use(middleware.RequirePermission(enums.PERM_SECURITY, enums.ROLE_SECURITY_ADMIN))
 		{
 			router.ApiGroupApp.InitRuleRouter(securityAdminGroup)
 			router.ApiGroupApp.InitAllowIpRouter(securityAdminGroup)
@@ -204,6 +226,12 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 			router.ApiGroupApp.InitBlockUrlRouter(securityAdminGroup)
 			router.ApiGroupApp.InitSensitiveRouter(securityAdminGroup)
 			router.ApiGroupApp.InitWafOwaspRouter(securityAdminGroup)
+			router.ApiGroupApp.InitWafTamperRuleRouter(securityAdminGroup)
+			router.ApiGroupApp.InitWafPrivateInfoRouter(securityAdminGroup)
+			router.ApiGroupApp.InitWafPrivateGroupRouter(securityAdminGroup)
+			router.ApiGroupApp.InitHostGuardRouter(securityAdminGroup)
+			router.ApiGroupApp.InitFirewallIPBlockRouter(securityAdminGroup)
+			router.ApiGroupApp.InitThreatIPRouter(securityAdminGroup)
 			// 统一访问认证：账号、策略配置、在线会话都是访问控制决策，属安全管理员域
 			// （它的审计日志归审计管理员，见下方 auditAdminGroup）
 			router.ApiGroupApp.InitAccessAccountRouter(securityAdminGroup)
@@ -213,7 +241,7 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 
 		// === 审计管理员域：操作/账号审计日志（只读，独立审计其余两员）===
 		auditAdminGroup := RouterGroup.Group("")
-		auditAdminGroup.Use(middleware.RequireRole(enums.ROLE_AUDIT_ADMIN))
+		auditAdminGroup.Use(middleware.RequirePermission(enums.PERM_AUDIT, enums.ROLE_AUDIT_ADMIN))
 		{
 			router.ApiGroupApp.InitSysLogRouter(auditAdminGroup)
 			router.ApiGroupApp.InitAccountLogRouter(auditAdminGroup)
@@ -226,9 +254,16 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 
 		// === 系统管理员域：系统配置 ===
 		systemConfigGroup := RouterGroup.Group("")
-		systemConfigGroup.Use(middleware.RequireRole(enums.ROLE_SYSTEM_ADMIN))
+		systemConfigGroup.Use(middleware.RequirePermission(enums.PERM_SYSTEM_OPS, enums.ROLE_SYSTEM_ADMIN))
 		{
 			router.ApiGroupApp.InitSystemConfigRouter(systemConfigGroup)
+		}
+
+		// 权限组管理：系统管理员域（自身也是权限码，便于未来下放给租户管理员）
+		permissionGroupAdmin := RouterGroup.Group("")
+		permissionGroupAdmin.Use(middleware.RequirePermission(enums.PERM_GROUP_MANAGE, enums.ROLE_SYSTEM_ADMIN))
+		{
+			router.ApiGroupApp.InitPermissionGroupRouter(permissionGroupAdmin)
 		}
 	}
 
@@ -236,7 +271,7 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 	// 整组归属「系统管理员域」：账户管理/OTP/开放平台Key/SQL查询/应用管理/AI模型均为系统级敏感操作
 	// superAdmin 兜底放行；空角色(历史账号)经 NormalizeRole 视为 superAdmin，向后兼容
 	TokenOnlyRouterGroup := r.Group("")
-	TokenOnlyRouterGroup.Use(middleware.TokenOnlyAuth(), middleware.RequireRole(enums.ROLE_SYSTEM_ADMIN), middleware.ReplayProtect(), middleware.IPWhitelist(), middleware.DomainWhitelist(), middleware.SecApi(), middleware.GinGlobalExceptionMiddleWare())
+	TokenOnlyRouterGroup.Use(middleware.TokenOnlyAuth(), middleware.RequirePermission(enums.PERM_ACCOUNT_MANAGE, enums.ROLE_SYSTEM_ADMIN), middleware.ReplayProtect(), middleware.IPWhitelist(), middleware.DomainWhitelist(), middleware.SecApi(), middleware.GinGlobalExceptionMiddleWare())
 	{
 		// 开放平台管理接口
 		router.ApiGroupApp.InitOPlatformKeyRouter(TokenOnlyRouterGroup)

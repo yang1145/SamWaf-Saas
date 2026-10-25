@@ -2454,6 +2454,46 @@ func RunCoreDBMigrations(db *gorm.DB) error {
 				return nil
 			},
 		},
+		// 迁移: 权限组表 + 账号绑定列（多租户自定义角色）
+		// 预置组种子不在迁移里做：组行需要 USER_CODE/Tenant_ID，启动流程
+		// （WafPermissionGroupServiceApp.InitDefaultPermissionGroups）在全局标识
+		// 就绪后幂等播种，同时覆盖全新安装与存量升级两种场景。
+		{
+			ID: "202610250001_permission_groups",
+			Migrate: func(tx *gorm.DB) error {
+				zlog.Info("迁移 202610250001: 创建权限组表并为账号表增加权限组绑定列")
+
+				// 1. 权限组表（BaseOrm 自带租户列，组随租户隔离）
+				if !tx.Migrator().HasTable(&model.PermissionGroup{}) {
+					if err := tx.Migrator().CreateTable(&model.PermissionGroup{}); err != nil {
+						return fmt.Errorf("创建 permission_groups 表失败: %w", err)
+					}
+				}
+
+				// 2. 账号表加 group_id 列（空 = 走旧四角色判定）
+				if !tx.Migrator().HasColumn(&model.Account{}, "group_id") {
+					if err := tx.Migrator().AddColumn(&model.Account{}, "group_id"); err != nil {
+						return fmt.Errorf("账号表添加 group_id 失败: %w", err)
+					}
+				}
+
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				zlog.Info("回滚 202610250001: 删除权限组表与账号 group_id 列")
+				if tx.Migrator().HasTable(&model.PermissionGroup{}) {
+					if err := tx.Migrator().DropTable(&model.PermissionGroup{}); err != nil {
+						return err
+					}
+				}
+				if tx.Migrator().HasColumn(&model.Account{}, "group_id") {
+					if err := tx.Migrator().DropColumn(&model.Account{}, "group_id"); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
 	})
 
 	// 执行迁移

@@ -38,7 +38,7 @@ func (w *WafAccountApi) AddApi(c *gin.Context) {
 		}
 		err = wafAccountService.CheckIsExistApi(req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-			err = wafAccountService.AddApi(req)
+			err = wafAccountService.AddApi(c.Request.Context(), req)
 			if err == nil {
 				response.OkWithMessage("添加成功", c)
 			} else {
@@ -60,7 +60,7 @@ func (w *WafAccountApi) GetDetailApi(c *gin.Context) {
 	var req request.WafAccountDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafAccountService.GetDetailApi(req)
+		bean := wafAccountService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -72,7 +72,7 @@ func (w *WafAccountApi) GetListApi(c *gin.Context) {
 	var req request.WafAccountSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		beans, total, _ := wafAccountService.GetListApi(req)
+		beans, total, _ := wafAccountService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      beans,
 			Total:     total,
@@ -115,7 +115,7 @@ func (w *WafAccountApi) ModifyAccountApi(c *gin.Context) {
 	if err == nil {
 		// N7 防提权：角色变更仅超级管理员可为（在 service 内按目标账号"当前角色"精确判定，
 		// 只拦真正的角色变化，不影响非角色字段的正常编辑）。
-		err = wafAccountService.ModifyApi(req, currentRole(c))
+		err = wafAccountService.ModifyApi(c.Request.Context(), req, currentRole(c))
 		if err != nil {
 			response.FailWithMessage(err.Error(), c)
 		} else {

@@ -11,6 +11,7 @@ import (
 	"SamWaf/model/request"
 	"SamWaf/utils"
 	"SamWaf/wafdb/dialect"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -92,15 +93,19 @@ func (receiver *WafAccountService) recordPwdHistory(loginAccount, hash string) {
 	}
 }
 
-// AddApi 管理员新建账号：强制角色合法 + 口令复杂度校验，新建账号默认需首登改密
-func (receiver *WafAccountService) AddApi(req request.WafAccountAddReq) error {
+// AddApi 管理员新建账号：强制角色合法 + 口令复杂度校验，新建账号默认需首登改密。
+// 绑定了权限组（GroupId 非空）时校验组存在，权限组查询随请求 ctx 走租户回调。
+func (receiver *WafAccountService) AddApi(ctx context.Context, req request.WafAccountAddReq) error {
 	if !enums.IsValidRole(req.Role) {
 		return errors.New("请指定合法的账号角色")
 	}
 	if err := receiver.ValidateNewPassword(req.LoginAccount, req.LoginPassword); err != nil {
 		return err
 	}
-	return receiver.createAccount(req.LoginAccount, req.Role, req.LoginPassword, req.Status, req.Remarks, global.GCONFIG_PWD_FORCE_CHANGE_DEFAULT == 1)
+	if err := receiver.checkGroupExists(ctx, req.GroupId); err != nil {
+		return err
+	}
+	return receiver.createAccount(req.LoginAccount, req.Role, req.LoginPassword, req.Status, req.Remarks, global.GCONFIG_PWD_FORCE_CHANGE_DEFAULT == 1, req.GroupId)
 }
 
 // InitDefaultAccount 系统引导创建默认管理员（全新安装）。
@@ -112,7 +117,7 @@ func (receiver *WafAccountService) InitDefaultAccount() error {
 		plainPwd = global.GWAF_DEFAULT_ACCOUNT_PWD
 	}
 	// 强制首登改密（needChange=true），不做复杂度校验避免严格策略下引导被锁死
-	if e := receiver.createAccount(global.GWAF_DEFAULT_ACCOUNT, enums.ROLE_SUPER_ADMIN, plainPwd, 0, "系统初始化生成", true); e != nil {
+	if e := receiver.createAccount(global.GWAF_DEFAULT_ACCOUNT, enums.ROLE_SUPER_ADMIN, plainPwd, 0, "系统初始化生成", true, ""); e != nil {
 		return e
 	}
 	receiver.writeInitialPasswordFile(global.GWAF_DEFAULT_ACCOUNT, plainPwd)
@@ -137,8 +142,8 @@ func (receiver *WafAccountService) writeInitialPasswordFile(account, plainPwd st
 		account, plainPwd, fp))
 }
 
-// createAccount 内部统一建账逻辑
-func (receiver *WafAccountService) createAccount(loginAccount, role, plainPwd string, status int, remarks string, needChange bool) error {
+// createAccount 内部统一建账逻辑（groupId 为空表示不绑定权限组，走旧四角色判定）
+func (receiver *WafAccountService) createAccount(loginAccount, role, plainPwd string, status int, remarks string, needChange bool, groupId string) error {
 	hash, err := receiver.pwdHash(plainPwd)
 	if err != nil {
 		return err
@@ -157,6 +162,7 @@ func (receiver *WafAccountService) createAccount(loginAccount, role, plainPwd st
 		},
 		LoginAccount:       loginAccount,
 		Role:               role,
+		GroupId:            groupId,
 		LoginPassword:      hash,
 		Status:             status,
 		NeedChangePassword: needChangeFlag,
@@ -171,10 +177,10 @@ func (receiver *WafAccountService) createAccount(loginAccount, role, plainPwd st
 func (receiver *WafAccountService) CheckIsExistApi(req request.WafAccountAddReq) error {
 	return global.GWAF_LOCAL_DB.First(&model.Account{}, "login_account = ? ", req.LoginAccount).Error
 }
-func (receiver *WafAccountService) ModifyApi(req request.WafAccountEditReq, operatorRole string) error {
+func (receiver *WafAccountService) ModifyApi(ctx context.Context, req request.WafAccountEditReq, operatorRole string) error {
 
 	var target model.Account
-	global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&target)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", req.Id).First(&target)
 	if target.Id == "" {
 		return errors.New("账号不存在")
 	}
@@ -190,8 +196,13 @@ func (receiver *WafAccountService) ModifyApi(req request.WafAccountEditReq, oper
 			return errors.New("当前登录账号已存在")
 		}
 	}
+	// 权限组绑定：非空校验组存在；空串=解绑回落旧四角色判定（组字段总是随编辑写入）
+	if err := receiver.checkGroupExists(ctx, req.GroupId); err != nil {
+		return err
+	}
 	beanMap := map[string]interface{}{
 		"LoginAccount": req.LoginAccount,
+		"GroupId":      req.GroupId,
 		"Status":       req.Status,
 		"Remarks":      req.Remarks,
 		"UPDATE_TIME":  customtype.JsonTime(time.Now()),
@@ -207,7 +218,51 @@ func (receiver *WafAccountService) ModifyApi(req request.WafAccountEditReq, oper
 		}
 		beanMap["Role"] = req.Role
 	}
-	return global.GWAF_LOCAL_DB.Model(model.Account{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	if err := global.GWAF_LOCAL_DB.Model(model.Account{}).Where("id = ?", req.Id).Updates(beanMap).Error; err != nil {
+		return err
+	}
+	// 权限组绑定变化（含绑定/解绑）后强制下线：令牌在登录时冗余了 GroupId 快照，
+	// 旧令牌会继续按旧组判定权限，唯一可靠的收敛方式是作废全部会话让其重新登录
+	if req.GroupId != target.GroupId {
+		receiver.forceLogoutAccount(target.LoginAccount)
+	}
+	return nil
+}
+
+// checkGroupExists 绑定权限组前校验组存在（权限组随租户隔离，随请求 ctx 走租户回调过滤）。
+// groupId 为空表示不绑定/解绑，直接放行。
+func (receiver *WafAccountService) checkGroupExists(ctx context.Context, groupId string) error {
+	if groupId == "" {
+		return nil
+	}
+	var cnt int64
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.PermissionGroup{}).
+		Where("id = ?", groupId).Count(&cnt).Error; err != nil {
+		return err
+	}
+	if cnt == 0 {
+		return errors.New("权限组不存在")
+	}
+	return nil
+}
+
+// forceLogoutAccount 强制某账号全部端（web/mobile）下线：
+// 删除该账号全部 token_info 行，并逐个失效令牌缓存键（CACHE_TOKEN+AccessToken），
+// 与登录处的旧会话清理同口径。
+func (receiver *WafAccountService) forceLogoutAccount(loginAccount string) {
+	var tokens []model.TokenInfo
+	if err := global.GWAF_LOCAL_DB.Where("login_account = ?", loginAccount).Find(&tokens).Error; err != nil {
+		zlog.Warn("强制下线读取账号令牌失败", "account", loginAccount, "error", err.Error())
+	}
+	for _, t := range tokens {
+		if t.AccessToken == "" {
+			continue
+		}
+		global.GCACHE_WAFCACHE.Remove(enums.CACHE_TOKEN + t.AccessToken)
+	}
+	if err := global.GWAF_LOCAL_DB.Where("login_account = ?", loginAccount).Delete(model.TokenInfo{}).Error; err != nil {
+		zlog.Warn("强制下线删除账号令牌失败", "account", loginAccount, "error", err.Error())
+	}
 }
 
 // ChangeMyPasswordApi 当前登录账号自助改密：校验旧密码、复杂度、历史防重用，成功后清除强制改密标记
@@ -282,10 +337,19 @@ func (receiver *WafAccountService) ResetPwdApi(req request.WafAccountResetPwdReq
 	receiver.recordPwdHistory(req.LoginAccount, newHash)
 	return nil
 }
-func (receiver *WafAccountService) GetDetailApi(req request.WafAccountDetailReq) model.Account {
+// AccountView 账号的展示视图：在账号字段上附加所属权限组名，
+// 前端列表/详情直接显示，免得按 group_id 逐个反查。
+type AccountView struct {
+	model.Account
+	GroupName string `json:"group_name"` //所属权限组名（未绑定为空）
+}
+
+func (receiver *WafAccountService) GetDetailApi(ctx context.Context, req request.WafAccountDetailReq) AccountView {
 	var bean model.Account
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
-	return bean
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
+	views := []AccountView{{Account: bean}}
+	receiver.fillGroupNames(ctx, views)
+	return views[0]
 }
 func (receiver *WafAccountService) GetInfoByLoginApi(req request.WafLoginReq) model.Account {
 	var bean model.Account
@@ -344,7 +408,7 @@ func (receiver *WafAccountService) GetDetailByIdApi(id string) model.Account {
 	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafAccountService) GetListApi(req request.WafAccountSearchReq) ([]model.Account, int64, error) {
+func (receiver *WafAccountService) GetListApi(ctx context.Context, req request.WafAccountSearchReq) ([]AccountView, int64, error) {
 	var list []model.Account
 	var total int64 = 0
 
@@ -364,10 +428,48 @@ func (receiver *WafAccountService) GetListApi(req request.WafAccountSearchReq) (
 		whereValues = append(whereValues, req.LoginAccount)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.Account{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.Account{}).Where(whereField, whereValues...).Count(&total)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Account{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Account{}).Where(whereField, whereValues...).Count(&total)
 
-	return list, total, nil
+	views := make([]AccountView, 0, len(list))
+	for _, a := range list {
+		views = append(views, AccountView{Account: a})
+	}
+	receiver.fillGroupNames(ctx, views)
+	return views, total, nil
+}
+
+// fillGroupNames 一次批量查询把权限组名拼装到视图上（权限组随租户隔离，随请求 ctx 过滤）。
+// 失败只记日志不阻断：组名是展示附属信息，不能让它把账号列表拖挂。
+func (receiver *WafAccountService) fillGroupNames(ctx context.Context, views []AccountView) {
+	ids := make([]string, 0, len(views))
+	seen := make(map[string]struct{}, len(views))
+	for i := range views {
+		if views[i].GroupId == "" {
+			continue
+		}
+		if _, ok := seen[views[i].GroupId]; ok {
+			continue
+		}
+		seen[views[i].GroupId] = struct{}{}
+		ids = append(ids, views[i].GroupId)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	var groups []model.PermissionGroup
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Select("id, group_name").
+		Where("id IN ?", ids).Find(&groups).Error; err != nil {
+		zlog.Warn("账号视图拼装权限组名失败", "error", err.Error())
+		return
+	}
+	nameById := make(map[string]string, len(groups))
+	for _, g := range groups {
+		nameById[g.Id] = g.GroupName
+	}
+	for i := range views {
+		views[i].GroupName = nameById[views[i].GroupId]
+	}
 }
 func (receiver *WafAccountService) DelApi(req request.WafAccountDelReq) error {
 	var bean model.Account

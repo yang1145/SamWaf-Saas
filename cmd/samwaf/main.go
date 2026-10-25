@@ -398,6 +398,11 @@ func (m *wafSystenService) run() {
 			isFreshInstall = true
 		}
 	}
+	// 预置权限组幂等播种（只读巡检/安全运维/运维管理，BuiltIn=1）：
+	// 按组名查重跳过，全新安装与存量升级都会执行；失败只记日志不阻断启动
+	if err := waf_service.WafPermissionGroupServiceApp.InitDefaultPermissionGroups(); err != nil {
+		zlog.Error("初始化预置权限组失败", "error", err)
+	}
 
 	//初始化插件系统（从配置文件加载）
 	if err := plugin.InitPluginSystem(); err != nil {

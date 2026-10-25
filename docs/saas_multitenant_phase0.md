@@ -53,6 +53,51 @@ SamWaf 由「单租户单实例」演进为「共享库多租户」（方案B，
   `wafdb`、`middleware`、`common/wafctx` 全部测试通过。
   注：`api/`、`service/waf_service/` 存在与本改动无关的既有环境性失败（在未改动代码上同样失败）。
 
+## 权限组（多租户自定义角色）
+
+在旧四角色（superAdmin/systemAdmin/securityAdmin/auditAdmin 三权分立）之上叠加
+租户级自定义角色，解决"租户管理员需要给运营人员开受限账号"的问题。
+
+### 模型与判定
+
+- **权限码**（`enums/permissions.go`，域级粒度，8 个）：`dashboard:view`、
+  `host:manage`、`log:view`、`security:policy`、`audit:view`、`system:ops`、
+  `account:manage`、`permission:manage`——一个码对应 localserver.go 里的一组路由。
+- **PermissionGroup**（`permission_groups` 表，BaseOrm 租户隔离）：组名（租户内唯一）、
+  权限码列表（逗号分隔）、状态、BuiltIn 预置标记。
+- **Account.GroupId**：空 = 走旧四角色判定（存量账号行为不变）；绑定后**完全按
+  权限码判定**（替代而非叠加），superAdmin 恒通过。
+- **判定顺序**（`middleware.RequirePermission(code, legacyRoles...)`）：
+  OpenAPI Key 放行 → superAdmin 恒通过 → 有组按组码（缓存 5 分钟，改组即失效，
+  查询失败 fail-closed 403）→ 无组走 legacyRoles。
+- **登录链**：Account.GroupId 随 TokenInfo 落缓存，Auth 写入 `userGroupId`；
+  **账号改绑组会强制下线重登**（令牌里的组是登录时快照）。
+
+### 路由域 → 权限码映射（localserver.go）
+
+| 域 | 权限码 | legacy（未绑组账号） |
+|---|---|---|
+| 仪表盘与总览（stat/analysis/sysinfo/monitor/license/common） | dashboard:view | 全部四角色 |
+| 站点与转发（hosts/group/pathrule/lb/ssl 全套/ca/cdn/tunnel/cacherule/blockingpage/httpauth/onekeymod/vpconfig/hostconn/file） | host:manage | 全部四角色 |
+| 访问日志（log/logfilewrite/iplocation/iplookup） | log:view | 全部四角色 |
+| 系统运维（batchtask/task/notify*/dataretention/gpt/systemconfig） | system:ops | SYSTEM_ADMIN |
+| 防护策略（原安全域 + 防篡改/隐私DLP/防爆破/防火墙联动/威胁情报） | security:policy | SECURITY_ADMIN |
+| 审计（syslog/accountlog/login_history/access_audit） | audit:view | AUDIT_ADMIN |
+| 账号与开放平台（TokenOnly 组） | account:manage | SYSTEM_ADMIN |
+| 权限组管理（/api/v1/permission/group/*） | permission:manage | SYSTEM_ADMIN |
+
+基础组（登出/WebSocket/UI偏好/升级须知/引擎角标/自助改密）仅要求登录态，不设码。
+旧共享域拆分时 legacy=全角色，**存量账号行为零变化**；防篡改等 5 个路由并入安全域
+对旧账号也保持可达（securityAdmin 可达，其他角色经共享域遗留可达性不变——
+legacy 参数含全部角色）。
+
+### 预置组
+
+启动时幂等播种（`InitDefaultPermissionGroups`，按组名查重）：只读巡检
+（dashboard+log+audit）、安全运维（dashboard+host+security+log）、运维管理
+（dashboard+host+system_ops+log）。BuiltIn=1 不可删、不可改名。
+租户开通流程落地后应为新租户复制同一套（租户隔离使预置组按租户各自一份）。
+
 ## 当前边界（阶段0未包含）
 
 阶段0 只打通"机制"，**尚未让业务查询真正按租户隔离**：

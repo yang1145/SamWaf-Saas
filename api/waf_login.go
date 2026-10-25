@@ -164,7 +164,7 @@ func (w *WafLoginApi) LoginApi(c *gin.Context) {
 
 			//记录状态
 			accessToken := utils.Md5String(uuid.GenUUID())
-			tokenInfo, tokenErr := wafTokenInfoService.AddApiWithFingerprintAndType(bean.LoginAccount, accessToken, utils.GetManageClientIP(c), deviceFingerprint, loginType, bean.Role)
+			tokenInfo, tokenErr := wafTokenInfoService.AddApiWithFingerprintAndType(bean.LoginAccount, accessToken, utils.GetManageClientIP(c), deviceFingerprint, loginType, bean.Role, bean.GroupId)
 			// 会话没建成就绝不能回「登录成功」：
 			// 旧写法忽略落库错误、又拿重查结果当令牌下发，一旦对不上，前端会拿到一个
 			// 缓存里不存在（或为空）的令牌，之后每个请求都 401 → 跳登录 → 无限循环，

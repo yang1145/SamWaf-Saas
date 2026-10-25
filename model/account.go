@@ -9,6 +9,7 @@ type Account struct {
 	LoginAccount       string `gorm:"size:100" json:"login_account"`  //登录账号
 	LoginPassword      string `gorm:"size:255" json:"login_password"` //密码md5加密
 	Role               string `gorm:"size:50" json:"role"`            //登录角色 superAdmin/systemAdmin/securityAdmin/auditAdmin
+	GroupId            string `gorm:"size:64" json:"group_id"`        //权限组ID（空=走旧角色判定；绑定后按组权限码判定）
 	Status             int    `json:"status"`                         //状态
 	NeedChangePassword int    `json:"need_change_password"`           //是否需要强制改密 1需要 0否（首次登录/被重置后置1）
 	PwdUpdateTime      string `gorm:"size:32" json:"pwd_update_time"` //上次改密时间(2006-01-02 15:04:05)，用于有效期判断
@@ -35,5 +36,6 @@ type TokenInfo struct {
 	DeviceFingerprint  string `gorm:"size:255" json:"device_fingerprint"`         //设备指纹
 	LoginType          string `gorm:"size:50" json:"login_type"`                  //登录类型 web/mobile
 	Role               string `gorm:"size:50" json:"role"`                        //登录角色(冗余自Account，便于鉴权中间件快速判定)
+	GroupId            string `gorm:"size:64" json:"group_id"`                    //权限组ID(冗余自Account，鉴权中间件据此查组权限；改组会强制下线重登)
 	NeedChangePassword int    `gorm:"-" json:"need_change_password"`              //是否需强制改密：随令牌缓存下发，Auth 中间件据此拦截未改密令牌；不落库(gorm:"-")
 }

@@ -6,6 +6,7 @@ type WafAccountAddReq struct {
 	LoginAccount  string `json:"login_account" form:"login_account"`   //登录账号
 	LoginPassword string `json:"login_password" form:"login_password"` //密码md5加密
 	Role          string `json:"role" form:"role"`                     //帐号角色
+	GroupId       string `json:"group_id" form:"group_id"`             //权限组ID（空=走旧四角色判定；绑定后按组权限码判定）
 	Status        int    `json:"status" form:"status"  `               //状态
 	Remarks       string `json:"remarks" form:"remarks"  `             //备注
 }
@@ -32,6 +33,7 @@ type WafAccountEditReq struct {
 	LoginAccount  string `json:"login_account" form:"login_account"`   //登录账号（TODO 账号是否能随便改）
 	LoginPassword string `json:"login_password" form:"login_password"` //密码md5加密
 	Role          string `json:"role" form:"role"`                     //帐号角色（留空则不修改）
+	GroupId       string `json:"group_id" form:"group_id"`             //权限组ID（空=解绑，回落旧四角色判定；变化会强制该账号下线）
 	Status        int    `json:"status" form:"status"  `               //状态
 	Remarks       string `json:"remarks" form:"remarks"  `             //备注
 }

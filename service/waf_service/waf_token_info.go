@@ -71,7 +71,7 @@ func (receiver *WafTokenInfoService) AddApiWithFingerprint(loginAccount string, 
 // 且服务端一行日志都没有（issue #938）。
 // 同时 Create 的错误必须返回给调用方：插入失败时旧写法返回零值结构体，
 // 登录接口照样回「登录成功」但 access_token 是空串，同样是无日志的死循环。
-func (receiver *WafTokenInfoService) AddApiWithFingerprintAndType(loginAccount string, AccessToken string, LoginIp string, deviceFingerprint string, loginType string, role string) (*model.TokenInfo, error) {
+func (receiver *WafTokenInfoService) AddApiWithFingerprintAndType(loginAccount string, AccessToken string, LoginIp string, deviceFingerprint string, loginType string, role string, groupId string) (*model.TokenInfo, error) {
 
 	var bean = &model.TokenInfo{
 		BaseOrm: baseorm.BaseOrm{
@@ -87,6 +87,7 @@ func (receiver *WafTokenInfoService) AddApiWithFingerprintAndType(loginAccount s
 		DeviceFingerprint: deviceFingerprint,
 		LoginType:         loginType,
 		Role:              enums.NormalizeRole(role),
+		GroupId:           groupId,
 	}
 	if err := global.GWAF_LOCAL_DB.Create(bean).Error; err != nil {
 		return nil, err
