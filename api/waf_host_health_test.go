@@ -247,7 +247,8 @@ func TestHealthTestRouteRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(server, []byte("middleware.Auth()")) || !bytes.Contains(server, []byte("InitHostRouter(RouterGroup)")) {
+	// 站点路由挂在 host:manage 权限码域（InitHostRouter(hostGroup)，hostGroup 派生自已鉴权的 RouterGroup）
+	if !bytes.Contains(server, []byte("middleware.Auth()")) || !bytes.Contains(server, []byte("InitHostRouter(hostGroup)")) {
 		t.Fatal("host routes must use authenticated group")
 	}
 }

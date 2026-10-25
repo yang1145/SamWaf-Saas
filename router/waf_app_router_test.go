@@ -88,7 +88,7 @@ func TestAppRouterProductionTokenOnlyMount(t *testing.T) {
 		t.Fatal(err)
 	}
 	mounts := 0
-	tokenOnlyAuth, systemAdmin := false, false
+	tokenOnlyAuth, platformPerm, systemAdmin := false, false, false
 	ast.Inspect(file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -104,12 +104,12 @@ func TestAppRouterProductionTokenOnlyMount(t *testing.T) {
 				t.Fatal("application router must receive its authenticated group")
 			}
 			group, ok := call.Args[0].(*ast.Ident)
-			if !ok || group.Name != "TokenOnlyRouterGroup" {
-				t.Fatal("application router must be mounted on TokenOnlyRouterGroup")
+			if !ok || group.Name != "tokenPlatformGroup" {
+				t.Fatal("application router must be mounted on tokenPlatformGroup (platform:admin domain)")
 			}
 		}
 		group, ok := sel.X.(*ast.Ident)
-		if !ok || group.Name != "TokenOnlyRouterGroup" || sel.Sel.Name != "Use" {
+		if !ok || sel.Sel.Name != "Use" {
 			return true
 		}
 		for _, arg := range call.Args {
@@ -125,12 +125,20 @@ func TestAppRouterProductionTokenOnlyMount(t *testing.T) {
 			if !ok || pkg.Name != "middleware" {
 				continue
 			}
-			if fn.Sel.Name == "TokenOnlyAuth" {
+			// TokenOnlyAuth 在父组 TokenOnlyRouterGroup 上（对全部 TokenOnly 路由生效）
+			if group.Name == "TokenOnlyRouterGroup" && fn.Sel.Name == "TokenOnlyAuth" {
 				tokenOnlyAuth = true
 			}
-			if fn.Sel.Name == "RequireRole" && len(mw.Args) == 1 {
-				role, ok := mw.Args[0].(*ast.SelectorExpr)
-				if ok {
+			// 权限码与角色判定在子组 tokenPlatformGroup 上
+			if group.Name != "tokenPlatformGroup" || fn.Sel.Name != "RequirePermission" || len(mw.Args) < 1 {
+				continue
+			}
+			if code, ok := mw.Args[0].(*ast.SelectorExpr); ok {
+				pkg, ok := code.X.(*ast.Ident)
+				platformPerm = ok && pkg.Name == "enums" && code.Sel.Name == "PERM_PLATFORM_ADMIN"
+			}
+			if len(mw.Args) >= 2 {
+				if role, ok := mw.Args[1].(*ast.SelectorExpr); ok {
 					pkg, ok := role.X.(*ast.Ident)
 					systemAdmin = ok && pkg.Name == "enums" && role.Sel.Name == "ROLE_SYSTEM_ADMIN"
 				}
@@ -138,7 +146,8 @@ func TestAppRouterProductionTokenOnlyMount(t *testing.T) {
 		}
 		return true
 	})
-	if mounts != 1 || !tokenOnlyAuth || !systemAdmin {
-		t.Fatalf("application mounts=%d TokenOnlyAuth=%v system admin=%v", mounts, tokenOnlyAuth, systemAdmin)
+	if mounts != 1 || !tokenOnlyAuth || !platformPerm || !systemAdmin {
+		t.Fatalf("application mounts=%d TokenOnlyAuth=%v platform:admin=%v system admin=%v",
+			mounts, tokenOnlyAuth, platformPerm, systemAdmin)
 	}
 }

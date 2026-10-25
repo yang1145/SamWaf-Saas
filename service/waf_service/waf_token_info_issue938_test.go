@@ -91,7 +91,7 @@ func TestIssue938_旧行残留时签发的令牌与返回给前端的不是同�
 	seedTokenRow(t, db, account, loginType, "OLD_DEAD_TOKEN")
 
 	const issued = "NEW_ISSUED_TOKEN"
-	got, err := WafTokenInfoServiceApp.AddApiWithFingerprintAndType(account, issued, "127.0.0.1", "", loginType, "", "")
+	got, err := WafTokenInfoServiceApp.AddApiWithFingerprintAndType(account, issued, "127.0.0.1", "", loginType, "", "", "")
 	if err != nil {
 		t.Fatalf("签发令牌不应报错: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestIssue938_落库失败时登录仍然返回空令牌且调用方无从�
 		t.Fatalf("准备失败场景出错: %v", err)
 	}
 
-	got, err := WafTokenInfoServiceApp.AddApiWithFingerprintAndType("admin", "NEW_ISSUED_TOKEN", "127.0.0.1", "", "web", "", "")
+	got, err := WafTokenInfoServiceApp.AddApiWithFingerprintAndType("admin", "NEW_ISSUED_TOKEN", "127.0.0.1", "", "web", "", "", "")
 
 	if err == nil {
 		t.Fatalf("写库失败必须把 error 返回给调用方，否则登录接口会带着空令牌回「登录成功」。got=%+v", got)

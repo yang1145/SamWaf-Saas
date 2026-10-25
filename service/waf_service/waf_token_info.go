@@ -15,13 +15,24 @@ type WafTokenInfoService struct{}
 
 var WafTokenInfoServiceApp = new(WafTokenInfoService)
 
-func (receiver *WafTokenInfoService) AddApi(loginAccount string, AccessToken string, LoginIp string) *model.TokenInfo {
+// tokenInfo Tenant_ID 必须显式取登录账号的租户：TokenInfo 在平台豁免清单里，
+// 回调不会按请求租户盖章——这里写死全局值会把所有租户的会话都落进平台命名空间
+// （越权端到端测试 router/tenant_authz_e2e_test.go 抓到的 P0 缺陷，勿回退）。
+func tokenTenantID(tenantID string) string {
+	if tenantID == "" {
+		// 兜底：无租户标识的账号（存量数据）视为平台租户
+		return global.GWAF_TENANT_ID
+	}
+	return tenantID
+}
+
+func (receiver *WafTokenInfoService) AddApi(loginAccount string, AccessToken string, LoginIp string, tenantID string) *model.TokenInfo {
 
 	var bean = &model.TokenInfo{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
 			USER_CODE:   global.GWAF_USER_CODE,
-			Tenant_ID:   global.GWAF_TENANT_ID,
+			Tenant_ID:   tokenTenantID(tenantID),
 			CREATE_TIME: customtype.JsonTime(time.Now()),
 			UPDATE_TIME: customtype.JsonTime(time.Now()),
 		},
@@ -38,13 +49,13 @@ func (receiver *WafTokenInfoService) AddApi(loginAccount string, AccessToken str
 }
 
 // AddApiWithFingerprint 添加带指纹的token信息
-func (receiver *WafTokenInfoService) AddApiWithFingerprint(loginAccount string, AccessToken string, LoginIp string, deviceFingerprint string) *model.TokenInfo {
+func (receiver *WafTokenInfoService) AddApiWithFingerprint(loginAccount string, AccessToken string, LoginIp string, deviceFingerprint string, tenantID string) *model.TokenInfo {
 
 	var bean = &model.TokenInfo{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
 			USER_CODE:   global.GWAF_USER_CODE,
-			Tenant_ID:   global.GWAF_TENANT_ID,
+			Tenant_ID:   tokenTenantID(tenantID),
 			CREATE_TIME: customtype.JsonTime(time.Now()),
 			UPDATE_TIME: customtype.JsonTime(time.Now()),
 		},
@@ -71,13 +82,13 @@ func (receiver *WafTokenInfoService) AddApiWithFingerprint(loginAccount string, 
 // 且服务端一行日志都没有（issue #938）。
 // 同时 Create 的错误必须返回给调用方：插入失败时旧写法返回零值结构体，
 // 登录接口照样回「登录成功」但 access_token 是空串，同样是无日志的死循环。
-func (receiver *WafTokenInfoService) AddApiWithFingerprintAndType(loginAccount string, AccessToken string, LoginIp string, deviceFingerprint string, loginType string, role string, groupId string) (*model.TokenInfo, error) {
+func (receiver *WafTokenInfoService) AddApiWithFingerprintAndType(loginAccount string, AccessToken string, LoginIp string, deviceFingerprint string, loginType string, role string, groupId string, tenantID string) (*model.TokenInfo, error) {
 
 	var bean = &model.TokenInfo{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
 			USER_CODE:   global.GWAF_USER_CODE,
-			Tenant_ID:   global.GWAF_TENANT_ID,
+			Tenant_ID:   tokenTenantID(tenantID),
 			CREATE_TIME: customtype.JsonTime(time.Now()),
 			UPDATE_TIME: customtype.JsonTime(time.Now()),
 		},
