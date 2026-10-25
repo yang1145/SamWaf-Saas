@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"time"
 )
@@ -15,7 +16,7 @@ type WafBlockingPageService struct{}
 
 var WafBlockingPageServiceApp = new(WafBlockingPageService)
 
-func (receiver *WafBlockingPageService) AddApi(req request.WafBlockingPageAddReq) error {
+func (receiver *WafBlockingPageService) AddApi(ctx context.Context, req request.WafBlockingPageAddReq) error {
 	var bean = &model.BlockingPage{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -34,10 +35,10 @@ func (receiver *WafBlockingPageService) AddApi(req request.WafBlockingPageAddReq
 		ResponseContent:  req.ResponseContent,
 		ContentPriority:  req.ContentPriority,
 	}
-	return global.GWAF_LOCAL_DB.Create(bean).Error
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean).Error
 }
 
-func (receiver *WafBlockingPageService) CheckIsExistApi(req request.WafBlockingPageAddReq) int {
+func (receiver *WafBlockingPageService) CheckIsExistApi(ctx context.Context, req request.WafBlockingPageAddReq) int {
 	var total int64 = 0
 	/*where条件*/
 	var whereField = ""
@@ -88,11 +89,11 @@ func (receiver *WafBlockingPageService) CheckIsExistApi(req request.WafBlockingP
 		}
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.BlockingPage{}).Where(whereField, whereValues...).Count(&total)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.BlockingPage{}).Where(whereField, whereValues...).Count(&total)
 	return int(total)
 }
 
-func (receiver *WafBlockingPageService) ModifyApi(req request.WafBlockingPageEditReq) error {
+func (receiver *WafBlockingPageService) ModifyApi(ctx context.Context, req request.WafBlockingPageEditReq) error {
 	// 根据唯一字段生成查询条件（只有在UniFields不为空时才进行存在性检查）
 
 	var total int64 = 0
@@ -139,7 +140,8 @@ func (receiver *WafBlockingPageService) ModifyApi(req request.WafBlockingPageEdi
 		whereValues = append(whereValues, req.ResponseCode)
 	}
 
-	err := global.GWAF_LOCAL_DB.Model(&model.BlockingPage{}).Where(whereField, whereValues...).Where("id <> ?", req.Id).Count(&total).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.BlockingPage{}).Where(whereField, whereValues...).Where("id <> ?", req.Id).Count(&total).Error
 	if err != nil {
 		return err
 	}
@@ -160,24 +162,24 @@ func (receiver *WafBlockingPageService) ModifyApi(req request.WafBlockingPageEdi
 
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	err = global.GWAF_LOCAL_DB.Model(model.BlockingPage{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	err = db.Model(model.BlockingPage{}).Where("id = ?", req.Id).Updates(beanMap).Error
 
 	return err
 }
-func (receiver *WafBlockingPageService) GetDetailApi(req request.WafBlockingPageDetailReq) model.BlockingPage {
+func (receiver *WafBlockingPageService) GetDetailApi(ctx context.Context, req request.WafBlockingPageDetailReq) model.BlockingPage {
 	var bean model.BlockingPage
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafBlockingPageService) GetDetailByIdApi(id string) model.BlockingPage {
+func (receiver *WafBlockingPageService) GetDetailByIdApi(ctx context.Context, id string) model.BlockingPage {
 	var bean model.BlockingPage
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafBlockingPageService) GetListApi(req request.WafBlockingPageSearchReq) ([]model.BlockingPage, int64, error) {
+func (receiver *WafBlockingPageService) GetListApi(ctx context.Context, req request.WafBlockingPageSearchReq) ([]model.BlockingPage, int64, error) {
 	var list []model.BlockingPage
 	var total int64 = 0
-	query := global.GWAF_LOCAL_DB.Model(&model.BlockingPage{})
+	query := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.BlockingPage{})
 	if req.HostCode != "" {
 		query = query.Where("host_code = ?", req.HostCode)
 	}
@@ -193,12 +195,13 @@ func (receiver *WafBlockingPageService) GetListApi(req request.WafBlockingPageSe
 	err := query.Order("update_time DESC, id DESC").Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list).Error
 	return list, total, err
 }
-func (receiver *WafBlockingPageService) DelApi(req request.WafBlockingPageDelReq) error {
+func (receiver *WafBlockingPageService) DelApi(ctx context.Context, req request.WafBlockingPageDelReq) error {
 	var bean model.BlockingPage
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.BlockingPage{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.BlockingPage{}).Error
 	return err
 }

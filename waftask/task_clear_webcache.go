@@ -1,10 +1,12 @@
 package waftask
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/model"
 	"SamWaf/service/waf_service"
 	"SamWaf/wafenginecore/wafwebcache"
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -14,7 +16,7 @@ func TaskClearWebcache() {
 	zlog.Info(innerLogName, "开始执行网站缓存清理任务")
 
 	// 获取所有运行中的主机
-	hosts := waf_service.WafHostServiceApp.GetAllRunningHostApi()
+	hosts := waf_service.WafHostServiceApp.GetAllRunningHostApi(wafctx.PlatformScope(context.Background()))
 	if len(hosts) == 0 {
 		zlog.Info(innerLogName, "没有运行中的主机，无需清理缓存")
 		return

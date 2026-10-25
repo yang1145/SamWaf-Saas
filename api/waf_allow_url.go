@@ -7,6 +7,7 @@ import (
 	"SamWaf/model/common/response"
 	"SamWaf/model/request"
 	"SamWaf/model/spec"
+	"context"
 	"errors"
 	"fmt"
 	"github.com/gin-gonic/gin"
@@ -34,11 +35,11 @@ func (w *WafAllowUrlApi) AddApi(c *gin.Context) {
 			response.FailWithMessage("is_enable 取值只能是 0 或 1", c)
 			return
 		}
-		err = wafUrlAllowService.CheckIsExistApi(req)
+		err = wafUrlAllowService.CheckIsExistApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-			err = wafUrlAllowService.AddApi(req)
+			err = wafUrlAllowService.AddApi(c.Request.Context(), req)
 			if err == nil {
-				w.NotifyWaf(req.HostCode)
+				w.NotifyWaf(c.Request.Context(), req.HostCode)
 				response.OkWithMessage("添加成功", c)
 			} else {
 
@@ -69,7 +70,7 @@ func (w *WafAllowUrlApi) GetDetailApi(c *gin.Context) {
 	var req request.WafAllowUrlDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafUrlAllowService.GetDetailApi(req)
+		bean := wafUrlAllowService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -90,7 +91,7 @@ func (w *WafAllowUrlApi) GetListApi(c *gin.Context) {
 	var req request.WafAllowUrlSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		beans, total, _ := wafUrlAllowService.GetListApi(req)
+		beans, total, _ := wafUrlAllowService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      beans,
 			Total:     total,
@@ -116,14 +117,14 @@ func (w *WafAllowUrlApi) DelAllowUrlApi(c *gin.Context) {
 	var req request.WafAllowUrlDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafUrlAllowService.GetDetailByIdApi(req.Id)
-		err = wafUrlAllowService.DelApi(req)
+		bean := wafUrlAllowService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafUrlAllowService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
 			response.FailWithMessage("发生错误", c)
 		} else {
-			w.NotifyWaf(bean.HostCode)
+			w.NotifyWaf(c.Request.Context(), bean.HostCode)
 			response.OkWithMessage("删除成功", c)
 		}
 
@@ -151,12 +152,12 @@ func (w *WafAllowUrlApi) ModifyAllowUrlApi(c *gin.Context) {
 			return
 		}
 		//编辑前先取旧记录，拿到可能被本次编辑改掉的旧 host_code(issue #898)
-		bean := wafUrlAllowService.GetDetailByIdApi(req.Id)
-		err = wafUrlAllowService.ModifyApi(req)
+		bean := wafUrlAllowService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafUrlAllowService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误", c)
 		} else {
-			notifyWafHostChanged(w.NotifyWaf, bean.HostCode, req.HostCode)
+			notifyWafHostChanged(func(hostCode string) { w.NotifyWaf(c.Request.Context(), hostCode) }, bean.HostCode, req.HostCode)
 			response.OkWithMessage("编辑成功", c)
 		}
 
@@ -185,12 +186,12 @@ func (w *WafAllowUrlApi) ToggleApi(c *gin.Context) {
 		response.FailWithMessage("is_enable 取值只能是 0 或 1", c)
 		return
 	}
-	hostCode, err := wafUrlAllowService.ToggleApi(req)
+	hostCode, err := wafUrlAllowService.ToggleApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("操作失败", c)
 		return
 	}
-	w.NotifyWaf(hostCode)
+	w.NotifyWaf(c.Request.Context(), hostCode)
 	response.OkWithMessage("操作成功", c)
 }
 
@@ -198,9 +199,9 @@ func (w *WafAllowUrlApi) ToggleApi(c *gin.Context) {
 *
 通知到waf引擎实时生效
 */
-func (w *WafAllowUrlApi) NotifyWaf(host_code string) {
+func (w *WafAllowUrlApi) NotifyWaf(ctx context.Context, host_code string) {
 	var urlWhites []model.URLAllowList
-	global.GWAF_LOCAL_DB.Where("host_code = ? and is_enable = 1", host_code).Find(&urlWhites)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ? and is_enable = 1", host_code).Find(&urlWhites)
 	var chanInfo = spec.ChanCommonHost{
 		HostCode: host_code,
 		Type:     enums.ChanTypeAllowURL,
@@ -215,20 +216,20 @@ func (w *WafAllowUrlApi) BatchDelAllowUrlApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		// 先获取要删除的记录对应的HostCode，用于后续通知WAF引擎
-		hostCodes, err := wafUrlAllowService.GetHostCodesByIds(req.Ids)
+		hostCodes, err := wafUrlAllowService.GetHostCodesByIds(c.Request.Context(), req.Ids)
 		if err != nil {
 			response.FailWithMessage("获取网站信息失败", c)
 			return
 		}
 
 		// 执行批量删除
-		err = wafUrlAllowService.BatchDelApi(req)
+		err = wafUrlAllowService.BatchDelApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("批量删除失败: "+err.Error(), c)
 		} else {
 			// 通知所有相关的网站更新配置
 			for _, hostCode := range hostCodes {
-				w.NotifyWaf(hostCode)
+				w.NotifyWaf(c.Request.Context(), hostCode)
 			}
 			response.OkWithMessage(fmt.Sprintf("成功删除 %d 条记录", len(req.Ids)), c)
 		}
@@ -243,19 +244,19 @@ func (w *WafAllowUrlApi) DelAllAllowUrlApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		// 先获取要删除的记录对应的HostCode，用于后续通知WAF引擎
-		hostCodes, err := wafUrlAllowService.GetHostCodes()
+		hostCodes, err := wafUrlAllowService.GetHostCodes(c.Request.Context())
 		if err != nil {
 			response.FailWithMessage("获取网站信息失败", c)
 			return
 		}
 
-		err = wafUrlAllowService.DelAllApi(req)
+		err = wafUrlAllowService.DelAllApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("全部删除失败: "+err.Error(), c)
 		} else {
 			// 通知所有相关的网站更新配置
 			for _, hostCode := range hostCodes {
-				w.NotifyWaf(hostCode)
+				w.NotifyWaf(c.Request.Context(), hostCode)
 			}
 			if len(req.HostCode) > 0 {
 				response.OkWithMessage("成功删除该网站的所有URL白名单", c)

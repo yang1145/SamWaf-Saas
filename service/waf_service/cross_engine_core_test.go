@@ -9,6 +9,7 @@ import (
 	"SamWaf/customtype"
 	"SamWaf/model"
 	"SamWaf/model/request"
+	"context"
 	"testing"
 	"time"
 
@@ -44,31 +45,31 @@ func runModifyMapCases(t *testing.T, db *gorm.DB) {
 	t.Run("BlockIP", func(t *testing.T) {
 		id := uuid.GenUUID()
 		must(t, db.Create(&model.IPBlockList{BaseOrm: newBase(id), HostCode: "h1", Ip: "1.1.1.1"}).Error)
-		fatalIf(t, WafBlockIpServiceApp.ModifyApi(request.WafBlockIpEditReq{Id: id, HostCode: "h2", Ip: "1.1.1.1", Remarks: "r"}))
+		fatalIf(t, WafBlockIpServiceApp.ModifyApi(context.Background(), request.WafBlockIpEditReq{Id: id, HostCode: "h2", Ip: "1.1.1.1", Remarks: "r"}))
 		assertHostCode(t, db, &model.IPBlockList{}, id)
 	})
 	t.Run("AllowIP", func(t *testing.T) {
 		id := uuid.GenUUID()
 		must(t, db.Create(&model.IPAllowList{BaseOrm: newBase(id), HostCode: "h1", Ip: "2.2.2.2"}).Error)
-		fatalIf(t, WafWhiteIpServiceApp.ModifyApi(request.WafAllowIpEditReq{Id: id, HostCode: "h2", Ip: "2.2.2.2", Remarks: "r"}))
+		fatalIf(t, WafWhiteIpServiceApp.ModifyApi(context.Background(), request.WafAllowIpEditReq{Id: id, HostCode: "h2", Ip: "2.2.2.2", Remarks: "r"}))
 		assertHostCode(t, db, &model.IPAllowList{}, id)
 	})
 	t.Run("AllowUrl", func(t *testing.T) {
 		id := uuid.GenUUID()
 		must(t, db.Create(&model.URLAllowList{BaseOrm: newBase(id), HostCode: "h1", CompareType: "suffix", Url: "/a"}).Error)
-		fatalIf(t, WafWhiteUrlServiceApp.ModifyApi(request.WafAllowUrlEditReq{Id: id, HostCode: "h2", CompareType: "prefix", Url: "/a", Remarks: "r"}))
+		fatalIf(t, WafWhiteUrlServiceApp.ModifyApi(context.Background(), request.WafAllowUrlEditReq{Id: id, HostCode: "h2", CompareType: "prefix", Url: "/a", Remarks: "r"}))
 		assertHostCode(t, db, &model.URLAllowList{}, id)
 	})
 	t.Run("BlockUrl", func(t *testing.T) {
 		id := uuid.GenUUID()
 		must(t, db.Create(&model.URLBlockList{BaseOrm: newBase(id), HostCode: "h1", CompareType: "suffix", Url: "/b"}).Error)
-		fatalIf(t, WafBlockUrlServiceApp.ModifyApi(request.WafBlockUrlEditReq{Id: id, HostCode: "h2", CompareType: "prefix", Url: "/b", Remarks: "r"}))
+		fatalIf(t, WafBlockUrlServiceApp.ModifyApi(context.Background(), request.WafBlockUrlEditReq{Id: id, HostCode: "h2", CompareType: "prefix", Url: "/b", Remarks: "r"}))
 		assertHostCode(t, db, &model.URLBlockList{}, id)
 	})
 	t.Run("AntiCC", func(t *testing.T) {
 		id := uuid.GenUUID()
 		must(t, db.Create(&model.AntiCC{BaseOrm: newBase(id), HostCode: "h1", Rate: 1, Limit: 1, LimitMode: "window"}).Error)
-		fatalIf(t, WafAntiCCServiceApp.ModifyApi(request.WafAntiCCEditReq{
+		fatalIf(t, WafAntiCCServiceApp.ModifyApi(context.Background(), request.WafAntiCCEditReq{
 			Id: id, HostCode: "h2", Rate: 5, Limit: 5, LockIPMinutes: 5, LimitMode: "window",
 		}))
 		assertHostCode(t, db, &model.AntiCC{}, id)
@@ -76,13 +77,13 @@ func runModifyMapCases(t *testing.T, db *gorm.DB) {
 	t.Run("Ldp", func(t *testing.T) {
 		id := uuid.GenUUID()
 		must(t, db.Create(&model.LDPUrl{BaseOrm: newBase(id), HostCode: "h1", CompareType: "suffix", Url: "/c"}).Error)
-		fatalIf(t, WafLdpUrlServiceApp.ModifyApi(request.WafLdpUrlEditReq{Id: id, HostCode: "h2", CompareType: "prefix", Url: "/c", Remarks: "r"}))
+		fatalIf(t, WafLdpUrlServiceApp.ModifyApi(context.Background(), request.WafLdpUrlEditReq{Id: id, HostCode: "h2", CompareType: "prefix", Url: "/c", Remarks: "r"}))
 		assertHostCode(t, db, &model.LDPUrl{}, id)
 	})
 	t.Run("LoadBalance", func(t *testing.T) {
 		id := uuid.GenUUID()
 		must(t, db.Create(&model.LoadBalance{BaseOrm: newBase(id), HostCode: "h1", Remote_ip: "3.3.3.3", Remote_port: 80}).Error)
-		fatalIf(t, WafLoadBalanceServiceApp.ModifyApi(request.WafLoadBalanceEditReq{
+		fatalIf(t, WafLoadBalanceServiceApp.ModifyApi(context.Background(), request.WafLoadBalanceEditReq{
 			Id: id, HostCode: "h2", Remote_ip: "4.4.4.4", Remote_port: 8080, Weight: 2, Remarks: "r",
 		}))
 		var got model.LoadBalance
@@ -143,113 +144,113 @@ func getHostCode(v interface{}) string {
 func runCoreCRUDCases(t *testing.T, db *gorm.DB) {
 	t.Run("HttpAuthBase", func(t *testing.T) {
 		un := "u_" + sfx()
-		fatalIf(t, WafHttpAuthBaseServiceApp.AddApi(request.WafHttpAuthBaseAddReq{HostCode: "h1", UserName: un, Password: "p1"}))
+		fatalIf(t, WafHttpAuthBaseServiceApp.AddApi(context.Background(), request.WafHttpAuthBaseAddReq{HostCode: "h1", UserName: un, Password: "p1"}))
 		var bean model.HttpAuthBase
 		firstBy(t, db, &bean, "user_name = ?", un)
-		fatalIf(t, WafHttpAuthBaseServiceApp.ModifyApi(request.WafHttpAuthBaseEditReq{Id: bean.Id, HostCode: "h2", UserName: un, Password: "p2"}))
-		got := WafHttpAuthBaseServiceApp.GetDetailByIdApi(bean.Id)
+		fatalIf(t, WafHttpAuthBaseServiceApp.ModifyApi(context.Background(), request.WafHttpAuthBaseEditReq{Id: bean.Id, HostCode: "h2", UserName: un, Password: "p2"}))
+		got := WafHttpAuthBaseServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.HostCode != "h2" || got.Password != "p2" {
 			t.Fatalf("HttpAuthBase 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafHttpAuthBaseServiceApp.DelApi(request.WafHttpAuthBaseDelReq{Id: bean.Id}))
+		fatalIf(t, WafHttpAuthBaseServiceApp.DelApi(context.Background(), request.WafHttpAuthBaseDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.HttpAuthBase{}, bean.Id)
 	})
 
 	t.Run("Sensitive", func(t *testing.T) {
 		content := "c_" + sfx()
-		fatalIf(t, WafSensitiveServiceApp.AddApi(request.WafSensitiveAddReq{CheckDirection: "all", Action: "deny", Content: content, Remarks: "r"}))
+		fatalIf(t, WafSensitiveServiceApp.AddApi(context.Background(), request.WafSensitiveAddReq{CheckDirection: "all", Action: "deny", Content: content, Remarks: "r"}))
 		var bean model.Sensitive
 		firstBy(t, db, &bean, "content = ?", content)
-		fatalIf(t, WafSensitiveServiceApp.ModifyApi(request.WafSensitiveEditReq{Id: bean.Id, CheckDirection: "in", Action: "replace", Content: content, Remarks: "r2"}))
-		got := WafSensitiveServiceApp.GetDetailByIdApi(bean.Id)
+		fatalIf(t, WafSensitiveServiceApp.ModifyApi(context.Background(), request.WafSensitiveEditReq{Id: bean.Id, CheckDirection: "in", Action: "replace", Content: content, Remarks: "r2"}))
+		got := WafSensitiveServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.CheckDirection != "in" || got.Action != "replace" {
 			t.Fatalf("Sensitive 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafSensitiveServiceApp.DelApi(request.WafSensitiveDelReq{Id: bean.Id}))
+		fatalIf(t, WafSensitiveServiceApp.DelApi(context.Background(), request.WafSensitiveDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.Sensitive{}, bean.Id)
 	})
 
 	t.Run("CaServerInfo", func(t *testing.T) {
 		name := "ca_" + sfx()
-		fatalIf(t, WafCaServerInfoServiceApp.AddApi(request.WafCaServerInfoAddReq{CaServerName: name, CaServerAddress: "https://x", Remarks: "r"}))
+		fatalIf(t, WafCaServerInfoServiceApp.AddApi(context.Background(), request.WafCaServerInfoAddReq{CaServerName: name, CaServerAddress: "https://x", Remarks: "r"}))
 		var bean model.CaServerInfo
 		firstBy(t, db, &bean, "ca_server_name = ?", name)
-		fatalIf(t, WafCaServerInfoServiceApp.ModifyApi(request.WafCaServerInfoEditReq{Id: bean.Id, CaServerName: name, CaServerAddress: "https://y", Remarks: "r2"}))
-		got := WafCaServerInfoServiceApp.GetDetailByIdApi(bean.Id)
+		fatalIf(t, WafCaServerInfoServiceApp.ModifyApi(context.Background(), request.WafCaServerInfoEditReq{Id: bean.Id, CaServerName: name, CaServerAddress: "https://y", Remarks: "r2"}))
+		got := WafCaServerInfoServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.CaServerAddress != "https://y" {
 			t.Fatalf("CaServerInfo 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafCaServerInfoServiceApp.DelApi(request.WafCaServerInfoDelReq{Id: bean.Id}))
+		fatalIf(t, WafCaServerInfoServiceApp.DelApi(context.Background(), request.WafCaServerInfoDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.CaServerInfo{}, bean.Id)
 	})
 
 	t.Run("BlockingPage", func(t *testing.T) {
 		name := "bp_" + sfx()
-		fatalIf(t, WafBlockingPageServiceApp.AddApi(request.WafBlockingPageAddReq{
+		fatalIf(t, WafBlockingPageServiceApp.AddApi(context.Background(), request.WafBlockingPageAddReq{
 			BlockingPageName: name, BlockingType: "intercept", AttackType: "cc_attack", HostCode: "h1", ResponseCode: "403", ResponseContent: "blocked",
 		}))
 		var bean model.BlockingPage
 		firstBy(t, db, &bean, "blocking_page_name = ?", name)
-		fatalIf(t, WafBlockingPageServiceApp.ModifyApi(request.WafBlockingPageEditReq{
+		fatalIf(t, WafBlockingPageServiceApp.ModifyApi(context.Background(), request.WafBlockingPageEditReq{
 			Id: bean.Id, BlockingPageName: name, BlockingType: "intercept", AttackType: "cc_attack", HostCode: "h2", ResponseCode: "503", ResponseContent: "x",
 		}))
-		got := WafBlockingPageServiceApp.GetDetailByIdApi(bean.Id)
+		got := WafBlockingPageServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.ResponseCode != "503" || got.HostCode != "h2" {
 			t.Fatalf("BlockingPage 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafBlockingPageServiceApp.DelApi(request.WafBlockingPageDelReq{Id: bean.Id}))
+		fatalIf(t, WafBlockingPageServiceApp.DelApi(context.Background(), request.WafBlockingPageDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.BlockingPage{}, bean.Id)
 	})
 
 	t.Run("CacheRule", func(t *testing.T) {
 		name := "cr_" + sfx()
-		fatalIf(t, WafCacheRuleServiceApp.AddApi(request.WafCacheRuleAddReq{
+		fatalIf(t, WafCacheRuleServiceApp.AddApi(context.Background(), request.WafCacheRuleAddReq{
 			HostCode: "h1", RuleName: name, RuleType: 1, RuleContent: ".js", CacheTime: 60, Priority: 5, RequestMethod: "GET",
 		}))
 		var bean model.CacheRule
 		firstBy(t, db, &bean, "rule_name = ?", name)
-		fatalIf(t, WafCacheRuleServiceApp.ModifyApi(request.WafCacheRuleEditReq{
+		fatalIf(t, WafCacheRuleServiceApp.ModifyApi(context.Background(), request.WafCacheRuleEditReq{
 			Id: bean.Id, HostCode: "h2", RuleName: name, RuleType: 1, RuleContent: ".css", CacheTime: 120, Priority: 9, RequestMethod: "GET",
 		}))
-		got := WafCacheRuleServiceApp.GetDetailByIdApi(bean.Id)
+		got := WafCacheRuleServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.HostCode != "h2" || got.CacheTime != 120 {
 			t.Fatalf("CacheRule 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafCacheRuleServiceApp.DelApi(request.WafCacheRuleDelReq{Id: bean.Id}))
+		fatalIf(t, WafCacheRuleServiceApp.DelApi(context.Background(), request.WafCacheRuleDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.CacheRule{}, bean.Id)
 	})
 
 	t.Run("Tunnel", func(t *testing.T) {
 		name := "tn_" + sfx()
-		tn, err := WafTunnelServiceApp.AddApi(request.WafTunnelAddReq{
+		tn, err := WafTunnelServiceApp.AddApi(context.Background(), request.WafTunnelAddReq{
 			Name: name, Port: "12345", Protocol: "tcp", RemoteIp: "1.2.3.4", RemotePort: 80, StartStatus: 0,
 		})
 		fatalIf(t, err)
 		if tn == nil {
 			t.Fatalf("Tunnel AddApi 返回 nil")
 		}
-		fatalIf(t, WafTunnelServiceApp.ModifyApi(request.WafTunnelEditReq{
+		fatalIf(t, WafTunnelServiceApp.ModifyApi(context.Background(), request.WafTunnelEditReq{
 			Id: tn.Id, Name: name, Port: "12346", Protocol: "tcp", RemoteIp: "1.2.3.4", RemotePort: 8080, StartStatus: 0,
 		}))
-		got := WafTunnelServiceApp.GetDetailByIdApi(tn.Id)
+		got := WafTunnelServiceApp.GetDetailByIdApi(context.Background(), tn.Id)
 		if got.Port != "12346" || got.RemotePort != 8080 {
 			t.Fatalf("Tunnel 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafTunnelServiceApp.DelApi(request.WafTunnelDelReq{Id: tn.Id}))
+		fatalIf(t, WafTunnelServiceApp.DelApi(context.Background(), request.WafTunnelDelReq{Id: tn.Id}))
 		assertGone(t, db, &model.Tunnel{}, tn.Id)
 	})
 
 	t.Run("PrivateGroup", func(t *testing.T) {
 		name := "pg_" + sfx()
-		fatalIf(t, WafPrivateGroupServiceApp.AddApi(request.WafPrivateGroupAddReq{PrivateGroupName: name, PrivateGroupBelongCloud: "tencent"}))
+		fatalIf(t, WafPrivateGroupServiceApp.AddApi(context.Background(), request.WafPrivateGroupAddReq{PrivateGroupName: name, PrivateGroupBelongCloud: "tencent"}))
 		var bean model.PrivateGroup
 		firstBy(t, db, &bean, "private_group_name = ?", name)
-		fatalIf(t, WafPrivateGroupServiceApp.ModifyApi(request.WafPrivateGroupEditReq{Id: bean.Id, PrivateGroupName: name, PrivateGroupBelongCloud: "aliyun"}))
-		got := WafPrivateGroupServiceApp.GetDetailByIdApi(bean.Id)
+		fatalIf(t, WafPrivateGroupServiceApp.ModifyApi(context.Background(), request.WafPrivateGroupEditReq{Id: bean.Id, PrivateGroupName: name, PrivateGroupBelongCloud: "aliyun"}))
+		got := WafPrivateGroupServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.PrivateGroupBelongCloud != "aliyun" {
 			t.Fatalf("PrivateGroup 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafPrivateGroupServiceApp.DelApi(request.WafPrivateGroupDelReq{Id: bean.Id}))
+		fatalIf(t, WafPrivateGroupServiceApp.DelApi(context.Background(), request.WafPrivateGroupDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.PrivateGroup{}, bean.Id)
 	})
 
@@ -343,15 +344,15 @@ func runCoreCRUDCases(t *testing.T, db *gorm.DB) {
 
 	t.Run("TamperRule", func(t *testing.T) {
 		url := "/t_" + sfx()
-		fatalIf(t, WafTamperRuleServiceApp.AddApi(request.WafTamperRuleAddReq{HostCode: "h1", Url: url, RuleName: "n", IsEnable: 1, IgnoreQuery: 1, Remarks: "r"}))
+		fatalIf(t, WafTamperRuleServiceApp.AddApi(context.Background(), request.WafTamperRuleAddReq{HostCode: "h1", Url: url, RuleName: "n", IsEnable: 1, IgnoreQuery: 1, Remarks: "r"}))
 		var bean model.TamperRule
 		firstBy(t, db, &bean, "url = ?", url)
-		fatalIf(t, WafTamperRuleServiceApp.ModifyApi(request.WafTamperRuleEditReq{Id: bean.Id, HostCode: "h2", Url: url, RuleName: "n2", IsEnable: 0, IgnoreQuery: 0, Remarks: "r2"}))
-		got := WafTamperRuleServiceApp.GetDetailByIdApi(bean.Id)
+		fatalIf(t, WafTamperRuleServiceApp.ModifyApi(context.Background(), request.WafTamperRuleEditReq{Id: bean.Id, HostCode: "h2", Url: url, RuleName: "n2", IsEnable: 0, IgnoreQuery: 0, Remarks: "r2"}))
+		got := WafTamperRuleServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.HostCode != "h2" || got.RuleName != "n2" {
 			t.Fatalf("TamperRule 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafTamperRuleServiceApp.DelApi(request.WafTamperRuleDelReq{Id: bean.Id}))
+		fatalIf(t, WafTamperRuleServiceApp.DelApi(context.Background(), request.WafTamperRuleDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.TamperRule{}, bean.Id)
 	})
 
@@ -404,17 +405,17 @@ func runListEnableSwitchCases(t *testing.T, db *gorm.DB) {
 		{"LSV_AllowIP", func() iostub {
 			return iostub{
 				addNil: func() error {
-					return WafWhiteIpServiceApp.AddApi(request.WafAllowIpAddReq{HostCode: "hc_nil", Ip: "10.10.0.1", Remarks: "x"})
+					return WafWhiteIpServiceApp.AddApi(context.Background(), request.WafAllowIpAddReq{HostCode: "hc_nil", Ip: "10.10.0.1", Remarks: "x"})
 				},
 				addZero: func() error {
-					return WafWhiteIpServiceApp.AddApi(request.WafAllowIpAddReq{HostCode: "hc_zero", Ip: "10.10.0.2", Remarks: "x", IsEnable: &zero})
+					return WafWhiteIpServiceApp.AddApi(context.Background(), request.WafAllowIpAddReq{HostCode: "hc_zero", Ip: "10.10.0.2", Remarks: "x", IsEnable: &zero})
 				},
 				addOne: func() error {
-					return WafWhiteIpServiceApp.AddApi(request.WafAllowIpAddReq{HostCode: "hc_one", Ip: "10.10.0.3", Remarks: "x", IsEnable: &one})
+					return WafWhiteIpServiceApp.AddApi(context.Background(), request.WafAllowIpAddReq{HostCode: "hc_one", Ip: "10.10.0.3", Remarks: "x", IsEnable: &one})
 				},
 				toggle: func(id string, v int) error {
 					val := v
-					_, err := WafWhiteIpServiceApp.ToggleApi(request.WafAllowIpToggleReq{Id: id, IsEnable: &val})
+					_, err := WafWhiteIpServiceApp.ToggleApi(context.Background(), request.WafAllowIpToggleReq{Id: id, IsEnable: &val})
 					return err
 				},
 				findByHC: func(hostCode string) (int, error) {
@@ -428,20 +429,20 @@ func runListEnableSwitchCases(t *testing.T, db *gorm.DB) {
 		}},
 		{"LSV_BlockIP", func() iostub {
 			return iostub{
-				addNil: func() error {
-					return WafBlockIpServiceApp.AddApi(request.WafBlockIpAddReq{HostCode: "hc_nil", Ip: "10.10.1.1", Remarks: "x"})
-				},
-				addZero: func() error {
-					return WafBlockIpServiceApp.AddApi(request.WafBlockIpAddReq{HostCode: "hc_zero", Ip: "10.10.1.2", Remarks: "x", IsEnable: &zero})
-				},
-				addOne: func() error {
-					return WafBlockIpServiceApp.AddApi(request.WafBlockIpAddReq{HostCode: "hc_one", Ip: "10.10.1.3", Remarks: "x", IsEnable: &one})
-				},
-				toggle: func(id string, v int) error {
-					val := v
-					_, err := WafBlockIpServiceApp.ToggleApi(request.WafBlockIpToggleReq{Id: id, IsEnable: &val})
-					return err
-				},
+					addNil: func() error {
+						return WafBlockIpServiceApp.AddApi(context.Background(), request.WafBlockIpAddReq{HostCode: "hc_nil", Ip: "10.10.1.1", Remarks: "x"})
+					},
+					addZero: func() error {
+						return WafBlockIpServiceApp.AddApi(context.Background(), request.WafBlockIpAddReq{HostCode: "hc_zero", Ip: "10.10.1.2", Remarks: "x", IsEnable: &zero})
+					},
+					addOne: func() error {
+						return WafBlockIpServiceApp.AddApi(context.Background(), request.WafBlockIpAddReq{HostCode: "hc_one", Ip: "10.10.1.3", Remarks: "x", IsEnable: &one})
+					},
+					toggle: func(id string, v int) error {
+						val := v
+						_, err := WafBlockIpServiceApp.ToggleApi(context.Background(), request.WafBlockIpToggleReq{Id: id, IsEnable: &val})
+						return err
+					},
 				findByHC: func(hostCode string) (int, error) {
 					var b model.IPBlockList
 					if err := db.Where("host_code = ?", hostCode).First(&b).Error; err != nil {
@@ -454,17 +455,17 @@ func runListEnableSwitchCases(t *testing.T, db *gorm.DB) {
 		{"LSV_AllowURL", func() iostub {
 			return iostub{
 				addNil: func() error {
-					return WafWhiteUrlServiceApp.AddApi(request.WafAllowUrlAddReq{HostCode: "hc_nil", CompareType: "等于", Url: "/lsv-nil", Remarks: "x"})
+					return WafWhiteUrlServiceApp.AddApi(context.Background(), request.WafAllowUrlAddReq{HostCode: "hc_nil", CompareType: "等于", Url: "/lsv-nil", Remarks: "x"})
 				},
 				addZero: func() error {
-					return WafWhiteUrlServiceApp.AddApi(request.WafAllowUrlAddReq{HostCode: "hc_zero", CompareType: "等于", Url: "/lsv-zero", Remarks: "x", IsEnable: &zero})
+					return WafWhiteUrlServiceApp.AddApi(context.Background(), request.WafAllowUrlAddReq{HostCode: "hc_zero", CompareType: "等于", Url: "/lsv-zero", Remarks: "x", IsEnable: &zero})
 				},
 				addOne: func() error {
-					return WafWhiteUrlServiceApp.AddApi(request.WafAllowUrlAddReq{HostCode: "hc_one", CompareType: "等于", Url: "/lsv-one", Remarks: "x", IsEnable: &one})
+					return WafWhiteUrlServiceApp.AddApi(context.Background(), request.WafAllowUrlAddReq{HostCode: "hc_one", CompareType: "等于", Url: "/lsv-one", Remarks: "x", IsEnable: &one})
 				},
 				toggle: func(id string, v int) error {
 					val := v
-					_, err := WafWhiteUrlServiceApp.ToggleApi(request.WafAllowUrlToggleReq{Id: id, IsEnable: &val})
+					_, err := WafWhiteUrlServiceApp.ToggleApi(context.Background(), request.WafAllowUrlToggleReq{Id: id, IsEnable: &val})
 					return err
 				},
 				findByHC: func(hostCode string) (int, error) {
@@ -478,20 +479,20 @@ func runListEnableSwitchCases(t *testing.T, db *gorm.DB) {
 		}},
 		{"LSV_BlockURL", func() iostub {
 			return iostub{
-				addNil: func() error {
-					return WafBlockUrlServiceApp.AddApi(request.WafBlockUrlAddReq{HostCode: "hc_nil", CompareType: "等于", Url: "/lsvb-nil", Remarks: "x"})
-				},
-				addZero: func() error {
-					return WafBlockUrlServiceApp.AddApi(request.WafBlockUrlAddReq{HostCode: "hc_zero", CompareType: "等于", Url: "/lsvb-zero", Remarks: "x", IsEnable: &zero})
-				},
-				addOne: func() error {
-					return WafBlockUrlServiceApp.AddApi(request.WafBlockUrlAddReq{HostCode: "hc_one", CompareType: "等于", Url: "/lsvb-one", Remarks: "x", IsEnable: &one})
-				},
-				toggle: func(id string, v int) error {
-					val := v
-					_, err := WafBlockUrlServiceApp.ToggleApi(request.WafBlockUrlToggleReq{Id: id, IsEnable: &val})
-					return err
-				},
+					addNil: func() error {
+						return WafBlockUrlServiceApp.AddApi(context.Background(), request.WafBlockUrlAddReq{HostCode: "hc_nil", CompareType: "等于", Url: "/lsvb-nil", Remarks: "x"})
+					},
+					addZero: func() error {
+						return WafBlockUrlServiceApp.AddApi(context.Background(), request.WafBlockUrlAddReq{HostCode: "hc_zero", CompareType: "等于", Url: "/lsvb-zero", Remarks: "x", IsEnable: &zero})
+					},
+					addOne: func() error {
+						return WafBlockUrlServiceApp.AddApi(context.Background(), request.WafBlockUrlAddReq{HostCode: "hc_one", CompareType: "等于", Url: "/lsvb-one", Remarks: "x", IsEnable: &one})
+					},
+					toggle: func(id string, v int) error {
+						val := v
+						_, err := WafBlockUrlServiceApp.ToggleApi(context.Background(), request.WafBlockUrlToggleReq{Id: id, IsEnable: &val})
+						return err
+					},
 				findByHC: func(hostCode string) (int, error) {
 					var b model.URLBlockList
 					if err := db.Where("host_code = ?", hostCode).First(&b).Error; err != nil {

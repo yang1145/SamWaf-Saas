@@ -1,9 +1,11 @@
 package wafssl
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/service/waf_service"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -28,7 +30,7 @@ func LoadDnsProviderEnvInfo(groupName string, belongCloud string) {
 		os.Unsetenv(key)
 	}
 
-	privateInfos, _, err := waf_service.WafPrivateInfoServiceApp.GetListByGroupAndBelongCloudPureApi(groupName, belongCloud)
+	privateInfos, _, err := waf_service.WafPrivateInfoServiceApp.GetListByGroupAndBelongCloudPureApi(wafctx.PlatformScope(context.Background()), groupName, belongCloud)
 	if err != nil {
 		zlog.Error(fmt.Sprintf("Failed to load DNS provider env info for cloud `%s` group `%s`: %v", belongCloud, groupName, err))
 		return

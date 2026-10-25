@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	crand "crypto/rand"
@@ -94,7 +95,7 @@ func genExportTestCert(t *testing.T, cn string) (certPEM, keyPEM string) {
 func addSslConfigForExport(t *testing.T, cn, exportCert, exportKey string) (string, string, string) {
 	t.Helper()
 	certPEM, keyPEM := genExportTestCert(t, cn)
-	id, err := WafSslConfigServiceApp.AddApi(request.SslConfigAddReq{
+	id, err := WafSslConfigServiceApp.AddApi(context.Background(), request.SslConfigAddReq{
 		CertContent:    certPEM,
 		KeyContent:     keyPEM,
 		ExportCertPath: exportCert,
@@ -110,7 +111,7 @@ func TestExport_未配置导出路径时静默跳过(t *testing.T) {
 	setupSslExportTestDB(t)
 
 	id, _, _ := addSslConfigForExport(t, "noexport.example.com", "", "")
-	msg, err := WafSslConfigServiceApp.ExportById(id)
+	msg, err := WafSslConfigServiceApp.ExportById(context.Background(), id)
 	if err != nil {
 		t.Fatalf("未配置导出不应报错: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestExport_未配置导出路径时静默跳过(t *testing.T) {
 		t.Fatalf("未配置导出不应返回提示: %q", msg)
 	}
 	// 不该在库里留下任何导出状态，否则前端会显示一条莫名其妙的记录
-	if got := WafSslConfigServiceApp.GetDetailInner(id); got.ExportStatus != "" {
+	if got := WafSslConfigServiceApp.GetDetailInner(context.Background(), id); got.ExportStatus != "" {
 		t.Fatalf("未配置导出不该写状态: %q", got.ExportStatus)
 	}
 }
@@ -131,7 +132,7 @@ func TestExport_成功落盘且内容与库内一致(t *testing.T) {
 
 	id, certPEM, keyPEM := addSslConfigForExport(t, "ok.example.com", certFile, keyFile)
 	// AddApi 已经不导出，导出由调用方触发
-	msg, err := WafSslConfigServiceApp.ExportById(id)
+	msg, err := WafSslConfigServiceApp.ExportById(context.Background(), id)
 	if err != nil {
 		t.Fatalf("导出失败: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestExport_成功落盘且内容与库内一致(t *testing.T) {
 	}
 
 	// 状态要回写，前端才能看到"上次导出成功没有"
-	got := WafSslConfigServiceApp.GetDetailInner(id)
+	got := WafSslConfigServiceApp.GetDetailInner(context.Background(), id)
 	if !strings.Contains(got.ExportStatus, "导出成功") {
 		t.Fatalf("导出状态未回写: %q", got.ExportStatus)
 	}
@@ -162,17 +163,17 @@ func TestExport_续期换证后文件跟着更新(t *testing.T) {
 	keyFile := filepath.Join(dir, "a.key")
 
 	id, _, _ := addSslConfigForExport(t, "renew.example.com", certFile, keyFile)
-	if _, err := WafSslConfigServiceApp.ExportById(id); err != nil {
+	if _, err := WafSslConfigServiceApp.ExportById(context.Background(), id); err != nil {
 		t.Fatalf("首次导出失败: %v", err)
 	}
 
 	// 模拟续期：证书夹内容被换成新证书（ACME 路径走的就是 ModifyInner）
 	newCert, newKey := genExportTestCert(t, "renew.example.com")
-	cfg := WafSslConfigServiceApp.GetDetailInner(id)
+	cfg := WafSslConfigServiceApp.GetDetailInner(context.Background(), id)
 	if err := cfg.FillByCertAndKey(newCert, newKey); err != nil {
 		t.Fatalf("填充新证书失败: %v", err)
 	}
-	if err := WafSslConfigServiceApp.ModifyInner(cfg); err != nil {
+	if err := WafSslConfigServiceApp.ModifyInner(context.Background(), cfg); err != nil {
 		t.Fatalf("更新证书夹失败: %v", err)
 	}
 	// ModifyInner 的 beanMap 不含导出列，导出配置必须还在（否则续期后就再也不导出了）
@@ -184,7 +185,7 @@ func TestExport_续期换证后文件跟着更新(t *testing.T) {
 		t.Fatalf("更新证书内容后导出配置丢了: %+v", afterModify)
 	}
 
-	if _, err := WafSslConfigServiceApp.ExportById(id); err != nil {
+	if _, err := WafSslConfigServiceApp.ExportById(context.Background(), id); err != nil {
 		t.Fatalf("续期后导出失败: %v", err)
 	}
 	gotCert, _ := os.ReadFile(certFile)
@@ -218,12 +219,12 @@ func TestExport_坏路径只报错不写文件(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			// 证书里的域名只能是 ASCII，所以用序号而不是中文用例名
 			id, _, _ := addSslConfigForExport(t, fmt.Sprintf("bad%d.example.com", i), c.exportCert, c.exportKey)
-			msg, err := WafSslConfigServiceApp.ExportById(id)
+			msg, err := WafSslConfigServiceApp.ExportById(context.Background(), id)
 			if err == nil {
 				t.Fatalf("坏路径应报错，实际返回 msg=%q", msg)
 			}
 			// 失败原因要落到状态列，用户在页面上能看见
-			got := WafSslConfigServiceApp.GetDetailInner(id)
+			got := WafSslConfigServiceApp.GetDetailInner(context.Background(), id)
 			if !strings.Contains(got.ExportStatus, "失败") {
 				t.Fatalf("失败原因未回写状态: %q", got.ExportStatus)
 			}
@@ -247,10 +248,10 @@ func TestExport_目录不可写时报错且不影响库内证书(t *testing.T) {
 	id, certPEM, _ := addSslConfigForExport(t, "denied.example.com",
 		filepath.Join(blocker, "sub", "a.crt"), filepath.Join(blocker, "sub", "a.key"))
 
-	if _, err := WafSslConfigServiceApp.ExportById(id); err == nil {
+	if _, err := WafSslConfigServiceApp.ExportById(context.Background(), id); err == nil {
 		t.Fatal("目录建不出来时应报错")
 	}
-	got := WafSslConfigServiceApp.GetDetailInner(id)
+	got := WafSslConfigServiceApp.GetDetailInner(context.Background(), id)
 	if got.CertContent != certPEM {
 		t.Fatal("导出失败不应影响库内证书内容")
 	}
@@ -270,7 +271,7 @@ func TestExport_不能覆盖自己的自动加载路径(t *testing.T) {
 	}
 
 	certPEM, keyPEM := genExportTestCert(t, "selfload.example.com")
-	id, err := WafSslConfigServiceApp.AddApi(request.SslConfigAddReq{
+	id, err := WafSslConfigServiceApp.AddApi(context.Background(), request.SslConfigAddReq{
 		CertContent: certPEM, KeyContent: keyPEM,
 		CertPath: loadCert, KeyPath: loadKey,
 		ExportCertPath: loadCert, ExportKeyPath: loadKey,
@@ -279,7 +280,7 @@ func TestExport_不能覆盖自己的自动加载路径(t *testing.T) {
 		t.Fatalf("新增失败: %v", err)
 	}
 
-	if _, err = WafSslConfigServiceApp.ExportById(id); err == nil {
+	if _, err = WafSslConfigServiceApp.ExportById(context.Background(), id); err == nil {
 		t.Fatal("导出路径等于自动加载路径时应拒绝")
 	}
 	got, _ := os.ReadFile(loadCert)
@@ -295,14 +296,14 @@ func TestExport_不能抢占其它证书夹的路径(t *testing.T) {
 	occupiedKey := filepath.Join(dir, "shared.key")
 
 	firstId, _, _ := addSslConfigForExport(t, "first.example.com", occupied, occupiedKey)
-	if _, err := WafSslConfigServiceApp.ExportById(firstId); err != nil {
+	if _, err := WafSslConfigServiceApp.ExportById(context.Background(), firstId); err != nil {
 		t.Fatalf("第一个证书夹导出失败: %v", err)
 	}
 	firstContent, _ := os.ReadFile(occupied)
 
 	// 第二个证书夹填了同样的导出路径
 	secondId, _, _ := addSslConfigForExport(t, "second.example.com", occupied, occupiedKey)
-	if _, err := WafSslConfigServiceApp.ExportById(secondId); err == nil {
+	if _, err := WafSslConfigServiceApp.ExportById(context.Background(), secondId); err == nil {
 		t.Fatal("和其它证书夹导出路径撞车时应拒绝")
 	}
 	afterContent, _ := os.ReadFile(occupied)
@@ -318,11 +319,11 @@ func TestExport_备份条目不继承导出配置(t *testing.T) {
 	keyFile := filepath.Join(dir, "a.key")
 
 	id, _, _ := addSslConfigForExport(t, "backup.example.com", certFile, keyFile)
-	origin := WafSslConfigServiceApp.GetDetailInner(id)
+	origin := WafSslConfigServiceApp.GetDetailInner(context.Background(), id)
 
 	// 续期时会先把旧证书备份一份，备份条目不能带着导出路径，
 	// 否则以后编辑这条备份就会把旧证书写回去，覆盖掉新证书
-	WafSslConfigServiceApp.CreateNewIdInner(origin)
+	WafSslConfigServiceApp.CreateNewIdInner(context.Background(), origin)
 
 	var all []model.SslConfig
 	if err := global.GWAF_LOCAL_DB.Find(&all).Error; err != nil {
@@ -352,7 +353,7 @@ func TestExport_证书内容为空时不写空文件(t *testing.T) {
 		t.Fatalf("造数据失败: %v", err)
 	}
 
-	if _, err := WafSslConfigServiceApp.ExportById(cfg.Id); err == nil {
+	if _, err := WafSslConfigServiceApp.ExportById(context.Background(), cfg.Id); err == nil {
 		t.Fatal("证书内容为空时应报错")
 	}
 	if _, err := os.Stat(certFile); !os.IsNotExist(err) {
@@ -362,10 +363,10 @@ func TestExport_证书内容为空时不写空文件(t *testing.T) {
 
 func TestExport_证书夹不存在时报错不panic(t *testing.T) {
 	setupSslExportTestDB(t)
-	if _, err := WafSslConfigServiceApp.ExportById("not-exist-id"); err == nil {
+	if _, err := WafSslConfigServiceApp.ExportById(context.Background(), "not-exist-id"); err == nil {
 		t.Fatal("证书夹不存在时应报错")
 	}
-	if _, err := WafSslConfigServiceApp.ExportById(""); err == nil {
+	if _, err := WafSslConfigServiceApp.ExportById(context.Background(), ""); err == nil {
 		t.Fatal("ID为空时应报错")
 	}
 }
@@ -380,25 +381,25 @@ func TestExport_编辑接口不传导出字段时保持原值(t *testing.T) {
 
 	// 老前端不认识 export_* 字段，传 nil，此时不能把用户已配好的导出路径清空
 	newCert, newKey := genExportTestCert(t, "keep2.example.com")
-	if err := WafSslConfigServiceApp.ModifyApi(request.SslConfigEditReq{
+	if err := WafSslConfigServiceApp.ModifyApi(context.Background(), request.SslConfigEditReq{
 		Id: id, CertContent: newCert, KeyContent: newKey,
 	}); err != nil {
 		t.Fatalf("编辑失败: %v", err)
 	}
-	got := WafSslConfigServiceApp.GetDetailInner(id)
+	got := WafSslConfigServiceApp.GetDetailInner(context.Background(), id)
 	if got.ExportCertPath != certFile || got.ExportKeyPath != keyFile {
 		t.Fatalf("旧前端编辑后导出配置被清空了: %+v", got)
 	}
 
 	// 显式传空串则是用户主动关闭导出
 	empty := ""
-	if err := WafSslConfigServiceApp.ModifyApi(request.SslConfigEditReq{
+	if err := WafSslConfigServiceApp.ModifyApi(context.Background(), request.SslConfigEditReq{
 		Id: id, CertContent: newCert, KeyContent: newKey,
 		ExportCertPath: &empty, ExportKeyPath: &empty,
 	}); err != nil {
 		t.Fatalf("编辑失败: %v", err)
 	}
-	got = WafSslConfigServiceApp.GetDetailInner(id)
+	got = WafSslConfigServiceApp.GetDetailInner(context.Background(), id)
 	if got.ExportCertPath != "" || got.ExportKeyPath != "" {
 		t.Fatalf("显式传空串应关闭导出: %+v", got)
 	}

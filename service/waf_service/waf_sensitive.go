@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"time"
 )
@@ -15,7 +16,7 @@ type WafSensitiveService struct{}
 
 var WafSensitiveServiceApp = new(WafSensitiveService)
 
-func (receiver *WafSensitiveService) AddApi(req request.WafSensitiveAddReq) error {
+func (receiver *WafSensitiveService) AddApi(ctx context.Context, req request.WafSensitiveAddReq) error {
 	var bean = &model.Sensitive{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -29,17 +30,20 @@ func (receiver *WafSensitiveService) AddApi(req request.WafSensitiveAddReq) erro
 		Content:        req.Content,
 		Remarks:        req.Remarks,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Create(bean)
 	return nil
 }
 
-func (receiver *WafSensitiveService) CheckIsExistApi(req request.WafSensitiveAddReq) error {
-	return global.GWAF_LOCAL_DB.First(&model.Sensitive{}, "content= ?",
+func (receiver *WafSensitiveService) CheckIsExistApi(ctx context.Context, req request.WafSensitiveAddReq) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	return db.First(&model.Sensitive{}, "content= ?",
 		req.Content).Error
 }
-func (receiver *WafSensitiveService) ModifyApi(req request.WafSensitiveEditReq) error {
+func (receiver *WafSensitiveService) ModifyApi(ctx context.Context, req request.WafSensitiveEditReq) error {
 	var bean model.Sensitive
-	global.GWAF_LOCAL_DB.Where("and content= ?",
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("and content= ?",
 		req.Content).Find(&bean)
 	if bean.Id != "" && bean.Content != req.Content {
 		return errors.New("当前敏感词已经存在")
@@ -51,21 +55,23 @@ func (receiver *WafSensitiveService) ModifyApi(req request.WafSensitiveEditReq) 
 		"Remarks":        req.Remarks,
 		"UPDATE_TIME":    customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.Sensitive{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	err := db.Model(model.Sensitive{}).Where("id = ?", req.Id).Updates(beanMap).Error
 
 	return err
 }
-func (receiver *WafSensitiveService) GetDetailApi(req request.WafSensitiveDetailReq) model.Sensitive {
+func (receiver *WafSensitiveService) GetDetailApi(ctx context.Context, req request.WafSensitiveDetailReq) model.Sensitive {
 	var bean model.Sensitive
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafSensitiveService) GetDetailByIdApi(id string) model.Sensitive {
+func (receiver *WafSensitiveService) GetDetailByIdApi(ctx context.Context, id string) model.Sensitive {
 	var bean model.Sensitive
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafSensitiveService) GetListApi(req request.WafSensitiveSearchReq) ([]model.Sensitive, int64, error) {
+func (receiver *WafSensitiveService) GetListApi(ctx context.Context, req request.WafSensitiveSearchReq) ([]model.Sensitive, int64, error) {
 	var list []model.Sensitive
 	var total int64 = 0
 	/*where条件*/
@@ -93,30 +99,33 @@ func (receiver *WafSensitiveService) GetListApi(req request.WafSensitiveSearchRe
 	if len(req.Remarks) > 0 {
 		whereValues = append(whereValues, "%"+req.Remarks+"%")
 	}
-	global.GWAF_LOCAL_DB.Model(&model.Sensitive{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.Sensitive{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.Sensitive{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.Sensitive{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafSensitiveService) DelApi(req request.WafSensitiveDelReq) error {
+func (receiver *WafSensitiveService) DelApi(ctx context.Context, req request.WafSensitiveDelReq) error {
 	var bean model.Sensitive
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.Sensitive{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.Sensitive{}).Error
 	return err
 }
 
 // BatchDelApi 批量删除指定ID的敏感词
-func (receiver *WafSensitiveService) BatchDelApi(req request.WafSensitiveBatchDelReq) error {
+func (receiver *WafSensitiveService) BatchDelApi(ctx context.Context, req request.WafSensitiveBatchDelReq) error {
 	if len(req.Ids) == 0 {
 		return errors.New("删除ID列表不能为空")
 	}
 
 	// 先检查所有ID是否存在
 	var count int64
-	err := global.GWAF_LOCAL_DB.Model(&model.Sensitive{}).Where("id IN ?", req.Ids).Count(&count).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.Sensitive{}).Where("id IN ?", req.Ids).Count(&count).Error
 	if err != nil {
 		return err
 	}
@@ -126,14 +135,15 @@ func (receiver *WafSensitiveService) BatchDelApi(req request.WafSensitiveBatchDe
 	}
 
 	// 执行批量删除
-	err = global.GWAF_LOCAL_DB.Where("id IN ?", req.Ids).Delete(&model.Sensitive{}).Error
+	err = db.Where("id IN ?", req.Ids).Delete(&model.Sensitive{}).Error
 	return err
 }
 
 // DelAllApi 删除所有敏感词
-func (receiver *WafSensitiveService) DelAllApi(req request.WafSensitiveDelAllReq) error {
+func (receiver *WafSensitiveService) DelAllApi(ctx context.Context, req request.WafSensitiveDelAllReq) error {
 	// 构建查询条件
-	query := global.GWAF_LOCAL_DB.Model(&model.Sensitive{}).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	query := db.Model(&model.Sensitive{}).
 		Where("user_code = ? AND tenant_id = ?", global.GWAF_USER_CODE, global.GWAF_TENANT_ID)
 
 	// 如果指定了检测方向，添加过滤条件

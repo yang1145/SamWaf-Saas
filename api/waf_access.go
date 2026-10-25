@@ -239,7 +239,7 @@ type WafAccessConfigApi struct {
 // @Security     ApiKeyAuth
 // @Router       /wafhost/accessconfig/detail [get]
 func (w *WafAccessConfigApi) GetDetailApi(c *gin.Context) {
-	response.OkWithDetailed(wafAccessConfigService.GetDetailApi(), "获取成功", c)
+	response.OkWithDetailed(wafAccessConfigService.GetDetailApi(c.Request.Context()), "获取成功", c)
 }
 
 // GetCenterHostOptionsApi 获取可用作认证中心的站点地址
@@ -251,7 +251,7 @@ func (w *WafAccessConfigApi) GetDetailApi(c *gin.Context) {
 // @Security     ApiKeyAuth
 // @Router       /wafhost/accessconfig/hostoptions [get]
 func (w *WafAccessConfigApi) GetCenterHostOptionsApi(c *gin.Context) {
-	response.OkWithDetailed(wafAccessConfigService.GetCenterHostOptionsApi(), "获取成功", c)
+	response.OkWithDetailed(wafAccessConfigService.GetCenterHostOptionsApi(c.Request.Context()), "获取成功", c)
 }
 
 // SaveApi 保存统一访问认证配置
@@ -270,7 +270,7 @@ func (w *WafAccessConfigApi) SaveApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	if err := wafAccessConfigService.SaveApi(req); err != nil {
+	if err := wafAccessConfigService.SaveApi(c.Request.Context(), req); err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
@@ -286,7 +286,7 @@ func (w *WafAccessConfigApi) SaveApi(c *gin.Context) {
 // @Security     ApiKeyAuth
 // @Router       /wafhost/accessconfig/regenerate_secret [post]
 func (w *WafAccessConfigApi) RegenerateSecretApi(c *gin.Context) {
-	if err := wafAccessConfigService.RegenerateSecretApi(); err != nil {
+	if err := wafAccessConfigService.RegenerateSecretApi(c.Request.Context()); err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}

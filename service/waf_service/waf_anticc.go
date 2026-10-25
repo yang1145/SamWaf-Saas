@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"time"
 )
@@ -18,9 +19,10 @@ type WafAntiCCService struct{}
 
 var WafAntiCCServiceApp = new(WafAntiCCService)
 
-func (receiver *WafAntiCCService) AddApi(req request.WafAntiCCAddReq) error {
+func (receiver *WafAntiCCService) AddApi(ctx context.Context, req request.WafAntiCCAddReq) error {
 	var existingRecord model.AntiCC
-	result := global.GWAF_LOCAL_DB.Where("host_code = ?", req.HostCode).First(&existingRecord)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	result := db.Where("host_code = ?", req.HostCode).First(&existingRecord)
 	if result.Error == nil {
 		// 记录已存在，返回错误
 		return errors.New("当前网站已存在CC防护配置")
@@ -44,18 +46,20 @@ func (receiver *WafAntiCCService) AddApi(req request.WafAntiCCAddReq) error {
 		SkipGlobalCC:  req.SkipGlobalCC,
 		RuleContent:   req.RuleContent,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	db.Create(bean)
 	return nil
 }
 
-func (receiver *WafAntiCCService) CheckIsExistApi(req request.WafAntiCCAddReq) error {
+func (receiver *WafAntiCCService) CheckIsExistApi(ctx context.Context, req request.WafAntiCCAddReq) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	// 仅按 host_code 判断是否已存在（与 AddApi 一致）；tenant/user 由 before_query 自动追加。
 	// 注意：占位符数必须与参数数一致，多传参数会整体顺移导致 "expected N arguments, got N+1"。
-	return global.GWAF_LOCAL_DB.First(&model.AntiCC{}, "host_code = ?", req.HostCode).Error
+	return db.First(&model.AntiCC{}, "host_code = ?", req.HostCode).Error
 }
-func (receiver *WafAntiCCService) ModifyApi(req request.WafAntiCCEditReq) error {
+func (receiver *WafAntiCCService) ModifyApi(ctx context.Context, req request.WafAntiCCEditReq) error {
 	var ipWhite model.AntiCC
-	global.GWAF_LOCAL_DB.Where("host_code = ?", req.HostCode).Find(&ipWhite)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("host_code = ?", req.HostCode).Find(&ipWhite)
 	if ipWhite.Id != "" && ipWhite.Url != req.Url {
 		return errors.New("当前网站已经存在")
 	}
@@ -72,21 +76,23 @@ func (receiver *WafAntiCCService) ModifyApi(req request.WafAntiCCEditReq) error 
 		"SkipGlobalCC":  req.SkipGlobalCC,
 		"RuleContent":   req.RuleContent,
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.AntiCC{}).Where("id = ?", req.Id).Updates(ipWhiteMap).Error
+	err := db.Model(model.AntiCC{}).Where("id = ?", req.Id).Updates(ipWhiteMap).Error
 
 	return err
 }
-func (receiver *WafAntiCCService) GetDetailApi(req request.WafAntiCCDetailReq) model.AntiCC {
+func (receiver *WafAntiCCService) GetDetailApi(ctx context.Context, req request.WafAntiCCDetailReq) model.AntiCC {
 	var bean model.AntiCC
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafAntiCCService) GetDetailByIdApi(id string) model.AntiCC {
+func (receiver *WafAntiCCService) GetDetailByIdApi(ctx context.Context, id string) model.AntiCC {
 	var bean model.AntiCC
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafAntiCCService) GetListApi(req request.WafAntiCCSearchReq) ([]model.AntiCC, int64, error) {
+func (receiver *WafAntiCCService) GetListApi(ctx context.Context, req request.WafAntiCCSearchReq) ([]model.AntiCC, int64, error) {
 	var list []model.AntiCC
 	var total int64 = 0
 
@@ -106,17 +112,19 @@ func (receiver *WafAntiCCService) GetListApi(req request.WafAntiCCSearchReq) ([]
 		whereValues = append(whereValues, req.HostCode)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.AntiCC{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.AntiCC{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.AntiCC{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.AntiCC{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafAntiCCService) DelApi(req request.WafAntiCCDelReq) error {
+func (receiver *WafAntiCCService) DelApi(ctx context.Context, req request.WafAntiCCDelReq) error {
 	var ipWhite model.AntiCC
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&ipWhite).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&ipWhite).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.AntiCC{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.AntiCC{}).Error
 	return err
 }

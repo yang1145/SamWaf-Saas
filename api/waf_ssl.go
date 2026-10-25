@@ -10,6 +10,7 @@ import (
 	"SamWaf/model/spec"
 	"SamWaf/service/waf_service"
 	"SamWaf/utils"
+	"context"
 	"errors"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -31,7 +32,7 @@ func (s *WafSslConfigApi) AddSslConfigApi(c *gin.Context) {
 	var req request.SslConfigAddReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		sslId, err := wafSslConfigService.AddApi(req)
+		sslId, err := wafSslConfigService.AddApi(c.Request.Context(), req)
 		if err == nil {
 			//证书已保存成功，导出只是附加动作：失败只提示，不改变保存结果
 			response.OkWithMessage("添加成功"+s.exportTip(c, sslId), c)
@@ -58,7 +59,7 @@ func (s *WafSslConfigApi) GetSslConfigDetailApi(c *gin.Context) {
 	var req request.SslConfigDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafSslConfigService.GetDetailApi(req)
+		bean := wafSslConfigService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -79,7 +80,7 @@ func (s *WafSslConfigApi) GetSslConfigListApi(c *gin.Context) {
 	var req request.SslConfigSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		sslList, total, _ := wafSslConfigService.GetListApi(req)
+		sslList, total, _ := wafSslConfigService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      sslList,
 			Total:     total,
@@ -105,7 +106,7 @@ func (s *WafSslConfigApi) DelSslConfigApi(c *gin.Context) {
 	var req request.SslConfigDeleteReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafSslConfigService.DelApi(req)
+		err = wafSslConfigService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -132,12 +133,12 @@ func (s *WafSslConfigApi) ModifySslConfigApi(c *gin.Context) {
 	var req request.SslConfigEditReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		oldSslBean := wafSslConfigService.GetDetailInner(req.Id)
-		err = wafSslConfigService.ModifyApi(req)
+		oldSslBean := wafSslConfigService.GetDetailInner(c.Request.Context(), req.Id)
+		err = wafSslConfigService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误", c)
 		} else {
-			newSslBean := wafSslConfigService.GetDetailInner(req.Id)
+			newSslBean := wafSslConfigService.GetDetailInner(c.Request.Context(), req.Id)
 			if oldSslBean.SerialNo != newSslBean.SerialNo {
 				s.NotifySslUpdate(oldSslBean, newSslBean)
 			}
@@ -156,7 +157,7 @@ func (s *WafSslConfigApi) exportTip(c *gin.Context, sslId string) string {
 	if sslId == "" {
 		return ""
 	}
-	msg, err := wafSslConfigService.ExportById(sslId)
+	msg, err := wafSslConfigService.ExportById(c.Request.Context(), sslId)
 	// 未配置导出：msg 与 err 都空 —— 不是敏感操作，不记审计
 	if msg == "" && err == nil {
 		return ""
@@ -192,9 +193,9 @@ func (s *WafSslConfigApi) NotifySslUpdate(oldConfig model.SslConfig, newConfig m
 	innerLogName := "NotifySslUpdate"
 	//若管理端证书绑定了该证书夹条目，顺带刷新管理端证书
 	waf_service.RefreshManagerCertBySslConfig(newConfig.Id, newConfig.CertContent, newConfig.KeyContent)
-	for _, hosts := range wafHostService.GetHostBySSLConfigId(oldConfig.Id) {
+	for _, hosts := range wafHostService.GetHostBySSLConfigId(context.Background(), oldConfig.Id) {
 		//1.更新主机信息 2.发送主机通知
-		err := wafHostService.UpdateSSLInfo(newConfig.CertContent, newConfig.KeyContent, hosts.Code)
+		err := wafHostService.UpdateSSLInfo(context.Background(), newConfig.CertContent, newConfig.KeyContent, hosts.Code)
 		if err != nil {
 			zlog.Error(innerLogName, "ssl host update:", err.Error())
 			continue

@@ -7,6 +7,7 @@ import (
 	"SamWaf/model/common/response"
 	"SamWaf/model/request"
 	"SamWaf/model/spec"
+	"context"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -80,11 +81,11 @@ func (w *WafBlockingPageApi) AddApi(c *gin.Context) {
 			}
 		}
 		req.ContentPriority = normalizeContentPriority(req.ContentPriority)
-		cnt := wafBlockingPageService.CheckIsExistApi(req)
+		cnt := wafBlockingPageService.CheckIsExistApi(c.Request.Context(), req)
 		if cnt == 0 {
-			err = wafBlockingPageService.AddApi(req)
+			err = wafBlockingPageService.AddApi(c.Request.Context(), req)
 			if err == nil {
-				w.NotifyWaf(req.HostCode)
+				w.NotifyWaf(c.Request.Context(), req.HostCode)
 				response.OkWithMessage("添加成功", c)
 			} else {
 				response.FailWithMessage("添加失败", c)
@@ -104,7 +105,7 @@ func (w *WafBlockingPageApi) GetDetailApi(c *gin.Context) {
 	var req request.WafBlockingPageDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafBlockingPageService.GetDetailApi(req)
+		bean := wafBlockingPageService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -119,7 +120,7 @@ func (w *WafBlockingPageApi) GetListApi(c *gin.Context) {
 			response.FailWithMessage("分页参数超出范围", c)
 			return
 		}
-		BlockingPage, total, err := wafBlockingPageService.GetListApi(req)
+		BlockingPage, total, err := wafBlockingPageService.GetListApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("获取失败", c)
 			return
@@ -139,18 +140,18 @@ func (w *WafBlockingPageApi) DelApi(c *gin.Context) {
 	var req request.WafBlockingPageDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafBlockingPageService.GetDetailByIdApi(req.Id)
+		bean := wafBlockingPageService.GetDetailByIdApi(c.Request.Context(), req.Id)
 		if bean.Id == "" {
 			response.FailWithMessage("未找到信息", c)
 			return
 		}
-		err = wafBlockingPageService.DelApi(req)
+		err = wafBlockingPageService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
 			response.FailWithMessage("发生错误", c)
 		} else {
-			w.NotifyWaf(bean.HostCode)
+			w.NotifyWaf(c.Request.Context(), bean.HostCode)
 			response.OkWithMessage("删除成功", c)
 		}
 	} else {
@@ -173,12 +174,12 @@ func (w *WafBlockingPageApi) ModifyApi(c *gin.Context) {
 			}
 		}
 		req.ContentPriority = normalizeContentPriority(req.ContentPriority)
-		bean := wafBlockingPageService.GetDetailByIdApi(req.Id)
-		err = wafBlockingPageService.ModifyApi(req)
+		bean := wafBlockingPageService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafBlockingPageService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误"+err.Error(), c)
 		} else {
-			notifyWafHostChanged(w.NotifyWaf, bean.HostCode, req.HostCode)
+			notifyWafHostChanged(func(hostCode string) { w.NotifyWaf(c.Request.Context(), hostCode) }, bean.HostCode, req.HostCode)
 			response.OkWithMessage("编辑成功", c)
 		}
 	} else {
@@ -191,9 +192,9 @@ func (w *WafBlockingPageApi) GetUnmatchedBuiltinApi(c *gin.Context) {
 	response.OkWithDetailed(global.GLOBAL_DEFAULT_NOT_MATCH_WEBSITE, "获取成功", c)
 }
 
-func (w *WafBlockingPageApi) NotifyWaf(hostCode string) {
+func (w *WafBlockingPageApi) NotifyWaf(ctx context.Context, hostCode string) {
 	var blockingPageList []model.BlockingPage
-	global.GWAF_LOCAL_DB.Where("host_code=? ", hostCode).Order("update_time ASC, id ASC").Find(&blockingPageList)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code=? ", hostCode).Order("update_time ASC, id ASC").Find(&blockingPageList)
 	blockingPageMap := map[string]model.BlockingPage{}
 	if len(blockingPageList) > 0 {
 		for i := 0; i < len(blockingPageList); i++ {

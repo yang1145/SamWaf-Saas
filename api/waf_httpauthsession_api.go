@@ -29,7 +29,7 @@ func (w *WafHttpAuthSessionApi) GetListApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	list, total, err := wafHttpAuthSessionService.GetListApi(req)
+	list, total, err := wafHttpAuthSessionService.GetListApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
@@ -57,7 +57,7 @@ func (w *WafHttpAuthSessionApi) KickApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	if err := wafHttpAuthSessionService.KickApi(req); err != nil {
+	if err := wafHttpAuthSessionService.KickApi(c.Request.Context(), req); err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
@@ -79,7 +79,7 @@ func (w *WafHttpAuthSessionApi) KickByUserApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	cnt, err := wafHttpAuthSessionService.KickByUserApi(req)
+	cnt, err := wafHttpAuthSessionService.KickByUserApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
@@ -103,7 +103,7 @@ func (w *WafHttpAuthSessionApi) KickAllApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	cnt, err := wafHttpAuthSessionService.KickAllApi(req)
+	cnt, err := wafHttpAuthSessionService.KickAllApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return

@@ -11,6 +11,7 @@ import (
 	"SamWaf/wafenginecore/ipset"
 	"SamWaf/wafsec"
 	"SamWaf/waftask/threatip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -53,7 +54,7 @@ type CDNProviderView struct {
 
 // fetchProviderCIDRs 按厂商拉取方式取回源段 CIDR 列表，返回(列表, 来源标记, 错误)。
 // FetchNone 返回 (nil, "", nil)。认证型从库内解密凭证。
-func (r *WafCDNIPService) fetchProviderCIDRs(code string) ([]string, string, error) {
+func (r *WafCDNIPService) fetchProviderCIDRs(ctx context.Context, code string) ([]string, string, error) {
 	p, ok := clientip.Providers[code]
 	if !ok {
 		return nil, "", fmt.Errorf("未知 CDN 厂商: %s", code)
@@ -85,14 +86,14 @@ func (r *WafCDNIPService) fetchProviderCIDRs(code string) ([]string, string, err
 		ips, err := parseAWSCloudFrontJSON(raw)
 		return ips, model.CDNSourceAutoPublic, err
 	case clientip.FetchTencent:
-		row := r.getRow(code)
+		row := r.getRow(ctx, code)
 		if row == nil || strings.TrimSpace(row.SecretId) == "" {
 			return nil, "", fmt.Errorf("腾讯云凭证未配置，无法拉取 EdgeOne 回源段")
 		}
 		ips, err := fetchTencentEdgeOneCIDRs(decCred(row.SecretId), decCred(row.SecretKey), row.ExtraParam)
 		return ips, model.CDNSourceAuthAPI, err
 	case clientip.FetchAliyun:
-		row := r.getRow(code)
+		row := r.getRow(ctx, code)
 		if row == nil || strings.TrimSpace(row.SecretId) == "" {
 			return nil, "", fmt.Errorf("阿里云凭证未配置，无法拉取回源段")
 		}
@@ -104,10 +105,10 @@ func (r *WafCDNIPService) fetchProviderCIDRs(code string) ([]string, string, err
 }
 
 // RefreshProvider 拉取某厂商回源段 → 落中心库 → 发布内存匹配集。手动触发或定时到期时调用。
-func (r *WafCDNIPService) RefreshProvider(code string) error {
-	ips, source, err := r.fetchProviderCIDRs(code)
+func (r *WafCDNIPService) RefreshProvider(ctx context.Context, code string) error {
+	ips, source, err := r.fetchProviderCIDRs(ctx, code)
 	if err != nil {
-		r.markStatus(code, "拉取失败: "+err.Error(), -1)
+		r.markStatus(ctx, code, "拉取失败: "+err.Error(), -1)
 		return err
 	}
 	if ips == nil && source == "" {
@@ -115,36 +116,36 @@ func (r *WafCDNIPService) RefreshProvider(code string) error {
 	}
 	if len(ips) == 0 {
 		msg := "回源段为空，跳过发布(避免误将全部来源判为不可信)"
-		r.markStatus(code, msg, -1)
+		r.markStatus(ctx, code, msg, -1)
 		return fmt.Errorf("%s %s", code, msg)
 	}
-	if err := r.saveSnapshot(code, ips, source); err != nil {
-		r.markStatus(code, "落库失败: "+err.Error(), -1)
+	if err := r.saveSnapshot(ctx, code, ips, source); err != nil {
+		r.markStatus(ctx, code, "落库失败: "+err.Error(), -1)
 		return err
 	}
 	clientip.SetProviderRanges(code, ipset.BuildMatchSet(ips))
-	r.markStatus(code, fmt.Sprintf("ok(%d条)", len(ips)), len(ips))
+	r.markStatus(ctx, code, fmt.Sprintf("ok(%d条)", len(ips)), len(ips))
 	zlog.Info("CDN 回源段已刷新", "provider", code, "count", len(ips), "source", source)
 	return nil
 }
 
 // GetProviderCIDRs 返回某厂商回源段 CIDR 列表并顺带刷新缓存(供管理端"快捷填充"旧入口保留)。
-func (r *WafCDNIPService) GetProviderCIDRs(code string) ([]string, error) {
-	ips, source, err := r.fetchProviderCIDRs(code)
+func (r *WafCDNIPService) GetProviderCIDRs(ctx context.Context, code string) ([]string, error) {
+	ips, source, err := r.fetchProviderCIDRs(ctx, code)
 	if err != nil {
 		return nil, err
 	}
 	if len(ips) > 0 {
-		_ = r.saveSnapshot(code, ips, source)
+		_ = r.saveSnapshot(ctx, code, ips, source)
 		clientip.SetProviderRanges(code, ipset.BuildMatchSet(ips))
 	}
 	return ips, nil
 }
 
 // RestoreAllOnStartup 进程启动重放：把库内已存的各厂商回源段解压重新发布到内存匹配集(不重新对外拉取)。
-func (r *WafCDNIPService) RestoreAllOnStartup() {
+func (r *WafCDNIPService) RestoreAllOnStartup(ctx context.Context) {
 	var rows []model.CDNProvider
-	global.GWAF_LOCAL_DB.Where("count > 0").Find(&rows)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("count > 0").Find(&rows)
 	for _, row := range rows {
 		ips, err := threatip.DecodeSnapshot(row.Payload)
 		if err != nil || len(ips) == 0 {
@@ -158,16 +159,16 @@ func (r *WafCDNIPService) RestoreAllOnStartup() {
 }
 
 // SyncAllDue 定时任务：遍历已开启自动拉取且到期的厂商，逐个刷新。
-func (r *WafCDNIPService) SyncAllDue() {
+func (r *WafCDNIPService) SyncAllDue(ctx context.Context) {
 	var rows []model.CDNProvider
-	global.GWAF_LOCAL_DB.Where("auto_fetch = 1").Find(&rows)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("auto_fetch = 1").Find(&rows)
 	now := time.Now().Unix()
 	for _, row := range rows {
 		interval := int64(defaultInt(row.IntervalHour, 24)) * 3600
 		if row.LastSyncAt > 0 && now-row.LastSyncAt < interval {
 			continue // 未到期
 		}
-		if err := r.RefreshProvider(row.Provider); err != nil {
+		if err := r.RefreshProvider(ctx, row.Provider); err != nil {
 			zlog.Warn("CDN 回源段定时刷新失败", "provider", row.Provider, "error", err.Error())
 		}
 	}
@@ -175,14 +176,14 @@ func (r *WafCDNIPService) SyncAllDue() {
 
 // RefreshProvidersInUse 兼容旧入口：刷新"被引用且已开启自动拉取"的厂商(启动流程调用)。
 // 现在仅刷新 AutoFetch=1 的厂商，避免默认对外拉取。
-func (r *WafCDNIPService) RefreshProvidersInUse() {
+func (r *WafCDNIPService) RefreshProvidersInUse(ctx context.Context) {
 	var rows []model.CDNProvider
-	global.GWAF_LOCAL_DB.Where("auto_fetch = 1").Find(&rows)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("auto_fetch = 1").Find(&rows)
 	for _, row := range rows {
-		if !r.providerInUse(row.Provider) {
+		if !r.providerInUse(ctx, row.Provider) {
 			continue
 		}
-		if err := r.RefreshProvider(row.Provider); err != nil {
+		if err := r.RefreshProvider(ctx, row.Provider); err != nil {
 			zlog.Warn("刷新 CDN 回源段失败", "provider", row.Provider, "error", err.Error())
 		}
 	}
@@ -191,11 +192,11 @@ func (r *WafCDNIPService) RefreshProvidersInUse() {
 // ---------------- 配置(开关/周期/凭证) ----------------
 
 // SetAutoFetch 开/关某厂商自动拉取并可设周期。enable=1 且首次开启时立即拉取一次。
-func (r *WafCDNIPService) SetAutoFetch(code string, enable, intervalHour int) error {
+func (r *WafCDNIPService) SetAutoFetch(ctx context.Context, code string, enable, intervalHour int) error {
 	if _, ok := clientip.Providers[code]; !ok {
 		return fmt.Errorf("未知 CDN 厂商: %s", code)
 	}
-	row := r.ensureRow(code)
+	row := r.ensureRow(ctx, code)
 	updates := map[string]interface{}{
 		"AutoFetch":   enable,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
@@ -203,13 +204,13 @@ func (r *WafCDNIPService) SetAutoFetch(code string, enable, intervalHour int) er
 	if intervalHour > 0 {
 		updates["IntervalHour"] = intervalHour
 	}
-	if err := global.GWAF_LOCAL_DB.Model(&model.CDNProvider{}).Where("id = ?", row.Id).Updates(updates).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.CDNProvider{}).Where("id = ?", row.Id).Updates(updates).Error; err != nil {
 		return err
 	}
 	if enable == 1 {
 		// 首次开启立即拉取一次(认证型若无凭证会返回错误，前端展示状态)
 		go func() {
-			if err := r.RefreshProvider(code); err != nil {
+			if err := r.RefreshProvider(context.Background(), code); err != nil {
 				zlog.Warn("开启自动拉取后首次刷新失败", "provider", code, "error", err.Error())
 			}
 		}()
@@ -218,7 +219,7 @@ func (r *WafCDNIPService) SetAutoFetch(code string, enable, intervalHour int) er
 }
 
 // SetCredential 保存认证型厂商凭证(加密落库，绝不回显)。secretId/secretKey 为空则清空。
-func (r *WafCDNIPService) SetCredential(code, secretId, secretKey, extraParam string) error {
+func (r *WafCDNIPService) SetCredential(ctx context.Context, code, secretId, secretKey, extraParam string) error {
 	p, ok := clientip.Providers[code]
 	if !ok {
 		return fmt.Errorf("未知 CDN 厂商: %s", code)
@@ -226,7 +227,7 @@ func (r *WafCDNIPService) SetCredential(code, secretId, secretKey, extraParam st
 	if p.Tier != clientip.TierAuth {
 		return fmt.Errorf("%s 非认证型厂商，无需配置凭证", p.Name)
 	}
-	row := r.ensureRow(code)
+	row := r.ensureRow(ctx, code)
 	updates := map[string]interface{}{
 		"ExtraParam":  extraParam,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
@@ -238,16 +239,16 @@ func (r *WafCDNIPService) SetCredential(code, secretId, secretKey, extraParam st
 	if strings.TrimSpace(secretKey) != "" {
 		updates["SecretKey"] = encCred(secretKey)
 	}
-	return global.GWAF_LOCAL_DB.Model(&model.CDNProvider{}).Where("id = ?", row.Id).Updates(updates).Error
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.CDNProvider{}).Where("id = ?", row.Id).Updates(updates).Error
 }
 
 // ClearCredential 清空某厂商凭证
-func (r *WafCDNIPService) ClearCredential(code string) error {
-	row := r.getRow(code)
+func (r *WafCDNIPService) ClearCredential(ctx context.Context, code string) error {
+	row := r.getRow(ctx, code)
 	if row == nil {
 		return nil
 	}
-	return global.GWAF_LOCAL_DB.Model(&model.CDNProvider{}).Where("id = ?", row.Id).Updates(map[string]interface{}{
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.CDNProvider{}).Where("id = ?", row.Id).Updates(map[string]interface{}{
 		"SecretId":    "",
 		"SecretKey":   "",
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
@@ -257,10 +258,10 @@ func (r *WafCDNIPService) ClearCredential(code string) error {
 // ---------------- 查询(列表/详情/浏览) ----------------
 
 // GetProviderList 返回所有内置厂商的合并视图(元数据 + 运行态，脱敏)。
-func (r *WafCDNIPService) GetProviderList() []CDNProviderView {
+func (r *WafCDNIPService) GetProviderList(ctx context.Context) []CDNProviderView {
 	rows := map[string]model.CDNProvider{}
 	var list []model.CDNProvider
-	global.GWAF_LOCAL_DB.Find(&list)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Find(&list)
 	for _, row := range list {
 		rows[row.Provider] = row
 	}
@@ -279,7 +280,7 @@ func (r *WafCDNIPService) GetProviderList() []CDNProviderView {
 			Tier:           p.Tier,
 			FetchKind:      p.FetchKind,
 			NeedCredential: p.Tier == clientip.TierAuth,
-			InUse:          r.providerInUse(code),
+			InUse:          r.providerInUse(ctx, code),
 		}
 		if row, has := rows[code]; has {
 			v.AutoFetch = row.AutoFetch
@@ -297,8 +298,8 @@ func (r *WafCDNIPService) GetProviderList() []CDNProviderView {
 }
 
 // GetProviderInfo 返回单厂商视图(供 host 表单/管理端只读展示)。
-func (r *WafCDNIPService) GetProviderInfo(code string) *CDNProviderView {
-	for _, v := range r.GetProviderList() {
+func (r *WafCDNIPService) GetProviderInfo(ctx context.Context, code string) *CDNProviderView {
+	for _, v := range r.GetProviderList(ctx) {
 		if v.Provider == code {
 			vv := v
 			return &vv
@@ -308,8 +309,8 @@ func (r *WafCDNIPService) GetProviderInfo(code string) *CDNProviderView {
 }
 
 // GetProviderRanges 分页浏览某厂商回源段 CIDR(只读)。keyword 子串过滤。
-func (r *WafCDNIPService) GetProviderRanges(code, keyword string, pageIndex, pageSize int) ([]string, int64) {
-	row := r.getRow(code)
+func (r *WafCDNIPService) GetProviderRanges(ctx context.Context, code, keyword string, pageIndex, pageSize int) ([]string, int64) {
+	row := r.getRow(ctx, code)
 	if row == nil {
 		return []string{}, 0
 	}
@@ -344,17 +345,17 @@ func (r *WafCDNIPService) GetProviderRanges(code, keyword string, pageIndex, pag
 // ---------------- 内部辅助 ----------------
 
 // getRow 载入某厂商库行(无则 nil)
-func (r *WafCDNIPService) getRow(code string) *model.CDNProvider {
+func (r *WafCDNIPService) getRow(ctx context.Context, code string) *model.CDNProvider {
 	var row model.CDNProvider
-	if err := global.GWAF_LOCAL_DB.Where("provider = ?", code).First(&row).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("provider = ?", code).First(&row).Error; err != nil {
 		return nil
 	}
 	return &row
 }
 
 // ensureRow 取或建某厂商库行(建时 AutoFetch=0 默认关)
-func (r *WafCDNIPService) ensureRow(code string) *model.CDNProvider {
-	if row := r.getRow(code); row != nil {
+func (r *WafCDNIPService) ensureRow(ctx context.Context, code string) *model.CDNProvider {
+	if row := r.getRow(ctx, code); row != nil {
 		return row
 	}
 	row := &model.CDNProvider{
@@ -369,18 +370,18 @@ func (r *WafCDNIPService) ensureRow(code string) *model.CDNProvider {
 		AutoFetch:    0,
 		IntervalHour: 24,
 	}
-	global.GWAF_LOCAL_DB.Create(row)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(row)
 	return row
 }
 
 // saveSnapshot 持久化某厂商最新回源段快照(保留配置字段不动)
-func (r *WafCDNIPService) saveSnapshot(code string, ips []string, source string) error {
+func (r *WafCDNIPService) saveSnapshot(ctx context.Context, code string, ips []string, source string) error {
 	payload, sha, count, err := threatip.EncodeSnapshot(ips)
 	if err != nil {
 		return err
 	}
-	row := r.ensureRow(code)
-	return global.GWAF_LOCAL_DB.Model(&model.CDNProvider{}).Where("id = ?", row.Id).Updates(map[string]interface{}{
+	row := r.ensureRow(ctx, code)
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.CDNProvider{}).Where("id = ?", row.Id).Updates(map[string]interface{}{
 		"Count":       count,
 		"Payload":     payload,
 		"Sha256":      sha,
@@ -392,8 +393,8 @@ func (r *WafCDNIPService) saveSnapshot(code string, ips []string, source string)
 }
 
 // markStatus 更新某厂商拉取状态(count<0 表示只更状态不改条数)
-func (r *WafCDNIPService) markStatus(code, status string, count int) {
-	row := r.ensureRow(code)
+func (r *WafCDNIPService) markStatus(ctx context.Context, code, status string, count int) {
+	row := r.ensureRow(ctx, code)
 	updates := map[string]interface{}{
 		"LastStatus":  truncateStatus(status),
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
@@ -402,13 +403,13 @@ func (r *WafCDNIPService) markStatus(code, status string, count int) {
 		updates["Count"] = count
 		updates["LastSyncAt"] = time.Now().Unix()
 	}
-	if err := global.GWAF_LOCAL_DB.Model(&model.CDNProvider{}).Where("id = ?", row.Id).Updates(updates).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.CDNProvider{}).Where("id = ?", row.Id).Updates(updates).Error; err != nil {
 		zlog.Warn("CDN 厂商状态回写失败", "provider", code, "error", err.Error())
 	}
 }
 
 // providerInUse 判断厂商是否被站点(cdn_preset)或管理端引用
-func (r *WafCDNIPService) providerInUse(code string) bool {
+func (r *WafCDNIPService) providerInUse(ctx context.Context, code string) bool {
 	if code == "" {
 		return false
 	}
@@ -416,7 +417,7 @@ func (r *WafCDNIPService) providerInUse(code string) bool {
 		return true
 	}
 	var cnt int64
-	global.GWAF_LOCAL_DB.Model(&model.Hosts{}).
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Hosts{}).
 		Where("ip_source_mode = ? AND cdn_provider = ?", "cdn_preset", code).Count(&cnt)
 	return cnt > 0
 }

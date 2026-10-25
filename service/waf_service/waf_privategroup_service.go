@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"time"
 )
@@ -15,7 +16,7 @@ type WafPrivateGroupService struct{}
 
 var WafPrivateGroupServiceApp = new(WafPrivateGroupService)
 
-func (receiver *WafPrivateGroupService) AddApi(req request.WafPrivateGroupAddReq) error {
+func (receiver *WafPrivateGroupService) AddApi(ctx context.Context, req request.WafPrivateGroupAddReq) error {
 	var bean = &model.PrivateGroup{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -28,11 +29,11 @@ func (receiver *WafPrivateGroupService) AddApi(req request.WafPrivateGroupAddReq
 		PrivateGroupName:        req.PrivateGroupName,
 		PrivateGroupBelongCloud: req.PrivateGroupBelongCloud,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean)
 	return nil
 }
 
-func (receiver *WafPrivateGroupService) CheckIsExistApi(req request.WafPrivateGroupAddReq) int {
+func (receiver *WafPrivateGroupService) CheckIsExistApi(ctx context.Context, req request.WafPrivateGroupAddReq) int {
 	var total int64 = 0
 	/*where条件*/
 	var whereField = ""
@@ -68,11 +69,11 @@ func (receiver *WafPrivateGroupService) CheckIsExistApi(req request.WafPrivateGr
 		}
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.PrivateGroup{}).Where(whereField, whereValues...).Count(&total)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.PrivateGroup{}).Where(whereField, whereValues...).Count(&total)
 	return int(total)
 }
 
-func (receiver *WafPrivateGroupService) ModifyApi(req request.WafPrivateGroupEditReq) error {
+func (receiver *WafPrivateGroupService) ModifyApi(ctx context.Context, req request.WafPrivateGroupEditReq) error {
 	// 根据唯一字段生成查询条件（只有在UniFields不为空时才进行存在性检查）
 
 	var total int64 = 0
@@ -106,10 +107,11 @@ func (receiver *WafPrivateGroupService) ModifyApi(req request.WafPrivateGroupEdi
 		whereValues = append(whereValues, req.PrivateGroupBelongCloud)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.PrivateGroup{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.PrivateGroup{}).Where(whereField, whereValues...).Count(&total)
 	// 查询是否已存在记录
 	var bean model.PrivateGroup
-	global.GWAF_LOCAL_DB.Model(&model.PrivateGroup{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
+	db.Model(&model.PrivateGroup{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
 
 	if int(total) > 0 && bean.Id != "" && bean.Id != req.Id {
 		return errors.New("当前记录已经存在")
@@ -120,29 +122,30 @@ func (receiver *WafPrivateGroupService) ModifyApi(req request.WafPrivateGroupEdi
 		"PrivateGroupBelongCloud": req.PrivateGroupBelongCloud,
 		"UPDATE_TIME":             customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.PrivateGroup{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	err := db.Model(model.PrivateGroup{}).Where("id = ?", req.Id).Updates(beanMap).Error
 
 	return err
 }
-func (receiver *WafPrivateGroupService) GetDetailApi(req request.WafPrivateGroupDetailReq) model.PrivateGroup {
+func (receiver *WafPrivateGroupService) GetDetailApi(ctx context.Context, req request.WafPrivateGroupDetailReq) model.PrivateGroup {
 	var bean model.PrivateGroup
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafPrivateGroupService) GetDetailByIdApi(id string) model.PrivateGroup {
+func (receiver *WafPrivateGroupService) GetDetailByIdApi(ctx context.Context, id string) model.PrivateGroup {
 	var bean model.PrivateGroup
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafPrivateGroupService) GetListApi(req request.WafPrivateGroupSearchReq) ([]model.PrivateGroup, int64, error) {
+func (receiver *WafPrivateGroupService) GetListApi(ctx context.Context, req request.WafPrivateGroupSearchReq) ([]model.PrivateGroup, int64, error) {
 	var list []model.PrivateGroup
 	var total int64 = 0
-	global.GWAF_LOCAL_DB.Model(&model.PrivateGroup{}).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.PrivateGroup{}).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.PrivateGroup{}).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.PrivateGroup{}).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafPrivateGroupService) GetListByBelongCloudApi(req request.WafPrivateGroupSearchByCloudReq) ([]model.PrivateGroup, int64, error) {
+func (receiver *WafPrivateGroupService) GetListByBelongCloudApi(ctx context.Context, req request.WafPrivateGroupSearchByCloudReq) ([]model.PrivateGroup, int64, error) {
 	var list []model.PrivateGroup
 	var total int64 = 0
 
@@ -161,17 +164,19 @@ func (receiver *WafPrivateGroupService) GetListByBelongCloudApi(req request.WafP
 		whereValues = append(whereValues, "samwaf-not-exist")
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.PrivateGroup{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.PrivateGroup{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.PrivateGroup{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.PrivateGroup{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafPrivateGroupService) DelApi(req request.WafPrivateGroupDelReq) error {
+func (receiver *WafPrivateGroupService) DelApi(ctx context.Context, req request.WafPrivateGroupDelReq) error {
 	var bean model.PrivateGroup
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.PrivateGroup{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.PrivateGroup{}).Error
 	return err
 }

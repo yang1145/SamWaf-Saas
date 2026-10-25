@@ -5,6 +5,7 @@ import (
 	"SamWaf/innerbean"
 	"SamWaf/model"
 	"SamWaf/wafdb/dialect"
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -57,7 +58,8 @@ var exportTierDefs = []exportTierDef{
 // 分层后「导出一个 .db」不再是备份整个库文件：按选定层 + 时间段导出行，
 // 导出件自带表结构（AutoMigrate），可直接用同一套密钥打开查阅。
 // startTime/endTime 为 "2006-01-02 15:04:05"，空 = 不限制。返回每层导出的行数。
-func ExportLogRangeDb(outPath, startTime, endTime string, tiers map[string]bool, sources []ExportSource) (map[string]int64, error) {
+// ctx 携带请求租户时导出该租户的行（源表读取走租户回调）；无 ctx 导出回退租户（平台语义）。
+func ExportLogRangeDb(ctx context.Context, outPath, startTime, endTime string, tiers map[string]bool, sources []ExportSource) (map[string]int64, error) {
 	counts := map[string]int64{}
 	if !dialect.Get().SupportsBackup() {
 		return counts, fmt.Errorf("按时间段导出仅在 SQLite 模式下可用，当前驱动: %s", dialect.Get().Name())
@@ -103,13 +105,13 @@ func ExportLogRangeDb(outPath, startTime, endTime string, tiers map[string]bool,
 			var err error
 			switch td.name {
 			case ExportTierAccess:
-				n, err = exportCopyTier[model.AccessLog](s.Tables.DB, dst, srcTable, td.dstTable, startTime, endTime)
+				n, err = exportCopyTier[model.AccessLog](s.Tables.DB.WithContext(ctx), dst, srcTable, td.dstTable, startTime, endTime)
 			case ExportTierEvent:
-				n, err = exportCopyTier[model.SecurityEvent](s.Tables.DB, dst, srcTable, td.dstTable, startTime, endTime)
+				n, err = exportCopyTier[model.SecurityEvent](s.Tables.DB.WithContext(ctx), dst, srcTable, td.dstTable, startTime, endTime)
 			case ExportTierPayload:
-				n, err = exportCopyTier[model.EventPayload](s.Tables.DB, dst, srcTable, td.dstTable, startTime, endTime)
+				n, err = exportCopyTier[model.EventPayload](s.Tables.DB.WithContext(ctx), dst, srcTable, td.dstTable, startTime, endTime)
 			case ExportTierWeblog:
-				n, err = exportCopyTier[innerbean.WebLog](s.Tables.DB, dst, srcTable, td.dstTable, startTime, endTime)
+				n, err = exportCopyTier[innerbean.WebLog](s.Tables.DB.WithContext(ctx), dst, srcTable, td.dstTable, startTime, endTime)
 			}
 			if err != nil {
 				return counts, fmt.Errorf("分片 %s: %w", s.Shard, err)

@@ -46,9 +46,9 @@ func (w *WafSensitiveApi) AddApi(c *gin.Context) {
 		response.FailWithMessage("检测动作不能为空", c)
 		return
 	}
-	err = wafSensitiveService.CheckIsExistApi(req)
+	err = wafSensitiveService.CheckIsExistApi(c.Request.Context(), req)
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		err = wafSensitiveService.AddApi(req)
+		err = wafSensitiveService.AddApi(c.Request.Context(), req)
 		if err == nil {
 			w.NotifyWaf()
 			response.OkWithMessage("添加成功", c)
@@ -74,7 +74,7 @@ func (w *WafSensitiveApi) GetDetailApi(c *gin.Context) {
 	var req request.WafSensitiveDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafSensitiveService.GetDetailApi(req)
+		bean := wafSensitiveService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -95,7 +95,7 @@ func (w *WafSensitiveApi) GetListApi(c *gin.Context) {
 	var req request.WafSensitiveSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		sensitiveList, total, _ := wafSensitiveService.GetListApi(req)
+		sensitiveList, total, _ := wafSensitiveService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      sensitiveList,
 			Total:     total,
@@ -121,7 +121,7 @@ func (w *WafSensitiveApi) DelSensitiveApi(c *gin.Context) {
 	var req request.WafSensitiveDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafSensitiveService.DelApi(req)
+		err = wafSensitiveService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -142,7 +142,7 @@ func (w *WafSensitiveApi) BatchDelSensitiveApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		// 执行批量删除
-		err = wafSensitiveService.BatchDelApi(req)
+		err = wafSensitiveService.BatchDelApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("批量删除失败: "+err.Error(), c)
 		} else {
@@ -160,7 +160,7 @@ func (w *WafSensitiveApi) DelAllSensitiveApi(c *gin.Context) {
 	var req request.WafSensitiveDelAllReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		err = wafSensitiveService.DelAllApi(req)
+		err = wafSensitiveService.DelAllApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("全量删除失败: "+err.Error(), c)
 		} else {
@@ -209,7 +209,7 @@ func (w *WafSensitiveApi) ModifySensitiveApi(c *gin.Context) {
 		response.FailWithMessage("检测动作不能为空", c)
 		return
 	}
-	err = wafSensitiveService.ModifyApi(req)
+	err = wafSensitiveService.ModifyApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("编辑发生错误", c)
 	} else {

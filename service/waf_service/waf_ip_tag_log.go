@@ -1,17 +1,32 @@
 package waf_service
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/model/request"
 	"SamWaf/wafdb/dialect"
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"go.uber.org/zap"
 )
+
+// rawSQLTenantScope 取 IP 标签、CC 阈值等原生 SQL（Raw/Exec，不经过 GORM 租户回调）使用的
+// 租户值：请求上下文优先，无 ctx 回退全局常量。改这些语句的租户条件时必须走这里，
+// 禁止直接引用 global.GWAF_TENANT_ID/GWAF_USER_CODE（审计 H1）。
+func rawSQLTenantScope(ctx context.Context) (string, string) {
+	if tenantID, userCode, ok := wafctx.TenantFrom(ctx); ok {
+		if userCode == "" {
+			userCode = global.GWAF_USER_CODE
+		}
+		return tenantID, userCode
+	}
+	return global.GWAF_TENANT_ID, global.GWAF_USER_CODE
+}
 
 const (
 	// attackTagExcludeMax 排除名单条数上限：条件是逐项展开的，条数直接影响每行的比较次数
@@ -133,7 +148,8 @@ func appendTags(params []interface{}, tags []string) []interface{} {
 }
 
 // GetAttackIpListApi 访问IP列表
-func (receiver *WafLogService) GetAttackIpListApi(req request.WafAttackIpTagSearch) ([]model.AttackIPTag, int64, error) {
+func (receiver *WafLogService) GetAttackIpListApi(ctx context.Context, req request.WafAttackIpTagSearch) ([]model.AttackIPTag, int64, error) {
+	tenantID, userCode := rawSQLTenantScope(ctx)
 	var results []model.AttackIPTag
 	var total int64
 
@@ -187,7 +203,7 @@ func (receiver *WafLogService) GetAttackIpListApi(req request.WafAttackIpTagSear
 	params = appendTags(params, tags) // first_time
 	params = appendTags(params, tags) // latest_time
 	params = appendTags(params, tags) // ip_total_tag
-	params = append(params, global.GWAF_TENANT_ID, global.GWAF_USER_CODE)
+	params = append(params, tenantID, userCode)
 
 	// 添加 Rule 和 SrcIp 作为参数（如果提供了）
 	if req.Rule != "" {
@@ -227,7 +243,7 @@ func (receiver *WafLogService) GetAttackIpListApi(req request.WafAttackIpTagSear
 	}
 
 	// 获取总记录数参数（按占位符顺序：tenant/user -> 排除名单 -> [rule] -> [ip]）
-	countParams := []interface{}{global.GWAF_TENANT_ID, global.GWAF_USER_CODE}
+	countParams := []interface{}{tenantID, userCode}
 	countParams = appendTags(countParams, tags)
 	if req.Rule != "" {
 		countParams = append(countParams, req.Rule)
@@ -244,13 +260,14 @@ func (receiver *WafLogService) GetAttackIpListApi(req request.WafAttackIpTagSear
 	// 放行数量改取 stats_ip_days（D7）：ip_tags 不再记「正常」，而 stats_ip_days 本就按
 	// 「每 IP 每天 放行/阻止」计数，是同一份数据不重复的源头。它在统计库，跟 ip_tags
 	// 可能不在一个库，不能 join——按本页 IP 单独查一回（每页一条查询）。
-	fillPassNumFromStats(results)
+	fillPassNumFromStats(ctx, results)
 
 	return results, total, nil
 }
 
 // fillPassNumFromStats 给本页结果补放行数量（stats_ip_days 的 放行 计数合计）。
-func fillPassNumFromStats(results []model.AttackIPTag) {
+func fillPassNumFromStats(ctx context.Context, results []model.AttackIPTag) {
+	tenantID, userCode := rawSQLTenantScope(ctx)
 	if len(results) == 0 || global.GWAF_LOCAL_STATS_DB == nil {
 		return
 	}
@@ -271,7 +288,7 @@ func fillPassNumFromStats(results []model.AttackIPTag) {
 		}
 		if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsIPDay{}).
 			Select("ip, SUM(count) as cnt").
-			Where("tenant_id = ? and user_code = ? and type = ? and ip in ?", global.GWAF_TENANT_ID, global.GWAF_USER_CODE, "放行", ips[i:end]).
+			Where("tenant_id = ? and user_code = ? and type = ? and ip in ?", tenantID, userCode, "放行", ips[i:end]).
 			Group("ip").Scan(&rows).Error; err != nil {
 			zlog.Warn("放行数量查询失败", "error", err.Error())
 			return
@@ -288,7 +305,8 @@ func fillPassNumFromStats(results []model.AttackIPTag) {
 // GetAllAttackIPTagListApi 获取所有攻击Tag
 // withBenign=true 时把被排除的标签（ACME证书校验、历史遗留的静态文件访问成功等）也带出来，
 // 供批量删除用——否则这些标签一旦被排除，界面上就再也没有入口清理它们残留的数据。
-func (receiver *WafLogService) GetAllAttackIPTagListApi(withBenign bool) ([]model.AllIPTag, error) {
+func (receiver *WafLogService) GetAllAttackIPTagListApi(ctx context.Context, withBenign bool) ([]model.AllIPTag, error) {
+	tenantID, userCode := rawSQLTenantScope(ctx)
 	var results []model.AllIPTag
 
 	// 不算风险的标签不进筛选列表；要清理数据时用 withBenign 把它们带出来（"正常"永远不给删）
@@ -320,7 +338,7 @@ order by  sum(cnt) desc
 	// 构建查询参数：先 NOT IN 的标签，再租户/用户
 	params := []interface{}{}
 	params = appendTags(params, tags)
-	params = append(params, global.GWAF_TENANT_ID, global.GWAF_USER_CODE)
+	params = append(params, tenantID, userCode)
 
 	// 执行查询
 	ipTagDB := global.GetIPTagDB() // 使用封装方法获取数据库连接
@@ -332,12 +350,13 @@ order by  sum(cnt) desc
 }
 
 // DeleteTagByNameApi 删除指定标签（支持批量删除大数据量）
-func (receiver *WafLogService) DeleteTagByNameApi(tagName string, deleteLogs bool) error {
+func (receiver *WafLogService) DeleteTagByNameApi(ctx context.Context, tagName string, deleteLogs bool) error {
+	tenantID, userCode := rawSQLTenantScope(ctx)
 	ipTagDB := global.GetIPTagDB()
 
 	// 1. 删除 ip_tags 表中的标签数据
 	deleteTagQuery := `DELETE FROM ip_tags WHERE tenant_id=? AND user_code=? AND ip_tag=?`
-	if err := ipTagDB.Exec(deleteTagQuery, global.GWAF_TENANT_ID, global.GWAF_USER_CODE, tagName).Error; err != nil {
+	if err := ipTagDB.Exec(deleteTagQuery, tenantID, userCode, tagName).Error; err != nil {
 		return fmt.Errorf("删除标签统计数据失败: %v", err)
 	}
 
@@ -350,7 +369,7 @@ func (receiver *WafLogService) DeleteTagByNameApi(tagName string, deleteLogs boo
 			for {
 				var ids []string
 				if err := global.GWAF_LOCAL_LOG_DB.Model(&model.SecurityEvent{}).
-					Where("tenant_id=? AND user_code=? AND rule=?", global.GWAF_TENANT_ID, global.GWAF_USER_CODE, tagName).
+					Where("tenant_id=? AND user_code=? AND rule=?", tenantID, userCode, tagName).
 					Limit(batchSize).Pluck("req_uuid", &ids).Error; err != nil {
 					return fmt.Errorf("查询关联安全事件失败: %v", err)
 				}
@@ -372,7 +391,7 @@ func (receiver *WafLogService) DeleteTagByNameApi(tagName string, deleteLogs boo
 			deleteLogQuery := dialect.Get().BatchDeleteSQL(
 				"web_logs", "tenant_id=? AND user_code=? AND rule=?", batchSize,
 			)
-			result := global.GWAF_LOCAL_LOG_DB.Exec(deleteLogQuery, global.GWAF_TENANT_ID, global.GWAF_USER_CODE, tagName)
+			result := global.GWAF_LOCAL_LOG_DB.Exec(deleteLogQuery, tenantID, userCode, tagName)
 
 			if result.Error != nil {
 				return fmt.Errorf("删除关联日志数据失败: %v", result.Error)

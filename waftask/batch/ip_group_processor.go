@@ -2,6 +2,7 @@ package batch
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/customtype"
 	"SamWaf/enums"
@@ -9,6 +10,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/service/waf_service"
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -174,7 +176,7 @@ func (p *IPGroupProcessor) NotifyEngine(task model.BatchTask) {
 	if p.groupCode == "" {
 		return
 	}
-	waf_service.WafIPGroupServiceApp.RebuildGroupMatcher(p.groupCode)
+	waf_service.WafIPGroupServiceApp.RebuildGroupMatcher(wafctx.PlatformScope(context.Background()), p.groupCode)
 }
 
 // resolve 解析并校验目标 IP 组，结果缓存，多批次只解析一次。

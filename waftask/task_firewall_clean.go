@@ -1,8 +1,10 @@
 package waftask
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/service/waf_service"
+	"context"
 )
 
 var (
@@ -16,7 +18,7 @@ func TaskFirewallCleanExpired() {
 	zlog.Debug(innerLogName, "开始清理过期的防火墙IP封禁规则")
 
 	// 调用清理服务
-	count, err := wafFirewallIPBlockService.ClearExpiredRules()
+	count, err := wafFirewallIPBlockService.ClearExpiredRules(wafctx.PlatformScope(context.Background()))
 	if err != nil {
 		zlog.Error(innerLogName, "清理过期规则失败", "error", err.Error())
 		return

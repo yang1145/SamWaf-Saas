@@ -238,8 +238,7 @@ func InitCoreDbMySQL() (bool, error) {
 		panic("task initialization migration failed: " + err.Error())
 	}
 
-	global.GWAF_LOCAL_DB.Callback().Query().Before("gorm:query").Register("tenant_plugin:before_query", before_query)
-	global.GWAF_LOCAL_DB.Callback().Query().Before("gorm:update").Register("tenant_plugin:before_update", before_update)
+	RegisterTenantScopeCallbacks(global.GWAF_LOCAL_DB)
 
 	db.Where("user_code = ? and rule_status = 999", global.GWAF_USER_CODE).Delete(model.Rules{})
 	pathCoreSql(db)
@@ -267,8 +266,7 @@ func InitLogDbMySQL() (bool, error) {
 		panic("log database migration failed: " + err.Error())
 	}
 
-	global.GWAF_LOCAL_LOG_DB.Callback().Query().Before("gorm:query").Register("tenant_plugin:before_query", before_query)
-	global.GWAF_LOCAL_LOG_DB.Callback().Query().Before("gorm:update").Register("tenant_plugin:before_update", before_update)
+	RegisterTenantScopeCallbacks(global.GWAF_LOCAL_LOG_DB)
 
 	pathLogSql(db)
 
@@ -299,8 +297,7 @@ func InitStatsDbMySQL() (bool, error) {
 		panic("stats database migration failed: " + err.Error())
 	}
 
-	global.GWAF_LOCAL_STATS_DB.Callback().Query().Before("gorm:query").Register("tenant_plugin:before_query", before_query)
-	global.GWAF_LOCAL_STATS_DB.Callback().Query().Before("gorm:update").Register("tenant_plugin:before_update", before_update)
+	RegisterTenantScopeCallbacks(global.GWAF_LOCAL_STATS_DB)
 
 	pathStatsSql(db)
 	return false, nil

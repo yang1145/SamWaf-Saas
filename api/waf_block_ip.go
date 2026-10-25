@@ -7,6 +7,7 @@ import (
 	"SamWaf/model/common/response"
 	"SamWaf/model/request"
 	"SamWaf/model/spec"
+	"context"
 	"errors"
 	"fmt"
 	"github.com/gin-gonic/gin"
@@ -35,7 +36,7 @@ func (w *WafBlockIpApi) AddApi(c *gin.Context) {
 	}
 
 	// 归一并校验条目类型（单条IP/网段/通配/区间 或 引用IP组）
-	ipType, ip, groupCode, verr := normalizeIPEntry(ipEntryInput{IpType: req.IpType, Ip: req.Ip, GroupCode: req.GroupCode})
+	ipType, ip, groupCode, verr := normalizeIPEntry(c.Request.Context(), ipEntryInput{IpType: req.IpType, Ip: req.Ip, GroupCode: req.GroupCode})
 	if verr != nil {
 		response.FailWithMessage(verr.Error(), c)
 		return
@@ -67,7 +68,7 @@ func (w *WafBlockIpApi) AddApi(c *gin.Context) {
 			BlockType: "manual",
 			Remarks:   req.Remarks,
 		}
-		if ferr := wafFirewallIPBlockService.AddApi(fwReq); ferr != nil {
+		if ferr := wafFirewallIPBlockService.AddApi(c.Request.Context(), fwReq); ferr != nil {
 			response.FailWithMessage("系统防火墙封禁失败: "+ferr.Error(), c)
 			return
 		}
@@ -78,13 +79,13 @@ func (w *WafBlockIpApi) AddApi(c *gin.Context) {
 	}
 
 	// WAF 应用层封禁(默认 / both)
-	err = wafIpBlockService.CheckIsExistApi(req)
+	err = wafIpBlockService.CheckIsExistApi(c.Request.Context(), req)
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-		if aerr := wafIpBlockService.AddApi(req); aerr != nil {
+		if aerr := wafIpBlockService.AddApi(c.Request.Context(), req); aerr != nil {
 			response.FailWithMessage("添加失败", c)
 			return
 		}
-		w.NotifyWaf(req.HostCode)
+		w.NotifyWaf(c.Request.Context(), req.HostCode)
 		response.OkWithMessage("添加成功", c)
 		return
 	}
@@ -99,7 +100,7 @@ func (w *WafBlockIpApi) AddApi(c *gin.Context) {
 // GetRecommendLayerApi 返回推荐的封禁层级(供前端"加黑名单"弹窗下拉预选)
 func (w *WafBlockIpApi) GetRecommendLayerApi(c *gin.Context) {
 	hostCode := c.Query("host_code")
-	layer, reason := wafFirewallIPBlockService.RecommendBlockLayer(hostCode)
+	layer, reason := wafFirewallIPBlockService.RecommendBlockLayer(c.Request.Context(), hostCode)
 	response.OkWithDetailed(gin.H{"layer": layer, "reason": reason}, "获取成功", c)
 }
 
@@ -117,7 +118,7 @@ func (w *WafBlockIpApi) GetDetailApi(c *gin.Context) {
 	var req request.WafBlockIpDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafIpBlockService.GetDetailApi(req)
+		bean := wafIpBlockService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -138,7 +139,7 @@ func (w *WafBlockIpApi) GetListApi(c *gin.Context) {
 	var req request.WafBlockIpSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		wafIpWhites, total, _ := wafIpBlockService.GetListApi(req)
+		wafIpWhites, total, _ := wafIpBlockService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      wafIpWhites,
 			Total:     total,
@@ -164,14 +165,14 @@ func (w *WafBlockIpApi) DelBlockIpApi(c *gin.Context) {
 	var req request.WafBlockIpDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafIpBlockService.GetDetailByIdApi(req.Id)
-		err = wafIpBlockService.DelApi(req)
+		bean := wafIpBlockService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafIpBlockService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
 			response.FailWithMessage("发生错误", c)
 		} else {
-			w.NotifyWaf(bean.HostCode)
+			w.NotifyWaf(c.Request.Context(), bean.HostCode)
 			response.OkWithMessage("删除成功", c)
 		}
 
@@ -194,7 +195,7 @@ func (w *WafBlockIpApi) ModifyBlockIpApi(c *gin.Context) {
 	var req request.WafBlockIpEditReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		ipType, ip, groupCode, verr := normalizeIPEntry(ipEntryInput{IpType: req.IpType, Ip: req.Ip, GroupCode: req.GroupCode})
+		ipType, ip, groupCode, verr := normalizeIPEntry(c.Request.Context(), ipEntryInput{IpType: req.IpType, Ip: req.Ip, GroupCode: req.GroupCode})
 		if verr != nil {
 			response.FailWithMessage(verr.Error(), c)
 			return
@@ -206,12 +207,12 @@ func (w *WafBlockIpApi) ModifyBlockIpApi(c *gin.Context) {
 		}
 
 		//编辑前先取旧记录，拿到可能被本次编辑改掉的旧 host_code(issue #898)
-		bean := wafIpBlockService.GetDetailByIdApi(req.Id)
-		err = wafIpBlockService.ModifyApi(req)
+		bean := wafIpBlockService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafIpBlockService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误", c)
 		} else {
-			notifyWafHostChanged(w.NotifyWaf, bean.HostCode, req.HostCode)
+			notifyWafHostChanged(func(hostCode string) { w.NotifyWaf(c.Request.Context(), hostCode) }, bean.HostCode, req.HostCode)
 			response.OkWithMessage("编辑成功", c)
 		}
 
@@ -226,20 +227,20 @@ func (w *WafBlockIpApi) BatchDelBlockIpApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		// 先获取要删除的记录对应的HostCode，用于后续通知WAF引擎
-		hostCodes, err := wafIpBlockService.GetHostCodesByIds(req.Ids)
+		hostCodes, err := wafIpBlockService.GetHostCodesByIds(c.Request.Context(), req.Ids)
 		if err != nil {
 			response.FailWithMessage("获取网站信息失败", c)
 			return
 		}
 
 		// 执行批量删除
-		err = wafIpBlockService.BatchDelApi(req)
+		err = wafIpBlockService.BatchDelApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("批量删除失败: "+err.Error(), c)
 		} else {
 			// 通知所有相关的网站更新配置
 			for _, hostCode := range hostCodes {
-				w.NotifyWaf(hostCode)
+				w.NotifyWaf(c.Request.Context(), hostCode)
 			}
 			response.OkWithMessage(fmt.Sprintf("成功删除 %d 条记录", len(req.Ids)), c)
 		}
@@ -254,19 +255,19 @@ func (w *WafBlockIpApi) DelAllBlockIpApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		// 先获取要删除的记录对应的HostCode，用于后续通知WAF引擎
-		hostCodes, err := wafIpBlockService.GetHostCodes()
+		hostCodes, err := wafIpBlockService.GetHostCodes(c.Request.Context())
 		if err != nil {
 			response.FailWithMessage("获取网站信息失败", c)
 			return
 		}
 
-		err = wafIpBlockService.DelAllApi(req)
+		err = wafIpBlockService.DelAllApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("全量删除失败: "+err.Error(), c)
 		} else {
 			// 通知所有相关的网站更新配置
 			for _, hostCode := range hostCodes {
-				w.NotifyWaf(hostCode)
+				w.NotifyWaf(c.Request.Context(), hostCode)
 			}
 			if len(req.HostCode) > 0 {
 				response.OkWithMessage("成功删除该网站的所有IP黑名单", c)
@@ -299,12 +300,12 @@ func (w *WafBlockIpApi) ToggleApi(c *gin.Context) {
 		response.FailWithMessage("is_enable 取值只能是 0 或 1", c)
 		return
 	}
-	hostCode, err := wafIpBlockService.ToggleApi(req)
+	hostCode, err := wafIpBlockService.ToggleApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("操作失败", c)
 		return
 	}
-	w.NotifyWaf(hostCode)
+	w.NotifyWaf(c.Request.Context(), hostCode)
 	response.OkWithMessage("操作成功", c)
 }
 
@@ -312,9 +313,9 @@ func (w *WafBlockIpApi) ToggleApi(c *gin.Context) {
 *
 通知到waf引擎实时生效
 */
-func (w *WafBlockIpApi) NotifyWaf(host_code string) {
+func (w *WafBlockIpApi) NotifyWaf(ctx context.Context, host_code string) {
 	var ipWhites []model.IPBlockList
-	global.GWAF_LOCAL_DB.Where("host_code = ? and is_enable = 1", host_code).Find(&ipWhites)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ? and is_enable = 1", host_code).Find(&ipWhites)
 	var chanInfo = spec.ChanCommonHost{
 		HostCode: host_code,
 		Type:     enums.ChanTypeBlockIP,

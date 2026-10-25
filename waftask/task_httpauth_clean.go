@@ -1,9 +1,11 @@
 package waftask
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/model"
 	"SamWaf/service/waf_service"
+	"context"
 	"strconv"
 )
 
@@ -25,7 +27,7 @@ const httpAuthSessionKeepDays = 30
 func TaskHttpAuthClean() {
 	innerLogName := "TaskHttpAuthClean"
 
-	expired, deleted := wafHttpAuthSessionService.CleanExpired(httpAuthSessionKeepDays)
+	expired, deleted := wafHttpAuthSessionService.CleanExpired(wafctx.PlatformScope(context.Background()), httpAuthSessionKeepDays)
 	if expired+deleted == 0 {
 		zlog.Debug(innerLogName, "无需清理")
 		return

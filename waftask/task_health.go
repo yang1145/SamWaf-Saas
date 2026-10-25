@@ -1,6 +1,7 @@
 package waftask
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/model"
@@ -28,7 +29,7 @@ func buildValidKeys(hosts []model.Hosts) (statusKeys map[string]struct{}, dialAd
 			continue
 		}
 		if host.IsEnableLoadBalance > 0 {
-			loadBalances := waf_service.WafLoadBalanceServiceApp.GetListByHostCodeApi(host.Code)
+			loadBalances := waf_service.WafLoadBalanceServiceApp.GetListByHostCodeApi(wafctx.PlatformScope(context.Background()), host.Code)
 			for i, lb := range loadBalances {
 				statusKeys[host.Code+"_"+fmt.Sprintf("%d", i)] = struct{}{}
 				if lb.Remote_ip != "" {
@@ -52,7 +53,7 @@ func TaskHealth() {
 		return
 	}
 	zlog.Debug("TaskHealth - 开始执行后端健康度检测")
-	hosts := waf_service.WafHostServiceApp.GetAllRunningHostApi()
+	hosts := waf_service.WafHostServiceApp.GetAllRunningHostApi(wafctx.PlatformScope(context.Background()))
 	sem := make(chan struct{}, 5)
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -107,7 +108,7 @@ func checkHostHealth(host model.Hosts, ctx context.Context) {
 		return
 	}
 	if host.IsEnableLoadBalance > 0 {
-		loadBalances := waf_service.WafLoadBalanceServiceApp.GetListByHostCodeApi(host.Code)
+		loadBalances := waf_service.WafLoadBalanceServiceApp.GetListByHostCodeApi(wafctx.PlatformScope(context.Background()), host.Code)
 		if loadBalances == nil {
 			return
 		}

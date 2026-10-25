@@ -27,9 +27,9 @@ func (w *WafSslExpireApi) AddApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 
-		cnt := wafSslExpireService.CheckIsExistApi(req)
+		cnt := wafSslExpireService.CheckIsExistApi(c.Request.Context(), req)
 		if cnt == 0 {
-			err = wafSslExpireService.AddApi(req)
+			err = wafSslExpireService.AddApi(c.Request.Context(), req)
 			if err == nil {
 				response.OkWithMessage("添加成功", c)
 			} else {
@@ -60,7 +60,7 @@ func (w *WafSslExpireApi) GetDetailApi(c *gin.Context) {
 	var req request.WafSslExpireDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafSslExpireService.GetDetailApi(req)
+		bean := wafSslExpireService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -81,7 +81,7 @@ func (w *WafSslExpireApi) GetListApi(c *gin.Context) {
 	var req request.WafSslExpireSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		SslExpire, total, _ := wafSslExpireService.GetListApi(req)
+		SslExpire, total, _ := wafSslExpireService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      SslExpire,
 			Total:     total,
@@ -107,7 +107,7 @@ func (w *WafSslExpireApi) DelApi(c *gin.Context) {
 	var req request.WafSslExpireDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafSslExpireService.DelApi(req)
+		err = wafSslExpireService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -134,7 +134,7 @@ func (w *WafSslExpireApi) ModifyApi(c *gin.Context) {
 	var req request.WafSslExpireEditReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		err = wafSslExpireService.ModifyApi(req)
+		err = wafSslExpireService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误"+err.Error(), c)
 		} else {

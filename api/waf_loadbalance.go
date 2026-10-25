@@ -28,9 +28,9 @@ func (w *WafLoadBalanceApi) AddApi(c *gin.Context) {
 	var req request.WafLoadBalanceAddReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		err = wafLoadBalanceService.CheckIsExistApi(req)
+		err = wafLoadBalanceService.CheckIsExistApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-			err = wafLoadBalanceService.AddApi(req)
+			err = wafLoadBalanceService.AddApi(c.Request.Context(), req)
 			if err == nil {
 				w.NotifyWaf(req.HostCode)
 				response.OkWithMessage("添加成功", c)
@@ -63,7 +63,7 @@ func (w *WafLoadBalanceApi) GetDetailApi(c *gin.Context) {
 	var req request.WafLoadBalanceDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafLoadBalanceService.GetDetailApi(req)
+		bean := wafLoadBalanceService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -84,7 +84,7 @@ func (w *WafLoadBalanceApi) GetListApi(c *gin.Context) {
 	var req request.WafLoadBalanceSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		list, total, _ := wafLoadBalanceService.GetListApi(req)
+		list, total, _ := wafLoadBalanceService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      list,
 			Total:     total,
@@ -110,8 +110,8 @@ func (w *WafLoadBalanceApi) DelLoadBalanceApi(c *gin.Context) {
 	var req request.WafLoadBalanceDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafLoadBalanceService.GetDetailByIdApi(req.Id)
-		err = wafLoadBalanceService.DelApi(req)
+		bean := wafLoadBalanceService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafLoadBalanceService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -141,8 +141,8 @@ func (w *WafLoadBalanceApi) ModifyApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		//编辑前先取旧记录，拿到可能被本次编辑改掉的旧 host_code(issue #898)
-		bean := wafLoadBalanceService.GetDetailByIdApi(req.Id)
-		err = wafLoadBalanceService.ModifyApi(req)
+		bean := wafLoadBalanceService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafLoadBalanceService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误", c)
 		} else {

@@ -1,6 +1,7 @@
 package wafdb
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/model"
@@ -12,11 +13,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
 	"gorm.io/gorm/logger"
+	"gorm.io/gorm/schema"
 
 	//"github.com/kangarooxin/gorm-webplugin-crypto"
 	//"github.com/kangarooxin/gorm-webplugin-crypto/strategy"
@@ -130,8 +133,7 @@ func InitCoreDb(currentDir string) (bool, error) {
 		}
 		// ============ 迁移代码结束 ============
 
-		global.GWAF_LOCAL_DB.Callback().Query().Before("gorm:query").Register("tenant_plugin:before_query", before_query)
-		global.GWAF_LOCAL_DB.Callback().Query().Before("gorm:update").Register("tenant_plugin:before_update", before_update)
+		RegisterTenantScopeCallbacks(global.GWAF_LOCAL_DB)
 
 		//重启需要删除无效规则
 		db.Where("user_code = ? and rule_status = 999", global.GWAF_USER_CODE).Delete(model.Rules{})
@@ -203,8 +205,7 @@ func InitLogDb(currentDir string) (bool, error) {
 		}
 		// ============ 迁移代码结束 ============
 
-		global.GWAF_LOCAL_LOG_DB.Callback().Query().Before("gorm:query").Register("tenant_plugin:before_query", before_query)
-		global.GWAF_LOCAL_LOG_DB.Callback().Query().Before("gorm:update").Register("tenant_plugin:before_update", before_update)
+		RegisterTenantScopeCallbacks(global.GWAF_LOCAL_LOG_DB)
 
 		pathLogSql(db)
 		ensureLiveShardRecord(global.GWAF_LOCAL_DB, global.GWAF_LOCAL_LOG_DB, LiveLogName())
@@ -257,8 +258,7 @@ func InitManaulLogDb(currentDir string, custFileName string) error {
 		})
 	}
 
-	db.Callback().Query().Before("gorm:query").Register("tenant_plugin:before_query", before_query)
-	db.Callback().Query().Before("gorm:update").Register("tenant_plugin:before_update", before_update)
+	RegisterTenantScopeCallbacks(db)
 
 	// 并发下可能已有别的协程抢先放入，这时关掉自己开的这一份
 	if _, duplicated := putShardDB(custFileName, db); duplicated {
@@ -323,8 +323,7 @@ func InitStatsDb(currentDir string) (bool, error) {
 		}
 		// ============ 迁移代码结束 ============
 
-		global.GWAF_LOCAL_STATS_DB.Callback().Query().Before("gorm:query").Register("tenant_plugin:before_query", before_query)
-		global.GWAF_LOCAL_STATS_DB.Callback().Query().Before("gorm:update").Register("tenant_plugin:before_update", before_update)
+		RegisterTenantScopeCallbacks(global.GWAF_LOCAL_STATS_DB)
 
 		pathStatsSql(db)
 
@@ -334,10 +333,201 @@ func InitStatsDb(currentDir string) (bool, error) {
 	}
 }
 
-func before_query(db *gorm.DB) {
-	db.Where("tenant_id = ? and user_code=? ", global.GWAF_TENANT_ID, global.GWAF_USER_CODE)
+// RegisterTenantScopeCallbacks 把租户过滤/盖章回调注册到指定 gorm 实例上。
+// 生产侧三种数据库初始化流程与本包/上层测试共用此入口，保证过滤行为单一来源。
+// 覆盖四类语句：查询按请求租户过滤（无 ctx 回退全局）；更新/删除仅在语句
+// 显式携带请求租户上下文时过滤（平台维护任务无 ctx，保持全量可达）；
+// 新增按租户盖章（见 before_create）。
+func RegisterTenantScopeCallbacks(db *gorm.DB) {
+	db.Callback().Query().Before("gorm:query").Register("tenant_plugin:before_query", before_query)
+	db.Callback().Update().Before("gorm:update").Register("tenant_plugin:update_scope", before_update)
+	db.Callback().Delete().Before("gorm:delete").Register("tenant_plugin:delete_scope", before_delete)
+	db.Callback().Create().Before("gorm:create").Register("tenant_plugin:create_scope", before_create)
 }
+
+// tenantExemptModels 平台级模型：不参与租户过滤/盖章，行归属平台，
+// 任何租户的请求都可见可操作（管理员、会话、系统配置等）。
+// 以模型类型名（gorm schema.ModelType）为键，不受表名命名策略影响。
+// 扩展本清单时同步更新 docs/saas_multitenant_phase0.md 任务3。
+var tenantExemptModels = map[string]bool{
+	"model.Account":           true, // 管理端管理员
+	"model.TokenInfo":         true, // 管理端登录会话
+	"model.Otp":               true, // 管理端 2FA 密钥
+	"model.AccountPwdHistory": true, // 口令历史
+	"model.LoginHistory":      true, // 登录历史
+	"model.SecurityAuditLog":  true, // 安全审计日志
+	"model.SystemConfig":      true, // 系统配置
+	"model.WafSysLog":         true, // 系统日志
+	"model.HostLoginEvent":    true, // 主机登录失败事件（防爆破基础设施）
+}
+
+// tenantScopeSkip 判断当前语句是否应跳过租户过滤/盖章：
+// 平台级作用域（引擎数据面/维护任务）或平台级模型。
+func tenantScopeSkip(db *gorm.DB) bool {
+	if db == nil || db.Statement == nil {
+		return true
+	}
+	if wafctx.PlatformScoped(db.Statement.Context) {
+		return true
+	}
+	if db.Statement.Schema != nil && tenantExemptModels[db.Statement.Schema.ModelType.String()] {
+		return true
+	}
+	return false
+}
+
+// tenantScopeFrom 取当前语句应使用的租户过滤值：
+// 请求上下文（wafctx，随 db.WithContext 传入）优先，未声明时回退全局常量。
+// 上下文只声明了租户、没带识别号（如旧版本缓存令牌）时，识别号回退全局值，
+// 保持行键 (tenant_id, user_code) 完整。语句应跳过（平台作用域/平台模型）
+// 或模型不含租户列时返回 ok=false。
+func tenantScopeFrom(db *gorm.DB) (tenantID, userCode string, ok bool) {
+	if tenantScopeSkip(db) {
+		return "", "", false
+	}
+	if db.Statement.Schema != nil {
+		if db.Statement.Schema.LookUpField("tenant_id") == nil ||
+			db.Statement.Schema.LookUpField("user_code") == nil {
+			return "", "", false
+		}
+	}
+	tenantID, userCode = global.GWAF_TENANT_ID, global.GWAF_USER_CODE
+	if ctxTenantID, ctxUserCode, hasCtx := wafctx.TenantFrom(db.Statement.Context); hasCtx {
+		tenantID = ctxTenantID
+		if ctxUserCode != "" {
+			userCode = ctxUserCode
+		}
+	}
+	return tenantID, userCode, true
+}
+
+// writeScopeFrom 写路径（UPDATE/DELETE）的租户过滤取值。
+// 与查询路径不同：**仅在语句显式携带请求租户上下文时过滤**。
+// 平台维护任务（数据密钥迁移、库表修复等）在无 ctx 的启动期运行，
+// 必须能改写租户列尚为空的存量行；它们的多租户语义由后台任务治理
+// （阶段2任务4）显式处理，不走隐式全局回退。
+func writeScopeFrom(db *gorm.DB) (tenantID, userCode string, ok bool) {
+	if tenantScopeSkip(db) {
+		return "", "", false
+	}
+	if db.Statement.Schema != nil {
+		if db.Statement.Schema.LookUpField("tenant_id") == nil ||
+			db.Statement.Schema.LookUpField("user_code") == nil {
+			return "", "", false
+		}
+	}
+	ctxTenantID, ctxUserCode, hasCtx := wafctx.TenantFrom(db.Statement.Context)
+	if !hasCtx {
+		return "", "", false
+	}
+	tenantID = ctxTenantID
+	userCode = ctxUserCode
+	if userCode == "" {
+		userCode = global.GWAF_USER_CODE
+	}
+	return tenantID, userCode, true
+}
+
+// before_query 为所有查询自动追加租户过滤条件（tenant_plugin 回调，
+// 由各数据库初始化流程在迁移完成后统一注册）。
+// 租户取值优先级：请求上下文（wafctx，随 db.WithContext 传入）> 全局常量。
+// 单租户模式下所有查询都不带上下文，行为与改造前完全一致。
+func before_query(db *gorm.DB) {
+	if tenantID, userCode, ok := tenantScopeFrom(db); ok {
+		db.Where("tenant_id = ? and user_code=? ", tenantID, userCode)
+	}
+}
+
+// before_update 为 UPDATE 语句按请求租户上下文追加过滤条件，防止按 code/id
+// 改到其他租户的行。无 ctx（平台维护）或语句模型不带租户列时跳过。
 func before_update(db *gorm.DB) {
+	if tenantID, userCode, ok := writeScopeFrom(db); ok {
+		db.Where("tenant_id = ? and user_code=? ", tenantID, userCode)
+	}
+}
+
+// before_delete 为 DELETE 语句按请求租户上下文追加过滤条件，语义同 before_update。
+func before_delete(db *gorm.DB) {
+	if tenantID, userCode, ok := writeScopeFrom(db); ok {
+		db.Where("tenant_id = ? and user_code=? ", tenantID, userCode)
+	}
+}
+
+// before_create 为新增行自动补租户标识。
+//   - 请求上下文声明了租户时以上下文为准，**覆盖**业务代码写入的租户值——
+//     防止存量代码残留的 `Tenant_ID: global.GWAF_TENANT_ID` 赋值把行写进错误租户；
+//   - 未声明 ctx（后台任务、启动期）时只补空缺字段，不覆盖业务显式写入的值；
+//   - 语句目标不是含租户列的结构体/结构体切片（如 map 创建）时跳过，
+//     此时依赖业务代码自行赋值。
+func before_create(db *gorm.DB) {
+	if db == nil || db.Statement == nil || db.Statement.Schema == nil {
+		return
+	}
+	if tenantScopeSkip(db) {
+		return
+	}
+	tenantField := db.Statement.Schema.LookUpField("tenant_id")
+	userField := db.Statement.Schema.LookUpField("user_code")
+	if tenantField == nil || userField == nil {
+		return
+	}
+
+	ctxTenantID, ctxUserCode, hasCtx := wafctx.TenantFrom(db.Statement.Context)
+	if hasCtx {
+		wantUserCode := ctxUserCode
+		if wantUserCode == "" {
+			wantUserCode = global.GWAF_USER_CODE
+		}
+		stampTenantColumns(db.Statement, tenantField, userField, ctxTenantID, wantUserCode, true)
+		return
+	}
+
+	// 无 ctx：只补空缺，不覆盖
+	refValue := reflect.Indirect(db.Statement.ReflectValue)
+	switch refValue.Kind() {
+	case reflect.Struct:
+		fillEmptyTenantColumns(db.Statement, tenantField, userField, refValue)
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < refValue.Len(); i++ {
+			elem := reflect.Indirect(refValue.Index(i))
+			if elem.Kind() == reflect.Struct {
+				fillEmptyTenantColumns(db.Statement, tenantField, userField, elem)
+			}
+		}
+	}
+}
+
+// stampTenantColumns 把租户标识强制写入行（ctx 权威模式），兼容单行与切片创建。
+func stampTenantColumns(stmt *gorm.Statement, tenantField, userField *schema.Field, tenantID, userCode string, override bool) {
+	refValue := reflect.Indirect(stmt.ReflectValue)
+	switch refValue.Kind() {
+	case reflect.Struct:
+		_ = tenantField.Set(stmt.Context, refValue, tenantID)
+		_ = userField.Set(stmt.Context, refValue, userCode)
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < refValue.Len(); i++ {
+			elem := reflect.Indirect(refValue.Index(i))
+			if elem.Kind() != reflect.Struct {
+				continue
+			}
+			if !override {
+				fillEmptyTenantColumns(stmt, tenantField, userField, elem)
+				continue
+			}
+			_ = tenantField.Set(stmt.Context, elem, tenantID)
+			_ = userField.Set(stmt.Context, elem, userCode)
+		}
+	}
+}
+
+// fillEmptyTenantColumns 仅当行的租户字段为零值时补默认租户，不覆盖显式赋值。
+func fillEmptyTenantColumns(stmt *gorm.Statement, tenantField, userField *schema.Field, row reflect.Value) {
+	if v, isZero := tenantField.ValueOf(stmt.Context, row); isZero || v == "" {
+		_ = tenantField.Set(stmt.Context, row, global.GWAF_TENANT_ID)
+	}
+	if v, isZero := userField.ValueOf(stmt.Context, row); isZero || v == "" {
+		_ = userField.Set(stmt.Context, row, global.GWAF_USER_CODE)
+	}
 }
 
 // 在线备份

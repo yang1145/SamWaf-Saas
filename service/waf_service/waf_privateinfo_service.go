@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"time"
 )
@@ -15,7 +16,7 @@ type WafPrivateInfoService struct{}
 
 var WafPrivateInfoServiceApp = new(WafPrivateInfoService)
 
-func (receiver *WafPrivateInfoService) AddApi(req request.WafPrivateInfoAddReq) error {
+func (receiver *WafPrivateInfoService) AddApi(ctx context.Context, req request.WafPrivateInfoAddReq) error {
 	var bean = &model.PrivateInfo{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -31,11 +32,11 @@ func (receiver *WafPrivateInfoService) AddApi(req request.WafPrivateInfoAddReq) 
 		PrivateGroupBelongCloud: req.PrivateGroupBelongCloud,
 		Remarks:                 req.Remarks,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean)
 	return nil
 }
 
-func (receiver *WafPrivateInfoService) CheckIsExistApi(req request.WafPrivateInfoAddReq) int {
+func (receiver *WafPrivateInfoService) CheckIsExistApi(ctx context.Context, req request.WafPrivateInfoAddReq) int {
 	var total int64 = 0
 	/*where条件*/
 	var whereField = ""
@@ -79,11 +80,11 @@ func (receiver *WafPrivateInfoService) CheckIsExistApi(req request.WafPrivateInf
 		}
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Where(whereField, whereValues...).Count(&total)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.PrivateInfo{}).Where(whereField, whereValues...).Count(&total)
 	return int(total)
 }
 
-func (receiver *WafPrivateInfoService) ModifyWithOutValueApi(req request.WafPrivateInfoEditReq) error {
+func (receiver *WafPrivateInfoService) ModifyWithOutValueApi(ctx context.Context, req request.WafPrivateInfoEditReq) error {
 	// 根据唯一字段生成查询条件（只有在UniFields不为空时才进行存在性检查）
 	var total int64 = 0
 	/*where条件*/
@@ -127,10 +128,11 @@ func (receiver *WafPrivateInfoService) ModifyWithOutValueApi(req request.WafPriv
 		}
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.PrivateInfo{}).Where(whereField, whereValues...).Count(&total)
 	// 查询是否已存在记录
 	var bean model.PrivateInfo
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
+	db.Model(&model.PrivateInfo{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
 
 	if int(total) > 0 && bean.PrivateKey != "" && bean.PrivateKey != req.PrivateKey {
 		return errors.New("当前记录已经存在")
@@ -143,12 +145,12 @@ func (receiver *WafPrivateInfoService) ModifyWithOutValueApi(req request.WafPriv
 		"PrivateGroupBelongCloud": req.PrivateGroupBelongCloud,
 		"UPDATE_TIME":             customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.PrivateInfo{}).Where("private_key = ?", req.PrivateKey).Updates(beanMap).Error
+	err := db.Model(model.PrivateInfo{}).Where("private_key = ?", req.PrivateKey).Updates(beanMap).Error
 
 	return err
 }
 
-func (receiver *WafPrivateInfoService) ModifyApi(req request.WafPrivateInfoEditReq) error {
+func (receiver *WafPrivateInfoService) ModifyApi(ctx context.Context, req request.WafPrivateInfoEditReq) error {
 	// 根据唯一字段生成查询条件（只有在UniFields不为空时才进行存在性检查）
 
 	var total int64 = 0
@@ -193,10 +195,11 @@ func (receiver *WafPrivateInfoService) ModifyApi(req request.WafPrivateInfoEditR
 		}
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.PrivateInfo{}).Where(whereField, whereValues...).Count(&total)
 	// 查询是否已存在记录
 	var bean model.PrivateInfo
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
+	db.Model(&model.PrivateInfo{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
 
 	if int(total) > 0 && bean.PrivateKey != "" && bean.PrivateKey != req.PrivateKey {
 		return errors.New("当前记录已经存在")
@@ -212,53 +215,57 @@ func (receiver *WafPrivateInfoService) ModifyApi(req request.WafPrivateInfoEditR
 
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.PrivateInfo{}).Where("private_key = ?", req.PrivateKey).Updates(beanMap).Error
+	err := db.Model(model.PrivateInfo{}).Where("private_key = ?", req.PrivateKey).Updates(beanMap).Error
 
 	return err
 }
-func (receiver *WafPrivateInfoService) GetDetailApi(req request.WafPrivateInfoDetailReq) model.PrivateInfo {
+func (receiver *WafPrivateInfoService) GetDetailApi(ctx context.Context, req request.WafPrivateInfoDetailReq) model.PrivateInfo {
 	var bean model.PrivateInfo
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafPrivateInfoService) GetDetailByIdApi(id string) model.PrivateInfo {
+func (receiver *WafPrivateInfoService) GetDetailByIdApi(ctx context.Context, id string) model.PrivateInfo {
 	var bean model.PrivateInfo
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafPrivateInfoService) GetListApi(req request.WafPrivateInfoSearchReq) ([]model.PrivateInfo, int64, error) {
+func (receiver *WafPrivateInfoService) GetListApi(ctx context.Context, req request.WafPrivateInfoSearchReq) ([]model.PrivateInfo, int64, error) {
 	var list []model.PrivateInfo
 	var total int64 = 0
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.PrivateInfo{}).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.PrivateInfo{}).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafPrivateInfoService) DelApi(req request.WafPrivateInfoDelReq) error {
+func (receiver *WafPrivateInfoService) DelApi(ctx context.Context, req request.WafPrivateInfoDelReq) error {
 	var bean model.PrivateInfo
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.PrivateInfo{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.PrivateInfo{}).Error
 	return err
 }
 
-func (receiver *WafPrivateInfoService) GetListPureApi() ([]model.PrivateInfo, int64, error) {
+func (receiver *WafPrivateInfoService) GetListPureApi(ctx context.Context) ([]model.PrivateInfo, int64, error) {
 	var list []model.PrivateInfo
 	var total int64 = 0
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.PrivateInfo{}).Find(&list)
+	db.Model(&model.PrivateInfo{}).Count(&total)
 
 	return list, total, nil
 }
 
 // GetListByGroupAndBelongCloudPureApi 依据分组名称和所属云查询
-func (receiver *WafPrivateInfoService) GetListByGroupAndBelongCloudPureApi(groupName string, belongCloud string) ([]model.PrivateInfo, int64, error) {
+func (receiver *WafPrivateInfoService) GetListByGroupAndBelongCloudPureApi(ctx context.Context, groupName string, belongCloud string) ([]model.PrivateInfo, int64, error) {
 	var list []model.PrivateInfo
 	var total int64 = 0
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Where("private_group_name = ? and private_group_belong_cloud=?", groupName, belongCloud).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.PrivateInfo{}).Where("private_group_name = ? and private_group_belong_cloud=?", groupName, belongCloud).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.PrivateInfo{}).Where("private_group_name = ? and private_group_belong_cloud=?", groupName, belongCloud).Find(&list)
+	db.Model(&model.PrivateInfo{}).Where("private_group_name = ? and private_group_belong_cloud=?", groupName, belongCloud).Count(&total)
 
 	return list, total, nil
 }

@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -64,7 +65,7 @@ func TestCCRuleSort_KeepsUnsubmittedRulesInPlace(t *testing.T) {
 	mkRule(t, db, "b", "h1", 20)
 	mkRule(t, db, "c", "h1", 30) // 不在本次提交里（比如在下一页）
 
-	if err := WafAntiCCRuleServiceApp.SortApi(request.WafAntiCCRuleSortReq{
+	if err := WafAntiCCRuleServiceApp.SortApi(context.Background(), request.WafAntiCCRuleSortReq{
 		HostCode: "h1", Ids: []string{"b", "a"},
 	}); err != nil {
 		t.Fatalf("排序失败: %v", err)
@@ -87,7 +88,7 @@ func TestCCRuleSort_HandlesDuplicatePriorities(t *testing.T) {
 	mkRule(t, db, "a", "h1", 100)
 	mkRule(t, db, "b", "h1", 100)
 
-	if err := WafAntiCCRuleServiceApp.SortApi(request.WafAntiCCRuleSortReq{
+	if err := WafAntiCCRuleServiceApp.SortApi(context.Background(), request.WafAntiCCRuleSortReq{
 		HostCode: "h1", Ids: []string{"b", "a"},
 	}); err != nil {
 		t.Fatalf("排序失败: %v", err)
@@ -104,7 +105,7 @@ func TestCCRuleSort_RejectsForeignIds(t *testing.T) {
 	mkRule(t, db, "a", "h1", 10)
 	mkRule(t, db, "x", "h2", 10)
 
-	if err := WafAntiCCRuleServiceApp.SortApi(request.WafAntiCCRuleSortReq{
+	if err := WafAntiCCRuleServiceApp.SortApi(context.Background(), request.WafAntiCCRuleSortReq{
 		HostCode: "h1", Ids: []string{"a", "x"},
 	}); err == nil {
 		t.Fatal("提交了别的站点的规则却没报错")

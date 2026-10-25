@@ -1,6 +1,7 @@
 package wafdb
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -115,7 +116,7 @@ func TestExportLogRangeDbFansOutAcrossSources(t *testing.T) {
 		{Shard: "local_log_202609.db", Tables: TierTables{DB: archDB, Access: model.AccessLogTableName, WebLog: LogTableName}},
 	}
 	tiers := map[string]bool{ExportTierAccess: true, ExportTierWeblog: true}
-	counts, err := ExportLogRangeDb(out, ts(0), ts(10), tiers, sources)
+	counts, err := ExportLogRangeDb(context.Background(), out, ts(0), ts(10), tiers, sources)
 	if err != nil {
 		t.Fatalf("导出失败: %v", err)
 	}

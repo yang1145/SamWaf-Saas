@@ -9,6 +9,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -78,7 +79,7 @@ func httpAuthSessionCacheKey(hostCode, tokenCode string) string {
 // ─────────────────────────── 签发 ───────────────────────────
 
 // CreateCustomSession 建立一条 custom 模式会话，返回要写进 Cookie 的明文。
-func (receiver *WafHttpAuthSessionService) CreateCustomSession(host model.Hosts, userName, clientIP,
+func (receiver *WafHttpAuthSessionService) CreateCustomSession(ctx context.Context, host model.Hosts, userName, clientIP,
 	userAgent string, cfg model.HttpAuthConfig) (string, model.HttpAuthSession, error) {
 
 	plain, err := genHttpAuthToken()
@@ -87,7 +88,8 @@ func (receiver *WafHttpAuthSessionService) CreateCustomSession(host model.Hosts,
 	}
 	bean := receiver.newSession(host, model.HttpAuthTypeCustom, HashHttpAuthToken(plain),
 		userName, clientIP, userAgent, cfg)
-	if err := global.GWAF_LOCAL_DB.Create(&bean).Error; err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := db.Create(&bean).Error; err != nil {
 		return "", model.HttpAuthSession{}, err
 	}
 	receiver.cacheSession(bean)
@@ -128,7 +130,7 @@ func (receiver *WafHttpAuthSessionService) newSession(host model.Hosts, authType
 // ─────────────────────────── 校验 ───────────────────────────
 
 // ValidateCustom 校验 custom 模式的 Cookie 明文。第二个返回值为 false 表示要下发登录页。
-func (receiver *WafHttpAuthSessionService) ValidateCustom(hostCode, plain, clientIP string,
+func (receiver *WafHttpAuthSessionService) ValidateCustom(ctx context.Context, hostCode, plain, clientIP string,
 	cfg model.HttpAuthConfig) (*model.HttpAuthSession, bool) {
 
 	if strings.TrimSpace(plain) == "" {
@@ -139,7 +141,7 @@ func (receiver *WafHttpAuthSessionService) ValidateCustom(hostCode, plain, clien
 	if global.GCACHE_WAFCACHE.IsKeyExist(enums.CACHE_HTTPAUTH_BAD + tokenCode) {
 		return nil, false
 	}
-	sess := receiver.loadSession(hostCode, tokenCode)
+	sess := receiver.loadSession(ctx, hostCode, tokenCode)
 	if sess == nil {
 		receiver.markBadToken(tokenCode)
 		return nil, false
@@ -153,7 +155,7 @@ func (receiver *WafHttpAuthSessionService) ValidateCustom(hostCode, plain, clien
 			// 顺手把库里的状态改对。到期由清理任务兜底，但空闲超时只有校验这一刻算得出来，
 			// 不落库的话管理端会一直把一个早就掉线的人显示成「在线」。
 			if sess.Status == model.HttpAuthStatusValid {
-				receiver.revokeRow(sess, model.HttpAuthRevokeByExpire)
+				receiver.revokeRow(ctx, sess, model.HttpAuthRevokeByExpire)
 			} else {
 				receiver.markBadToken(tokenCode)
 				global.GCACHE_WAFCACHE.Remove(httpAuthSessionCacheKey(hostCode, tokenCode))
@@ -161,7 +163,7 @@ func (receiver *WafHttpAuthSessionService) ValidateCustom(hostCode, plain, clien
 		}
 		return nil, false
 	}
-	receiver.touch(sess, now)
+	receiver.touch(ctx, sess, now)
 	return sess, true
 }
 
@@ -184,7 +186,7 @@ type BasicAuthResult struct {
 //
 // 与 custom 的区别在于这里没有令牌：会话行按 (站点+用户+IP) 唯一，不存在就建、
 // 存在就刷新活跃时间；被踢或到期时返回 Challenge，由调用方换 realm 发 401。
-func (receiver *WafHttpAuthSessionService) TouchBasicSession(host model.Hosts, userName, clientIP,
+func (receiver *WafHttpAuthSessionService) TouchBasicSession(ctx context.Context, host model.Hosts, userName, clientIP,
 	userAgent string, cfg model.HttpAuthConfig) BasicAuthResult {
 
 	tokenCode := BasicSessionCode(host.Code, userName, clientIP)
@@ -212,11 +214,12 @@ func (receiver *WafHttpAuthSessionService) TouchBasicSession(host model.Hosts, u
 	}
 
 	now := time.Now()
-	sess := receiver.loadSession(host.Code, tokenCode)
+	sess := receiver.loadSession(ctx, host.Code, tokenCode)
 	if sess == nil {
 		bean := receiver.newSession(host, model.HttpAuthTypeAuthorization, tokenCode,
 			userName, clientIP, userAgent, cfg)
-		if err := global.GWAF_LOCAL_DB.Create(&bean).Error; err != nil {
+		db := global.GWAF_LOCAL_DB.WithContext(ctx)
+		if err := db.Create(&bean).Error; err != nil {
 			// 记账失败不能连累访问：凭证本身已经校验通过了
 			return BasicAuthResult{Session: &bean}
 		}
@@ -226,32 +229,32 @@ func (receiver *WafHttpAuthSessionService) TouchBasicSession(host model.Hosts, u
 
 	// 到期：换 realm 挑战一次，同时开冷却，避免同一次页面加载的几十个请求反复走这段
 	if time.Now().After(time.Time(sess.ExpireTime)) && sess.Status == model.HttpAuthStatusValid {
-		receiver.revokeRow(sess, model.HttpAuthRevokeByExpire)
+		receiver.revokeRow(ctx, sess, model.HttpAuthRevokeByExpire)
 		nonce := receiver.startKickCooldown(tokenCode)
 		return BasicAuthResult{Challenge: true, RealmNonce: nonce, Expired: true}
 	}
 
 	// 状态为已失效且冷却期已过 —— 说明这是踢下线之后的重新登录，凭证刚刚校验通过，放行并复活该行
 	if sess.Status != model.HttpAuthStatusValid {
-		receiver.reactivate(sess, cfg, now)
+		receiver.reactivate(ctx, sess, cfg, now)
 		return BasicAuthResult{Session: sess, Created: true}
 	}
 
-	receiver.touch(sess, now)
+	receiver.touch(ctx, sess, now)
 	return BasicAuthResult{Session: sess}
 }
 
 // loadSession 先查缓存再回落数据库，未命中不缓存空值（负向缓存另有 CACHE_HTTPAUTH_BAD）。
 // 回落查库这一步是重启后会话仍然有效的关键。
 // 缓存读取失败（后端故障）与未命中在这里同样处理：都回落查库，所以缓存抖动不会让访客掉线。
-func (receiver *WafHttpAuthSessionService) loadSession(hostCode, tokenCode string) *model.HttpAuthSession {
+func (receiver *WafHttpAuthSessionService) loadSession(ctx context.Context, hostCode, tokenCode string) *model.HttpAuthSession {
 	key := httpAuthSessionCacheKey(hostCode, tokenCode)
 	var cached model.HttpAuthSession
 	if err := global.GCACHE_WAFCACHE.GetAs(key, &cached); err == nil && cached.TokenCode == tokenCode {
 		return &cached
 	}
 	var bean model.HttpAuthSession
-	err := global.GWAF_LOCAL_DB.Where("host_code = ? and token_code = ?", hostCode, tokenCode).
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ? and token_code = ?", hostCode, tokenCode).
 		First(&bean).Error
 	if err != nil || bean.Id == "" {
 		return nil
@@ -296,12 +299,12 @@ func (receiver *WafHttpAuthSessionService) alive(sess *model.HttpAuthSession, cl
 }
 
 // touch 节流刷新最后活跃时间。库行变了缓存副本就作废，否则空闲超时会按旧的活跃时间算。
-func (receiver *WafHttpAuthSessionService) touch(sess *model.HttpAuthSession, now time.Time) {
+func (receiver *WafHttpAuthSessionService) touch(ctx context.Context, sess *model.HttpAuthSession, now time.Time) {
 	last := time.Time(sess.LastActiveTime)
 	if !last.IsZero() && now.Sub(last) < httpAuthTouchInterval {
 		return
 	}
-	global.GWAF_LOCAL_DB.Model(&model.HttpAuthSession{}).Where("id = ?", sess.Id).
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HttpAuthSession{}).Where("id = ?", sess.Id).
 		Updates(map[string]interface{}{
 			"last_active_time": customtype.JsonTime(now), "update_time": customtype.JsonTime(now),
 		})
@@ -310,11 +313,11 @@ func (receiver *WafHttpAuthSessionService) touch(sess *model.HttpAuthSession, no
 }
 
 // reactivate 把一条已失效的 Basic 会话行按「重新登录」复位，避免同一 (站点+用户+IP) 反复建行。
-func (receiver *WafHttpAuthSessionService) reactivate(sess *model.HttpAuthSession,
+func (receiver *WafHttpAuthSessionService) reactivate(ctx context.Context, sess *model.HttpAuthSession,
 	cfg model.HttpAuthConfig, now time.Time) {
 
 	expire := customtype.JsonTime(now.Add(time.Duration(cfg.SessionTTL) * time.Minute))
-	global.GWAF_LOCAL_DB.Model(&model.HttpAuthSession{}).Where("id = ?", sess.Id).
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HttpAuthSession{}).Where("id = ?", sess.Id).
 		Updates(map[string]interface{}{
 			"status": model.HttpAuthStatusValid, "revoke_reason": "",
 			"login_time": customtype.JsonTime(now), "last_active_time": customtype.JsonTime(now),
@@ -344,9 +347,9 @@ func (receiver *WafHttpAuthSessionService) startKickCooldown(tokenCode string) s
 //
 // 先落库、再驱逐缓存，顺序不能反：反过来会有一个「缓存已清、库里还有效」的窗口，
 // 期间任何一次请求都会把旧状态重新写回缓存，踢下线就失效了。
-func (receiver *WafHttpAuthSessionService) revokeRow(sess *model.HttpAuthSession, reason string) {
+func (receiver *WafHttpAuthSessionService) revokeRow(ctx context.Context, sess *model.HttpAuthSession, reason string) {
 	now := customtype.JsonTime(time.Now())
-	global.GWAF_LOCAL_DB.Model(&model.HttpAuthSession{}).Where("id = ?", sess.Id).
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HttpAuthSession{}).Where("id = ?", sess.Id).
 		Updates(map[string]interface{}{
 			"status": model.HttpAuthStatusRevoked, "revoke_reason": reason, "update_time": now,
 		})
@@ -370,9 +373,10 @@ func (receiver *WafHttpAuthSessionService) kickCache(hostCode, tokenCode, authTy
 
 // revokeWhere 按条件批量撤销，返回受影响条数。命中的行要逐条驱逐缓存，
 // 只更库不清缓存的话，最长还有一个正向缓存 TTL 的时间里旧状态仍然放行。
-func (receiver *WafHttpAuthSessionService) revokeWhere(reason string, query string, args ...interface{}) int {
+func (receiver *WafHttpAuthSessionService) revokeWhere(ctx context.Context, reason string, query string, args ...interface{}) int {
 	var list []model.HttpAuthSession
-	global.GWAF_LOCAL_DB.Where(query, args...).Where("status = ?", model.HttpAuthStatusValid).Find(&list)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where(query, args...).Where("status = ?", model.HttpAuthStatusValid).Find(&list)
 	if len(list) == 0 {
 		return 0
 	}
@@ -381,7 +385,7 @@ func (receiver *WafHttpAuthSessionService) revokeWhere(reason string, query stri
 	for _, s := range list {
 		ids = append(ids, s.Id)
 	}
-	global.GWAF_LOCAL_DB.Model(&model.HttpAuthSession{}).Where("id in ?", ids).
+	db.Model(&model.HttpAuthSession{}).Where("id in ?", ids).
 		Updates(map[string]interface{}{
 			"status": model.HttpAuthStatusRevoked, "revoke_reason": reason, "update_time": now,
 		})
@@ -392,31 +396,31 @@ func (receiver *WafHttpAuthSessionService) revokeWhere(reason string, query stri
 }
 
 // RevokeByUser 账号被删除或改密时调用：该账号在本站点的全部会话立即失效。
-func (receiver *WafHttpAuthSessionService) RevokeByUser(hostCode, userName, reason string) int {
+func (receiver *WafHttpAuthSessionService) RevokeByUser(ctx context.Context, hostCode, userName, reason string) int {
 	if hostCode == "" || userName == "" {
 		return 0
 	}
-	return receiver.revokeWhere(reason, "host_code = ? and user_name = ?", hostCode, userName)
+	return receiver.revokeWhere(ctx, reason, "host_code = ? and user_name = ?", hostCode, userName)
 }
 
 // RevokeByHostCode 站点被删除或关闭密码访问时调用。
-func (receiver *WafHttpAuthSessionService) RevokeByHostCode(hostCode, reason string) int {
+func (receiver *WafHttpAuthSessionService) RevokeByHostCode(ctx context.Context, hostCode, reason string) int {
 	if hostCode == "" {
 		return 0
 	}
-	return receiver.revokeWhere(reason, "host_code = ?", hostCode)
+	return receiver.revokeWhere(ctx, reason, "host_code = ?", hostCode)
 }
 
 // ─────────────────────────── 管理端 ───────────────────────────
 
-func (receiver *WafHttpAuthSessionService) GetListApi(req request.WafHttpAuthSessionSearchReq) ([]model.HttpAuthSession, int64, error) {
+func (receiver *WafHttpAuthSessionService) GetListApi(ctx context.Context, req request.WafHttpAuthSessionSearchReq) ([]model.HttpAuthSession, int64, error) {
 	var list []model.HttpAuthSession
 	var total int64 = 0
 
 	if strings.TrimSpace(req.HostCode) == "" {
 		return nil, 0, errors.New("站点编码不能为空")
 	}
-	db := global.GWAF_LOCAL_DB.Model(&model.HttpAuthSession{}).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HttpAuthSession{}).
 		Where("user_code = ? and tenant_id = ? and host_code = ?",
 			global.GWAF_USER_CODE, global.GWAF_TENANT_ID, strings.TrimSpace(req.HostCode))
 	if v := strings.TrimSpace(req.UserName); v != "" {
@@ -449,12 +453,12 @@ func (receiver *WafHttpAuthSessionService) GetListApi(req request.WafHttpAuthSes
 
 // KickApi 踢掉一条会话。按主键把行取出来再拿它的 token_code 去撤销，
 // 不接受调用方直接传 token_code——那等于让管理端接口成为「凭摘要操作任意会话」的入口。
-func (receiver *WafHttpAuthSessionService) KickApi(req request.WafHttpAuthSessionKickReq) error {
+func (receiver *WafHttpAuthSessionService) KickApi(ctx context.Context, req request.WafHttpAuthSessionKickReq) error {
 	if strings.TrimSpace(req.Id) == "" {
 		return errors.New("会话标识不能为空")
 	}
 	var bean model.HttpAuthSession
-	err := global.GWAF_LOCAL_DB.Where("id = ? and user_code = ? and tenant_id = ?",
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ? and user_code = ? and tenant_id = ?",
 		strings.TrimSpace(req.Id), global.GWAF_USER_CODE, global.GWAF_TENANT_ID).First(&bean).Error
 	if err != nil || bean.Id == "" {
 		return errors.New("会话不存在")
@@ -462,7 +466,7 @@ func (receiver *WafHttpAuthSessionService) KickApi(req request.WafHttpAuthSessio
 	if bean.Status != model.HttpAuthStatusValid {
 		return nil
 	}
-	receiver.revokeRow(&bean, model.HttpAuthRevokeByAdmin)
+	receiver.revokeRow(ctx, &bean, model.HttpAuthRevokeByAdmin)
 	WafSecurityAuditServiceApp.Write(AuditEntry{
 		Event:       model.HttpAuthEventKick,
 		AccountName: bean.UserName,
@@ -479,11 +483,11 @@ func (receiver *WafHttpAuthSessionService) KickApi(req request.WafHttpAuthSessio
 }
 
 // KickByUserApi 踢掉某个用户在本站点的全部会话。
-func (receiver *WafHttpAuthSessionService) KickByUserApi(req request.WafHttpAuthSessionKickByUserReq) (int, error) {
+func (receiver *WafHttpAuthSessionService) KickByUserApi(ctx context.Context, req request.WafHttpAuthSessionKickByUserReq) (int, error) {
 	if strings.TrimSpace(req.HostCode) == "" || strings.TrimSpace(req.UserName) == "" {
 		return 0, errors.New("站点编码与用户名不能为空")
 	}
-	n := receiver.RevokeByUser(strings.TrimSpace(req.HostCode), strings.TrimSpace(req.UserName),
+	n := receiver.RevokeByUser(ctx, strings.TrimSpace(req.HostCode), strings.TrimSpace(req.UserName),
 		model.HttpAuthRevokeByAdmin)
 	if n > 0 {
 		WafSecurityAuditServiceApp.Write(AuditEntry{
@@ -498,11 +502,11 @@ func (receiver *WafHttpAuthSessionService) KickByUserApi(req request.WafHttpAuth
 }
 
 // KickAllApi 踢掉本站点全部会话。
-func (receiver *WafHttpAuthSessionService) KickAllApi(req request.WafHttpAuthSessionKickAllReq) (int, error) {
+func (receiver *WafHttpAuthSessionService) KickAllApi(ctx context.Context, req request.WafHttpAuthSessionKickAllReq) (int, error) {
 	if strings.TrimSpace(req.HostCode) == "" {
 		return 0, errors.New("站点编码不能为空")
 	}
-	n := receiver.RevokeByHostCode(strings.TrimSpace(req.HostCode), model.HttpAuthRevokeByAdmin)
+	n := receiver.RevokeByHostCode(ctx, strings.TrimSpace(req.HostCode), model.HttpAuthRevokeByAdmin)
 	if n > 0 {
 		WafSecurityAuditServiceApp.Write(AuditEntry{
 			Event:    model.HttpAuthEventKick,
@@ -518,12 +522,13 @@ func (receiver *WafHttpAuthSessionService) KickAllApi(req request.WafHttpAuthSes
 
 // CleanExpired 由定时任务调用：先把到期的有效会话标记失效，再删掉超过保留期的历史行。
 // 返回 (本次标记到期数, 删除历史行数)。
-func (receiver *WafHttpAuthSessionService) CleanExpired(keepDays int) (int64, int64) {
+func (receiver *WafHttpAuthSessionService) CleanExpired(ctx context.Context, keepDays int) (int64, int64) {
 	if keepDays <= 0 {
 		keepDays = 30
 	}
 	now := time.Now()
-	r1 := global.GWAF_LOCAL_DB.Model(&model.HttpAuthSession{}).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	r1 := db.Model(&model.HttpAuthSession{}).
 		Where("status = ? and expire_time < ?", model.HttpAuthStatusValid, now).
 		Updates(map[string]interface{}{
 			"status": model.HttpAuthStatusRevoked, "revoke_reason": model.HttpAuthRevokeByExpire,
@@ -531,7 +536,7 @@ func (receiver *WafHttpAuthSessionService) CleanExpired(keepDays int) (int64, in
 		})
 	// 到期行的缓存不逐条驱逐：正向缓存 TTL 只有 60 秒，而且 alive() 本来就会独立判过期，
 	// 缓存里留着的副本不会让一条已过期的会话继续放行。
-	r2 := global.GWAF_LOCAL_DB.Where("status = ? and update_time < ?",
+	r2 := db.Where("status = ? and update_time < ?",
 		model.HttpAuthStatusRevoked, now.AddDate(0, 0, -keepDays)).Delete(&model.HttpAuthSession{})
 	return r1.RowsAffected, r2.RowsAffected
 }

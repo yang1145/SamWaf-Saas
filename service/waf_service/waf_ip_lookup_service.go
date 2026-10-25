@@ -9,6 +9,7 @@ import (
 	"SamWaf/wafenginecore/ipset"
 	"SamWaf/wafipban"
 	"SamWaf/waftask/threatip"
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -712,7 +713,7 @@ func blockTypeText(v string) string {
 // 不是真实访客——排查「为什么日志里全是同几个 IP」时这条最关键
 func (r *WafIPLookupService) matchCDN(ip string, resp *response2.IPLookupResp) {
 	parsed := net.ParseIP(ip)
-	views := WafCDNIPServiceApp.GetProviderList()
+	views := WafCDNIPServiceApp.GetProviderList(context.Background())
 	for _, v := range views {
 		if v.Count <= 0 {
 			continue
@@ -725,7 +726,7 @@ func (r *WafIPLookupService) matchCDN(ip string, resp *response2.IPLookupResp) {
 		}
 		fetchFailed := false
 		set := matcherFor(cdnMatchers, v.Provider, sha, func() []string {
-			cidrs, err := WafCDNIPServiceApp.GetProviderCIDRs(v.Provider)
+			cidrs, err := WafCDNIPServiceApp.GetProviderCIDRs(context.Background(), v.Provider)
 			if err != nil {
 				fetchFailed = true
 				return nil
@@ -740,7 +741,7 @@ func (r *WafIPLookupService) matchCDN(ip string, resp *response2.IPLookupResp) {
 			continue
 		}
 		entry := ""
-		if cidrs, err := WafCDNIPServiceApp.GetProviderCIDRs(v.Provider); err == nil {
+		if cidrs, err := WafCDNIPServiceApp.GetProviderCIDRs(context.Background(), v.Provider); err == nil {
 			entry = matchedEntryIn(cidrs, parsed)
 		}
 		resp.Hits = append(resp.Hits, response2.IPLookupHit{

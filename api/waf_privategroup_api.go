@@ -26,9 +26,9 @@ func (w *WafPrivateGroupApi) AddApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 
-		cnt := wafPrivateGroupService.CheckIsExistApi(req)
+		cnt := wafPrivateGroupService.CheckIsExistApi(c.Request.Context(), req)
 		if cnt == 0 {
-			err = wafPrivateGroupService.AddApi(req)
+			err = wafPrivateGroupService.AddApi(c.Request.Context(), req)
 			if err == nil {
 				response.OkWithMessage("添加成功", c)
 			} else {
@@ -59,7 +59,7 @@ func (w *WafPrivateGroupApi) GetDetailApi(c *gin.Context) {
 	var req request.WafPrivateGroupDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafPrivateGroupService.GetDetailApi(req)
+		bean := wafPrivateGroupService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -80,7 +80,7 @@ func (w *WafPrivateGroupApi) GetListApi(c *gin.Context) {
 	var req request.WafPrivateGroupSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		PrivateGroup, total, _ := wafPrivateGroupService.GetListApi(req)
+		PrivateGroup, total, _ := wafPrivateGroupService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      PrivateGroup,
 			Total:     total,
@@ -106,7 +106,7 @@ func (w *WafPrivateGroupApi) GetListByBelongCloudApi(c *gin.Context) {
 	var req request.WafPrivateGroupSearchByCloudReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		PrivateGroup, total, _ := wafPrivateGroupService.GetListByBelongCloudApi(req)
+		PrivateGroup, total, _ := wafPrivateGroupService.GetListByBelongCloudApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      PrivateGroup,
 			Total:     total,
@@ -132,7 +132,7 @@ func (w *WafPrivateGroupApi) DelApi(c *gin.Context) {
 	var req request.WafPrivateGroupDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafPrivateGroupService.DelApi(req)
+		err = wafPrivateGroupService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -159,7 +159,7 @@ func (w *WafPrivateGroupApi) ModifyApi(c *gin.Context) {
 	var req request.WafPrivateGroupEditReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		err = wafPrivateGroupService.ModifyApi(req)
+		err = wafPrivateGroupService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误"+err.Error(), c)
 		} else {

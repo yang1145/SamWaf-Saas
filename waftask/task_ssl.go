@@ -1,6 +1,7 @@
 package waftask
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/customtype"
 	"SamWaf/enums"
@@ -10,6 +11,7 @@ import (
 	"SamWaf/model/spec"
 	"SamWaf/service/waf_service"
 	"SamWaf/utils"
+	"context"
 	"fmt"
 	"time"
 )
@@ -34,7 +36,7 @@ func SSLReload() {
 		//2.如果对应得位置有内容
 		//3.就开始判断数据是否是正常的，如果正常则备份现有，然后现有的证书替换掉
 		//4.重新查询让关联的主机信息重新加载
-		sslConfigReps, err := wafSslConfigService.GetAllListInner()
+		sslConfigReps, err := wafSslConfigService.GetAllListInner(wafctx.PlatformScope(context.Background()))
 		if err != nil {
 			zlog.Error(innerLogName, "ssl config:", err)
 			return
@@ -77,8 +79,8 @@ func SSLReload() {
 			zlog.Info(innerLogName, fmt.Sprintf("证书夹[%s] 检测到新证书，准备更新: 序列号 %s -> %s, 到期时间 %s -> %s",
 				rep.Domains, nonEmpty(diag.OldSerial), nonEmpty(diag.NewSerial), fmtTime(diag.OldValidTo), fmtTime(diag.NewValidTo)))
 
-			wafSslConfigService.CreateNewIdInner(backSslConfig)
-			err = wafSslConfigService.ModifyInner(updateSslConfig)
+			wafSslConfigService.CreateNewIdInner(wafctx.PlatformScope(context.Background()), backSslConfig)
+			err = wafSslConfigService.ModifyInner(wafctx.PlatformScope(context.Background()), updateSslConfig)
 			if err != nil {
 				zlog.Error(innerLogName, "ssl modify inner config:", err.Error())
 			}
@@ -87,15 +89,15 @@ func SSLReload() {
 
 			//证书导出(落盘)：路径自动加载进来的新证书同样同步一份到导出路径（issue #929）
 			//导出失败只记录日志，不影响本次加载已经生效的结果
-			if exportMsg, exportErr := wafSslConfigService.ExportById(updateSslConfig.Id); exportErr != nil {
+			if exportMsg, exportErr := wafSslConfigService.ExportById(wafctx.PlatformScope(context.Background()), updateSslConfig.Id); exportErr != nil {
 				zlog.Error(innerLogName, fmt.Sprintf("证书夹[%s] 证书导出失败: %v", rep.Domains, exportErr))
 			} else if exportMsg != "" {
 				zlog.Info(innerLogName, fmt.Sprintf("证书夹[%s] %s", rep.Domains, exportMsg))
 			}
 			hostCount := 0
-			for _, hosts := range wafHostService.GetHostBySSLConfigId(updateSslConfig.Id) {
+			for _, hosts := range wafHostService.GetHostBySSLConfigId(wafctx.PlatformScope(context.Background()), updateSslConfig.Id) {
 				//1.更新主机信息 2.发送主机通知
-				err = wafHostService.UpdateSSLInfo(updateSslConfig.CertContent, updateSslConfig.KeyContent, hosts.Code)
+				err = wafHostService.UpdateSSLInfo(wafctx.PlatformScope(context.Background()), updateSslConfig.CertContent, updateSslConfig.KeyContent, hosts.Code)
 				if err != nil {
 					zlog.Error(innerLogName, "ssl host update:", err.Error())
 					continue
@@ -141,11 +143,11 @@ func SSLOrderReload() {
 	innerLogName := "TaskSSLOrder"
 	zlog.Info(innerLogName, "准备进行ssl证书自动续期检测")
 	//1.找出来所有得SSL得主机 2.查询是否存在自动SSL订单得最新得数据 3.查询没有到期得最后一条信息来申请延期
-	allSSLHost, _, err := wafHostService.GetAllSSLBindHost()
+	allSSLHost, _, err := wafHostService.GetAllSSLBindHost(wafctx.PlatformScope(context.Background()))
 	if err == nil {
 		for _, hostBean := range allSSLHost {
 			zlog.Info(innerLogName, fmt.Sprintf("正在检测域名: %s:%d", hostBean.Host, hostBean.Port))
-			lastSslOrderInfo, err := wafSslOrderService.GetLastedInfo(hostBean.Code)
+			lastSslOrderInfo, err := wafSslOrderService.GetLastedInfo(wafctx.PlatformScope(context.Background()), hostBean.Code)
 			if err != nil {
 				zlog.Error(innerLogName, "ssl order get lasted info:", err.Error())
 			} else {
@@ -214,7 +216,7 @@ func SSLExpireCheck() {
 		SyncHostToSslCheck()
 	}
 	zlog.Info(innerLogName, "准备进行SSL证书过期检测")
-	sslExpires, cnt, err := wafSslExpireService.GetAllList()
+	sslExpires, cnt, err := wafSslExpireService.GetAllList(wafctx.PlatformScope(context.Background()))
 	if err != nil {
 		zlog.Error(innerLogName, "ssl expire list:", err.Error())
 		return
@@ -239,7 +241,7 @@ func SSLExpireCheck() {
 			checkAndNotifySSLExpire(expireBean.Domain, expiryTime)
 		}
 		//更新数据
-		wafSslExpireService.Modify(expireBean)
+		wafSslExpireService.Modify(wafctx.PlatformScope(context.Background()), expireBean)
 	}
 	zlog.Info(innerLogName, "进行SSL证书过期检测完毕")
 }
@@ -253,7 +255,7 @@ func SyncHostToSslCheck() {
 	innerLogName := "SyncHostToSslCheck"
 	zlog.Info(innerLogName, "准备进行同步已存在主机到SSL证书检测任务里")
 	//检测信息 如果主机和端口不存在 则新增
-	sslHost, sslHostCnt, err := wafHostService.GetAllSSLHost()
+	sslHost, sslHostCnt, err := wafHostService.GetAllSSLHost(wafctx.PlatformScope(context.Background()))
 	if err != nil {
 		zlog.Error(innerLogName, "sync host to ssl expire:", err.Error())
 		return
@@ -263,9 +265,9 @@ func SyncHostToSslCheck() {
 		return
 	}
 	for _, hostBean := range sslHost {
-		if wafSslExpireService.CheckIsExist(hostBean.Host, hostBean.Port) == 0 {
+		if wafSslExpireService.CheckIsExist(wafctx.PlatformScope(context.Background()), hostBean.Host, hostBean.Port) == 0 {
 			//插入新的数据
-			wafSslExpireService.Add(hostBean.Host, hostBean.Port)
+			wafSslExpireService.Add(wafctx.PlatformScope(context.Background()), hostBean.Host, hostBean.Port)
 		}
 	}
 }

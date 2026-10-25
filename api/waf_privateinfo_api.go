@@ -29,9 +29,9 @@ func (w *WafPrivateInfoApi) AddApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 
-		cnt := wafPrivateInfoService.CheckIsExistApi(req)
+		cnt := wafPrivateInfoService.CheckIsExistApi(c.Request.Context(), req)
 		if cnt == 0 {
-			err = wafPrivateInfoService.AddApi(req)
+			err = wafPrivateInfoService.AddApi(c.Request.Context(), req)
 			if err == nil {
 				response.OkWithMessage("添加成功", c)
 			} else {
@@ -62,7 +62,7 @@ func (w *WafPrivateInfoApi) GetDetailApi(c *gin.Context) {
 	var req request.WafPrivateInfoDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafPrivateInfoService.GetDetailApi(req)
+		bean := wafPrivateInfoService.GetDetailApi(c.Request.Context(), req)
 
 		// 在返回前端前脱敏处理
 		if bean.PrivateKey != "" {
@@ -89,7 +89,7 @@ func (w *WafPrivateInfoApi) GetListApi(c *gin.Context) {
 	var req request.WafPrivateInfoSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		PrivateInfo, total, _ := wafPrivateInfoService.GetListApi(req)
+		PrivateInfo, total, _ := wafPrivateInfoService.GetListApi(c.Request.Context(), req)
 
 		// 在返回前端前脱敏处理
 		for i := range PrivateInfo {
@@ -121,9 +121,9 @@ func (w *WafPrivateInfoApi) DelApi(c *gin.Context) {
 	var req request.WafPrivateInfoDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		info := wafPrivateInfoService.GetDetailByIdApi(req.Id)
+		info := wafPrivateInfoService.GetDetailByIdApi(c.Request.Context(), req.Id)
 		key := info.PrivateKey
-		err = wafPrivateInfoService.DelApi(req)
+		err = wafPrivateInfoService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -155,9 +155,9 @@ func (w *WafPrivateInfoApi) ModifyApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		if req.PrivateValue == "****" {
-			err = wafPrivateInfoService.ModifyWithOutValueApi(req)
+			err = wafPrivateInfoService.ModifyWithOutValueApi(c.Request.Context(), req)
 		} else {
-			err = wafPrivateInfoService.ModifyApi(req)
+			err = wafPrivateInfoService.ModifyApi(c.Request.Context(), req)
 		}
 
 		if err != nil {

@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"time"
 )
 
@@ -14,7 +15,7 @@ type WafSSLOrderService struct{}
 
 var WafSSLOrderServiceApp = new(WafSSLOrderService)
 
-func (receiver *WafSSLOrderService) AddApi(req request.WafSslorderaddReq) (model.SslOrder, error) {
+func (receiver *WafSSLOrderService) AddApi(ctx context.Context, req request.WafSslorderaddReq) (model.SslOrder, error) {
 	var bean = &model.SslOrder{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -33,12 +34,12 @@ func (receiver *WafSSLOrderService) AddApi(req request.WafSslorderaddReq) (model
 		ApplyStatus:      "submitted",
 		PrivateGroupName: req.PrivateGroupName,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean)
 
 	return *bean, nil
 }
 
-func (receiver *WafSSLOrderService) ModifyApi(req request.WafSslordereditReq) error {
+func (receiver *WafSSLOrderService) ModifyApi(ctx context.Context, req request.WafSslordereditReq) error {
 
 	sslOrderMap := map[string]interface{}{
 		"HostCode":         req.HostCode,
@@ -52,14 +53,14 @@ func (receiver *WafSSLOrderService) ModifyApi(req request.WafSslordereditReq) er
 		"PrivateGroupName": req.PrivateGroupName,
 		"UPDATE_TIME":      customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.SslOrder{}).Where("id = ?", req.Id).Updates(sslOrderMap).Error
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(model.SslOrder{}).Where("id = ?", req.Id).Updates(sslOrderMap).Error
 
 	return err
 }
-func (receiver *WafSSLOrderService) GetDetailApi(req request.WafSslorderdetailReq) model.SslOrder {
-	return receiver.GetDetailById(req.Id)
+func (receiver *WafSSLOrderService) GetDetailApi(ctx context.Context, req request.WafSslorderdetailReq) model.SslOrder {
+	return receiver.GetDetailById(ctx, req.Id)
 }
-func (receiver *WafSSLOrderService) GetListApi(req request.WafSslordersearchReq) ([]model.SslOrder, int64, error) {
+func (receiver *WafSSLOrderService) GetListApi(ctx context.Context, req request.WafSslordersearchReq) ([]model.SslOrder, int64, error) {
 	var list []model.SslOrder
 	var total int64 = 0
 
@@ -85,26 +86,28 @@ func (receiver *WafSSLOrderService) GetListApi(req request.WafSslordersearchReq)
 	/**排序*/
 	orderInfo := "create_time desc"
 
-	global.GWAF_LOCAL_DB.Model(&model.SslOrder{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Order(orderInfo).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.SslOrder{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.SslOrder{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Order(orderInfo).Find(&list)
+	db.Model(&model.SslOrder{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafSSLOrderService) DelApi(req request.WafSslorderdeleteReq) error {
+func (receiver *WafSSLOrderService) DelApi(ctx context.Context, req request.WafSslorderdeleteReq) error {
 	var bean model.SslOrder
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.SslOrder{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.SslOrder{}).Error
 	return err
 }
-func (receiver *WafSSLOrderService) GetDetailById(id string) model.SslOrder {
+func (receiver *WafSSLOrderService) GetDetailById(ctx context.Context, id string) model.SslOrder {
 	var bean model.SslOrder
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafSSLOrderService) ModifyById(sslOrder model.SslOrder) error {
+func (receiver *WafSSLOrderService) ModifyById(ctx context.Context, sslOrder model.SslOrder) error {
 
 	sslOrderMap := map[string]interface{}{
 		"HostCode":                sslOrder.HostCode,
@@ -128,15 +131,15 @@ func (receiver *WafSSLOrderService) ModifyById(sslOrder model.SslOrder) error {
 		"PrivateGroupName":        sslOrder.PrivateGroupName,
 		"UPDATE_TIME":             customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.SslOrder{}).Where("id = ?", sslOrder.Id).Updates(sslOrderMap).Error
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(model.SslOrder{}).Where("id = ?", sslOrder.Id).Updates(sslOrderMap).Error
 
 	return err
 }
 
 // RenewAdd续期
-func (receiver *WafSSLOrderService) RenewAdd(orderId string) (model.SslOrder, error) {
+func (receiver *WafSSLOrderService) RenewAdd(ctx context.Context, orderId string) (model.SslOrder, error) {
 
-	order := receiver.GetDetailById(orderId)
+	order := receiver.GetDetailById(ctx, orderId)
 	var bean = &model.SslOrder{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -163,21 +166,21 @@ func (receiver *WafSSLOrderService) RenewAdd(orderId string) (model.SslOrder, er
 		ResultCSR:               order.ResultCSR,
 		PrivateGroupName:        order.PrivateGroupName,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean)
 	return *bean, nil
 }
 
 // GetLastedInfo 查询最新的没有过期的
-func (receiver *WafSSLOrderService) GetLastedInfo(hostCode string) (model.SslOrder, error) {
+func (receiver *WafSSLOrderService) GetLastedInfo(ctx context.Context, hostCode string) (model.SslOrder, error) {
 	var bean model.SslOrder
 
-	global.GWAF_LOCAL_DB.Model(&model.SslOrder{}).Where("host_code=?", hostCode).Where("result_certificate is not null").Order("create_time desc").Limit(1).First(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.SslOrder{}).Where("host_code=?", hostCode).Where("result_certificate is not null").Order("create_time desc").Limit(1).First(&bean)
 
 	return bean, nil
 }
 
 // GetCAServerAddress 根据CA服务器名称获取地址
-func GetCAServerAddress(caServerName string) string {
+func GetCAServerAddress(ctx context.Context, caServerName string) string {
 	// 如果没有指定CA服务器名称，默认使用letsencrypt
 	if caServerName == "" {
 		caServerName = "letsencrypt"
@@ -185,7 +188,7 @@ func GetCAServerAddress(caServerName string) string {
 
 	// 从数据库查询CA服务器信息
 	var caServer model.CaServerInfo
-	err := global.GWAF_LOCAL_DB.Where("ca_server_name = ?", caServerName).First(&caServer).Error
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("ca_server_name = ?", caServerName).First(&caServer).Error
 
 	// 如果查询失败或没有找到记录，返回默认的letsencrypt地址
 	if err != nil {

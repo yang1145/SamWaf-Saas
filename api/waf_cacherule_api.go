@@ -7,6 +7,7 @@ import (
 	"SamWaf/model/common/response"
 	"SamWaf/model/request"
 	"SamWaf/model/spec"
+	"context"
 	"errors"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -30,11 +31,11 @@ func (w *WafCacheRuleApi) AddApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 
-		cnt := wafCacheRuleService.CheckIsExistApi(req)
+		cnt := wafCacheRuleService.CheckIsExistApi(c.Request.Context(), req)
 		if cnt == 0 {
-			err = wafCacheRuleService.AddApi(req)
+			err = wafCacheRuleService.AddApi(c.Request.Context(), req)
 			if err == nil {
-				w.NotifyWaf(req.HostCode)
+				w.NotifyWaf(c.Request.Context(), req.HostCode)
 				response.OkWithMessage("添加成功", c)
 			} else {
 				response.FailWithMessage("添加失败", c)
@@ -64,7 +65,7 @@ func (w *WafCacheRuleApi) GetDetailApi(c *gin.Context) {
 	var req request.WafCacheRuleDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafCacheRuleService.GetDetailApi(req)
+		bean := wafCacheRuleService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -85,7 +86,7 @@ func (w *WafCacheRuleApi) GetListApi(c *gin.Context) {
 	var req request.WafCacheRuleSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		CacheRule, total, _ := wafCacheRuleService.GetListApi(req)
+		CacheRule, total, _ := wafCacheRuleService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      CacheRule,
 			Total:     total,
@@ -111,18 +112,18 @@ func (w *WafCacheRuleApi) DelApi(c *gin.Context) {
 	var req request.WafCacheRuleDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafCacheRuleService.GetDetailByIdApi(req.Id)
+		bean := wafCacheRuleService.GetDetailByIdApi(c.Request.Context(), req.Id)
 		if bean.Id == "" {
 			response.FailWithMessage("未找到信息", c)
 			return
 		}
-		err = wafCacheRuleService.DelApi(req)
+		err = wafCacheRuleService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
 			response.FailWithMessage("发生错误", c)
 		} else {
-			w.NotifyWaf(bean.HostCode)
+			w.NotifyWaf(c.Request.Context(), bean.HostCode)
 			response.OkWithMessage("删除成功", c)
 		}
 	} else {
@@ -145,12 +146,12 @@ func (w *WafCacheRuleApi) ModifyApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		//编辑前先取旧记录，拿到可能被本次编辑改掉的旧 host_code(issue #898)
-		bean := wafCacheRuleService.GetDetailByIdApi(req.Id)
-		err = wafCacheRuleService.ModifyApi(req)
+		bean := wafCacheRuleService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafCacheRuleService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误"+err.Error(), c)
 		} else {
-			notifyWafHostChanged(w.NotifyWaf, bean.HostCode, req.HostCode)
+			notifyWafHostChanged(func(hostCode string) { w.NotifyWaf(c.Request.Context(), hostCode) }, bean.HostCode, req.HostCode)
 			response.OkWithMessage("编辑成功", c)
 		}
 	} else {
@@ -159,9 +160,9 @@ func (w *WafCacheRuleApi) ModifyApi(c *gin.Context) {
 }
 
 // NotifyWaf  通知到waf引擎实时生效
-func (w *WafCacheRuleApi) NotifyWaf(host_code string) {
+func (w *WafCacheRuleApi) NotifyWaf(ctx context.Context, host_code string) {
 	var list []model.CacheRule
-	global.GWAF_LOCAL_DB.Where("host_code = ? ", host_code).Find(&list)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ? ", host_code).Find(&list)
 	var chanInfo = spec.ChanCommonHost{
 		HostCode: host_code,
 		Type:     enums.ChanTypeCacheRule,

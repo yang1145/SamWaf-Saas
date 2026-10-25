@@ -1,5 +1,7 @@
 package api
 
+import "context"
+
 // notifyWafHostChanged 编辑类接口统一的「新旧网站都要通知」帮助函数。
 //
 // 背景(issue #898)：编辑名单时可以把记录的所属网站(host_code)从 A 改到 B。
@@ -22,7 +24,7 @@ func notifyWafHostChanged(notify func(hostCode string), oldHostCode, newHostCode
 // 只在「黑白名单行本身发生增删」时才需要调用（例如删除 IP 组时级联删掉了引用行）。
 // IP 组的内容变更不要走这里——那是 ipset 全局快照的职责，一次原子替换即可，
 // 无论多少站点引用都不必逐站点下发。
-func notifyIPListHosts(hostCodes []string) {
+func notifyIPListHosts(ctx context.Context, hostCodes []string) {
 	if len(hostCodes) == 0 {
 		return
 	}
@@ -32,7 +34,7 @@ func notifyIPListHosts(hostCodes []string) {
 		if hostCode == "" {
 			continue
 		}
-		blockApi.NotifyWaf(hostCode)
-		allowApi.NotifyWaf(hostCode)
+		blockApi.NotifyWaf(ctx, hostCode)
+		allowApi.NotifyWaf(ctx, hostCode)
 	}
 }

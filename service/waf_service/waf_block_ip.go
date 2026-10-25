@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"time"
 )
@@ -15,7 +16,7 @@ type WafBlockIpService struct{}
 
 var WafBlockIpServiceApp = new(WafBlockIpService)
 
-func (receiver *WafBlockIpService) AddApi(req request.WafBlockIpAddReq) error {
+func (receiver *WafBlockIpService) AddApi(ctx context.Context, req request.WafBlockIpAddReq) error {
 	isEnable := 1
 	if req.IsEnable != nil {
 		isEnable = *req.IsEnable
@@ -35,17 +36,19 @@ func (receiver *WafBlockIpService) AddApi(req request.WafBlockIpAddReq) error {
 		GroupCode: req.GroupCode,
 		IsEnable:  isEnable,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Create(bean)
 	return nil
 }
 
 // ToggleApi 切换条目启用状态，返回所属网站编码供调用方通知引擎
-func (receiver *WafBlockIpService) ToggleApi(req request.WafBlockIpToggleReq) (string, error) {
+func (receiver *WafBlockIpService) ToggleApi(ctx context.Context, req request.WafBlockIpToggleReq) (string, error) {
 	var bean model.IPBlockList
-	if err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error; err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := db.Where("id = ?", req.Id).First(&bean).Error; err != nil {
 		return "", err
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.IPBlockList{}).Where("id = ?", req.Id).Updates(map[string]interface{}{
+	err := db.Model(model.IPBlockList{}).Where("id = ?", req.Id).Updates(map[string]interface{}{
 		"is_enable":   *req.IsEnable,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}).Error
@@ -55,23 +58,25 @@ func (receiver *WafBlockIpService) ToggleApi(req request.WafBlockIpToggleReq) (s
 // CheckIsExistApi 判重。唯一性由 (host_code, ip_type, ip, group_code) 共同决定：
 // 同一站点重复引用同一个 IP 组也算重复。
 // ip_type 用 IN (”, 'ip') 兼容存量行的空串。
-func (receiver *WafBlockIpService) CheckIsExistApi(req request.WafBlockIpAddReq) error {
+func (receiver *WafBlockIpService) CheckIsExistApi(ctx context.Context, req request.WafBlockIpAddReq) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	if req.IpType == model.IPEntryTypeGroup {
-		return global.GWAF_LOCAL_DB.First(&model.IPBlockList{},
+		return db.First(&model.IPBlockList{},
 			"host_code = ? and ip_type = ? and group_code = ?", req.HostCode, model.IPEntryTypeGroup, req.GroupCode).Error
 	}
-	return global.GWAF_LOCAL_DB.First(&model.IPBlockList{},
+	return db.First(&model.IPBlockList{},
 		"host_code = ? and ip = ? and (ip_type is null or ip_type in (?, ?))",
 		req.HostCode, req.Ip, "", model.IPEntryTypeIP).Error
 }
-func (receiver *WafBlockIpService) ModifyApi(req request.WafBlockIpEditReq) error {
+func (receiver *WafBlockIpService) ModifyApi(ctx context.Context, req request.WafBlockIpEditReq) error {
 	// 同一站点下不能出现重复条目（排除自身）
 	var dup model.IPBlockList
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	if req.IpType == model.IPEntryTypeGroup {
-		global.GWAF_LOCAL_DB.Where("host_code = ? and ip_type = ? and group_code = ? and id <> ?",
+		db.Where("host_code = ? and ip_type = ? and group_code = ? and id <> ?",
 			req.HostCode, model.IPEntryTypeGroup, req.GroupCode, req.Id).Find(&dup)
 	} else {
-		global.GWAF_LOCAL_DB.Where("host_code = ? and ip = ? and (ip_type is null or ip_type in (?, ?)) and id <> ?",
+		db.Where("host_code = ? and ip = ? and (ip_type is null or ip_type in (?, ?)) and id <> ?",
 			req.HostCode, req.Ip, "", model.IPEntryTypeIP, req.Id).Find(&dup)
 	}
 	if dup.Id != "" {
@@ -88,26 +93,29 @@ func (receiver *WafBlockIpService) ModifyApi(req request.WafBlockIpEditReq) erro
 	if req.IsEnable != nil {
 		ipWhiteMap["is_enable"] = *req.IsEnable
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.IPBlockList{}).Where("id = ?", req.Id).Updates(ipWhiteMap).Error
+	err := db.Model(model.IPBlockList{}).Where("id = ?", req.Id).Updates(ipWhiteMap).Error
 
 	return err
 }
-func (receiver *WafBlockIpService) GetDetailApi(req request.WafBlockIpDetailReq) model.IPBlockList {
+func (receiver *WafBlockIpService) GetDetailApi(ctx context.Context, req request.WafBlockIpDetailReq) model.IPBlockList {
 	var bean model.IPBlockList
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafBlockIpService) GetDetailByIdApi(id string) model.IPBlockList {
+func (receiver *WafBlockIpService) GetDetailByIdApi(ctx context.Context, id string) model.IPBlockList {
 	var bean model.IPBlockList
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafBlockIpService) GetDetailByIPApi(ip string, hostCode string) model.IPBlockList {
+func (receiver *WafBlockIpService) GetDetailByIPApi(ctx context.Context, ip string, hostCode string) model.IPBlockList {
 	var ipBlocks model.IPBlockList
-	global.GWAF_LOCAL_DB.Where("ip=? and host_code=?", ip, hostCode).Find(&ipBlocks)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("ip=? and host_code=?", ip, hostCode).Find(&ipBlocks)
 	return ipBlocks
 }
-func (receiver *WafBlockIpService) GetListApi(req request.WafBlockIpSearchReq) ([]model.IPBlockList, int64, error) {
+func (receiver *WafBlockIpService) GetListApi(ctx context.Context, req request.WafBlockIpSearchReq) ([]model.IPBlockList, int64, error) {
 	var list []model.IPBlockList
 	var total int64 = 0
 	/*where条件*/
@@ -145,30 +153,33 @@ func (receiver *WafBlockIpService) GetListApi(req request.WafBlockIpSearchReq) (
 		whereValues = append(whereValues, req.GroupCode)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.IPBlockList{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.IPBlockList{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.IPBlockList{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.IPBlockList{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafBlockIpService) DelApi(req request.WafBlockIpDelReq) error {
+func (receiver *WafBlockIpService) DelApi(ctx context.Context, req request.WafBlockIpDelReq) error {
 	var bean model.IPBlockList
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.IPBlockList{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.IPBlockList{}).Error
 	return err
 }
 
 // BatchDelApi 批量删除指定ID的IP黑名单
-func (receiver *WafBlockIpService) BatchDelApi(req request.WafBlockIpBatchDelReq) error {
+func (receiver *WafBlockIpService) BatchDelApi(ctx context.Context, req request.WafBlockIpBatchDelReq) error {
 	if len(req.Ids) == 0 {
 		return errors.New("删除ID列表不能为空")
 	}
 
 	// 先检查所有ID是否存在
 	var count int64
-	err := global.GWAF_LOCAL_DB.Model(&model.IPBlockList{}).Where("id IN ?", req.Ids).Count(&count).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.IPBlockList{}).Where("id IN ?", req.Ids).Count(&count).Error
 	if err != nil {
 		return err
 	}
@@ -178,12 +189,12 @@ func (receiver *WafBlockIpService) BatchDelApi(req request.WafBlockIpBatchDelReq
 	}
 
 	// 执行批量删除
-	err = global.GWAF_LOCAL_DB.Where("id IN ?", req.Ids).Delete(&model.IPBlockList{}).Error
+	err = db.Where("id IN ?", req.Ids).Delete(&model.IPBlockList{}).Error
 	return err
 }
 
 // DelAllApi 删除指定网站的所有IP黑名单
-func (receiver *WafBlockIpService) DelAllApi(req request.WafBlockIpDelAllReq) error {
+func (receiver *WafBlockIpService) DelAllApi(ctx context.Context, req request.WafBlockIpDelAllReq) error {
 	var whereCondition string
 	var whereValues []interface{}
 
@@ -196,9 +207,10 @@ func (receiver *WafBlockIpService) DelAllApi(req request.WafBlockIpDelAllReq) er
 		whereValues = append(whereValues, global.GWAF_USER_CODE, global.GWAF_TENANT_ID)
 	}
 
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	// 先检查是否存在记录
 	var count int64
-	err := global.GWAF_LOCAL_DB.Model(&model.IPBlockList{}).Where(whereCondition, whereValues...).Count(&count).Error
+	err := db.Model(&model.IPBlockList{}).Where(whereCondition, whereValues...).Count(&count).Error
 	if err != nil {
 		return err
 	}
@@ -208,16 +220,17 @@ func (receiver *WafBlockIpService) DelAllApi(req request.WafBlockIpDelAllReq) er
 	}
 
 	// 执行删除 - 限制在当前租户和用户范围内
-	err = global.GWAF_LOCAL_DB.
+	err = db.
 		Where(whereCondition, whereValues...).
 		Delete(&model.IPBlockList{}).Error
 	return err
 }
 
 // GetHostCodesByIds 根据ID列表获取对应的HostCode列表（用于通知WAF引擎）
-func (receiver *WafBlockIpService) GetHostCodesByIds(ids []string) ([]string, error) {
+func (receiver *WafBlockIpService) GetHostCodesByIds(ctx context.Context, ids []string) ([]string, error) {
 	var hostCodes []string
-	err := global.GWAF_LOCAL_DB.Model(&model.IPBlockList{}).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.IPBlockList{}).
 		Where("id IN ?", ids).
 		Distinct("host_code").
 		Pluck("host_code", &hostCodes).Error
@@ -225,9 +238,10 @@ func (receiver *WafBlockIpService) GetHostCodesByIds(ids []string) ([]string, er
 }
 
 // GetHostCodes 获取所有HostCode列表（用于通知WAF引擎）
-func (receiver *WafBlockIpService) GetHostCodes() ([]string, error) {
+func (receiver *WafBlockIpService) GetHostCodes(ctx context.Context) ([]string, error) {
 	var hostCodes []string
-	err := global.GWAF_LOCAL_DB.Model(&model.IPBlockList{}).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.IPBlockList{}).
 		Distinct("host_code").
 		Where("user_code = ? AND tenant_id = ?", global.GWAF_USER_CODE, global.GWAF_TENANT_ID).
 		Pluck("host_code", &hostCodes).Error
@@ -235,8 +249,9 @@ func (receiver *WafBlockIpService) GetHostCodes() ([]string, error) {
 }
 
 // GetAllBlockIpApi 获取所有IP黑名单数据（用于导出）
-func (receiver *WafBlockIpService) GetAllBlockIpApi() []model.IPBlockList {
+func (receiver *WafBlockIpService) GetAllBlockIpApi(ctx context.Context) []model.IPBlockList {
 	var list []model.IPBlockList
-	global.GWAF_LOCAL_DB.Where("user_code = ? AND tenant_id = ?", global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Find(&list)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("user_code = ? AND tenant_id = ?", global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Find(&list)
 	return list
 }

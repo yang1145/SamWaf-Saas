@@ -2,6 +2,7 @@ package wafenginecore
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/customtype"
 	"SamWaf/global"
@@ -373,7 +374,7 @@ func (waf *WafEngine) RemovePortServer() {
 	portsToRemove := make([]int, 0)
 
 	waf.ServerOnline.Range(func(onlinePort int, serverRuntime innerbean.ServerRunTime) bool {
-		if waf_service.WafHostServiceApp.CheckAvailablePortExistApi(onlinePort) == 0 {
+		if waf_service.WafHostServiceApp.CheckAvailablePortExistApi(wafctx.PlatformScope(context.Background()), onlinePort) == 0 {
 			//暂停服务 并 移除服务信息
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -734,7 +735,7 @@ func (waf *WafEngine) doBasicAuth(hostSafe *wafenginmodel.HostSafe, w http.Respo
 	}
 
 	// 凭证过关，接着做会话记账：到期或被踢时要换 realm 把浏览器重新逼回弹窗
-	res := waf_service.WafHttpAuthSessionServiceApp.TouchBasicSession(hostSafe.Host, username,
+	res := waf_service.WafHttpAuthSessionServiceApp.TouchBasicSession(wafctx.PlatformScope(context.Background()), hostSafe.Host, username,
 		clientIP, r.UserAgent(), cfg)
 	if res.Challenge {
 		tip := "登录状态已失效，请重新输入密码"
@@ -782,7 +783,7 @@ func (waf *WafEngine) doCustomAuth(hostSafe *wafenginmodel.HostSafe, w http.Resp
 	// 检查是否已经通过认证
 	cookie, err := r.Cookie("samwaf_httpauth_token")
 	if err == nil && cookie.Value != "" {
-		if _, ok := waf_service.WafHttpAuthSessionServiceApp.ValidateCustom(hostSafe.Host.Code,
+		if _, ok := waf_service.WafHttpAuthSessionServiceApp.ValidateCustom(wafctx.PlatformScope(context.Background()), hostSafe.Host.Code,
 			cookie.Value, clientIP, cfg); ok {
 			return false, ""
 		}
@@ -898,7 +899,7 @@ func (waf *WafEngine) handleHttpAuthValidate(hostSafe *wafenginmodel.HostSafe, w
 	global.GCACHE_WAFCACHE.Remove(failCountKey)
 
 	// 建会话：明文令牌只出现在 Cookie 里，库与缓存存的都是它的 sha256
-	authToken, sess, err := waf_service.WafHttpAuthSessionServiceApp.CreateCustomSession(hostSafe.Host,
+	authToken, sess, err := waf_service.WafHttpAuthSessionServiceApp.CreateCustomSession(wafctx.PlatformScope(context.Background()), hostSafe.Host,
 		req.Username, clientIP, r.UserAgent(), cfg)
 	if err != nil {
 		zlog.Error("HTTP Auth建立会话失败", zap.Error(err))

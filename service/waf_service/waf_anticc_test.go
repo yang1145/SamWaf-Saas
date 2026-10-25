@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -84,22 +85,22 @@ func TestWafAntiCCService_AddAndCheck(t *testing.T) {
 			addReq := request.WafAntiCCAddReq{HostCode: "host-x", Rate: 10, Limit: 100, LockIPMinutes: 5, LimitMode: "rate"}
 
 			// 1) 新增前检查：不存在时不应报 SQL 参数错误，应为“未找到”
-			if err := svc.CheckIsExistApi(addReq); err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := svc.CheckIsExistApi(context.Background(), addReq); err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				t.Fatalf("CheckIsExistApi 返回异常错误（疑似参数错位回归）: %v", err)
 			}
 
 			// 2) 新增成功
-			if err := svc.AddApi(addReq); err != nil {
+			if err := svc.AddApi(context.Background(), addReq); err != nil {
 				t.Fatalf("AddApi 失败: %v", err)
 			}
 
 			// 3) 再次新增同 host 应被拒绝（已存在）
-			if err := svc.AddApi(addReq); err == nil {
+			if err := svc.AddApi(context.Background(), addReq); err == nil {
 				t.Errorf("重复新增未被拒绝，应返回“已存在”错误")
 			}
 
 			// 4) 已存在时 CheckIsExistApi 应返回 nil（找到记录）
-			if err := svc.CheckIsExistApi(addReq); err != nil {
+			if err := svc.CheckIsExistApi(context.Background(), addReq); err != nil {
 				t.Errorf("CheckIsExistApi 在记录已存在时应返回 nil，实际: %v", err)
 			}
 		})

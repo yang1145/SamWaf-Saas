@@ -5,6 +5,7 @@ import (
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/utils"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -31,7 +32,7 @@ const (
 // SslConfig（只填了证书内容），导出路径这些列是空的，直接用会误判成「未配置导出」。
 //
 // 返回 msg 为可展示的结果描述（未配置导出时为空串），err 非空表示导出失败。
-func (receiver *WafSslConfigService) ExportById(id string) (msg string, err error) {
+func (receiver *WafSslConfigService) ExportById(ctx context.Context, id string) (msg string, err error) {
 	// 兜底：导出挂在证书申请/加载的主流程上，这里出任何意外都不能把主流程带崩
 	defer func() {
 		if r := recover(); r != nil {
@@ -44,15 +45,15 @@ func (receiver *WafSslConfigService) ExportById(id string) (msg string, err erro
 	if strings.TrimSpace(id) == "" {
 		return "", errors.New("证书夹ID为空")
 	}
-	config := receiver.GetDetailInner(id)
+	config := receiver.GetDetailInner(ctx, id)
 	if config.Id == "" {
 		return "", fmt.Errorf("证书夹不存在: %s", id)
 	}
-	return receiver.exportConfig(config)
+	return receiver.exportConfig(ctx, config)
 }
 
 // exportConfig 真正执行导出，并把结果写回 export_status 列供前端查看。
-func (receiver *WafSslConfigService) exportConfig(config model.SslConfig) (string, error) {
+func (receiver *WafSslConfigService) exportConfig(ctx context.Context, config model.SslConfig) (string, error) {
 	exportCert := strings.TrimSpace(config.ExportCertPath)
 	exportKey := strings.TrimSpace(config.ExportKeyPath)
 
@@ -61,16 +62,16 @@ func (receiver *WafSslConfigService) exportConfig(config model.SslConfig) (strin
 		return "", nil
 	}
 
-	certPath, keyPath, err := receiver.PrepareExportPaths(config.Id, config.CertPath, config.KeyPath, exportCert, exportKey)
+	certPath, keyPath, err := receiver.PrepareExportPaths(ctx, config.Id, config.CertPath, config.KeyPath, exportCert, exportKey)
 	if err != nil {
-		receiver.saveExportStatus(config.Id, "失败: "+err.Error())
+		receiver.saveExportStatus(ctx, config.Id, "失败: "+err.Error())
 		zlog.Error("SSLExport", fmt.Sprintf("证书夹[%s] 导出路径校验不通过: %v", config.Domains, err))
 		return "", err
 	}
 
 	if config.CertContent == "" || config.KeyContent == "" {
 		err = errors.New("证书或密钥内容为空，不导出")
-		receiver.saveExportStatus(config.Id, "失败: "+err.Error())
+		receiver.saveExportStatus(ctx, config.Id, "失败: "+err.Error())
 		zlog.Warn("SSLExport", fmt.Sprintf("证书夹[%s] %v", config.Domains, err))
 		return "", err
 	}
@@ -80,14 +81,14 @@ func (receiver *WafSslConfigService) exportConfig(config model.SslConfig) (strin
 	keyWritten, err := utils.WriteCertFileAtomic(keyPath, []byte(config.KeyContent), keyExportFilePerm)
 	if err != nil {
 		err = fmt.Errorf("写入密钥文件失败: %v", err)
-		receiver.saveExportStatus(config.Id, "失败: "+err.Error())
+		receiver.saveExportStatus(ctx, config.Id, "失败: "+err.Error())
 		zlog.Error("SSLExport", fmt.Sprintf("证书夹[%s] %v", config.Domains, err))
 		return "", err
 	}
 	certWritten, err := utils.WriteCertFileAtomic(certPath, []byte(config.CertContent), certExportFilePerm)
 	if err != nil {
 		err = fmt.Errorf("写入证书文件失败: %v", err)
-		receiver.saveExportStatus(config.Id, "失败: "+err.Error())
+		receiver.saveExportStatus(ctx, config.Id, "失败: "+err.Error())
 		zlog.Error("SSLExport", fmt.Sprintf("证书夹[%s] %v (密钥已更新=%v)", config.Domains, err, keyWritten))
 		return "", err
 	}
@@ -98,7 +99,7 @@ func (receiver *WafSslConfigService) exportConfig(config model.SslConfig) (strin
 	} else {
 		msg = fmt.Sprintf("文件内容已是最新，无需重写: %s , %s", certPath, keyPath)
 	}
-	receiver.saveExportStatus(config.Id, msg)
+	receiver.saveExportStatus(ctx, config.Id, msg)
 	zlog.Info("SSLExport", fmt.Sprintf("证书夹[%s] %s", config.Domains, msg))
 	return msg, nil
 }
@@ -107,7 +108,7 @@ func (receiver *WafSslConfigService) exportConfig(config model.SslConfig) (strin
 // 两个路径都为空表示未开启导出，返回两个空串且不报错。
 //
 // selfId 为空表示新增场景（库里还没有这条记录）。
-func (receiver *WafSslConfigService) PrepareExportPaths(selfId, loadCertPath, loadKeyPath, exportCertPath, exportKeyPath string) (string, string, error) {
+func (receiver *WafSslConfigService) PrepareExportPaths(ctx context.Context, selfId, loadCertPath, loadKeyPath, exportCertPath, exportKeyPath string) (string, string, error) {
 	exportCertPath = strings.TrimSpace(exportCertPath)
 	exportKeyPath = strings.TrimSpace(exportKeyPath)
 	if exportCertPath == "" && exportKeyPath == "" {
@@ -146,7 +147,7 @@ func (receiver *WafSslConfigService) PrepareExportPaths(selfId, loadCertPath, lo
 
 	// 不能和其它证书夹的路径撞车：撞加载路径会污染别人的自动加载，
 	// 撞导出路径会让两个证书夹互相覆盖，最终谁生效取决于执行顺序。
-	if err = receiver.checkExportPathConflictWithOthers(selfId, certPath, keyPath); err != nil {
+	if err = receiver.checkExportPathConflictWithOthers(ctx, selfId, certPath, keyPath); err != nil {
 		return "", "", err
 	}
 
@@ -154,9 +155,9 @@ func (receiver *WafSslConfigService) PrepareExportPaths(selfId, loadCertPath, lo
 }
 
 // checkExportPathConflictWithOthers 检查导出路径是否和其它证书夹的加载/导出路径冲突。
-func (receiver *WafSslConfigService) checkExportPathConflictWithOthers(selfId, certPath, keyPath string) error {
+func (receiver *WafSslConfigService) checkExportPathConflictWithOthers(ctx context.Context, selfId, certPath, keyPath string) error {
 	var others []model.SslConfig
-	if err := global.GWAF_LOCAL_DB.Model(&model.SslConfig{}).
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.SslConfig{}).
 		Select("id", "domains", "cert_path", "key_path", "export_cert_path", "export_key_path").
 		Find(&others).Error; err != nil {
 		// 查不到就不拦，避免因为数据库抖动把用户的正常保存挡住
@@ -188,12 +189,12 @@ func (receiver *WafSslConfigService) checkExportPathConflictWithOthers(selfId, c
 }
 
 // saveExportStatus 只更新 export_status 一列，不动 UPDATE_TIME，避免干扰其它逻辑。
-func (receiver *WafSslConfigService) saveExportStatus(id, status string) {
+func (receiver *WafSslConfigService) saveExportStatus(ctx context.Context, id, status string) {
 	status = fmt.Sprintf("%s %s", time.Now().Format("2006-01-02 15:04:05"), status)
 	if len([]rune(status)) > 200 {
 		status = string([]rune(status)[:200])
 	}
-	if err := global.GWAF_LOCAL_DB.Model(&model.SslConfig{}).Where("id = ?", id).
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.SslConfig{}).Where("id = ?", id).
 		Update("export_status", status).Error; err != nil {
 		zlog.Warn("SSLExport", fmt.Sprintf("证书夹[%s] 记录导出状态失败: %v", id, err))
 	}

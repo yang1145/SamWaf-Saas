@@ -9,6 +9,7 @@ import (
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
 	"SamWaf/utils"
+	"context"
 	"errors"
 	"time"
 )
@@ -17,7 +18,7 @@ type WafRuleService struct{}
 
 var WafRuleServiceApp = new(WafRuleService)
 
-func (receiver *WafRuleService) AddApi(wafRuleAddReq request.WafRuleAddReq, ruleCode string, chsName string, hostCode string, ruleContent string) error {
+func (receiver *WafRuleService) AddApi(ctx context.Context, wafRuleAddReq request.WafRuleAddReq, ruleCode string, chsName string, hostCode string, ruleContent string) error {
 	// 如果没有传入规则状态，默认为开启（1）
 	ruleStatus := wafRuleAddReq.RuleStatus
 	if ruleStatus != 0 && ruleStatus != 1 {
@@ -43,7 +44,8 @@ func (receiver *WafRuleService) AddApi(wafRuleAddReq request.WafRuleAddReq, rule
 		IsManualRule:    wafRuleAddReq.IsManualRule,
 		RuleStatus:      ruleStatus,
 	}
-	global.GWAF_LOCAL_DB.Create(wafRule)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Create(wafRule)
 	return nil
 }
 
@@ -52,19 +54,21 @@ func (receiver *WafRuleService) AddApi(wafRuleAddReq request.WafRuleAddReq, rule
 
 	false表明 不存在
 */
-func (receiver *WafRuleService) CheckIsExistApi(ruleName string, hostCode string) int64 {
+func (receiver *WafRuleService) CheckIsExistApi(ctx context.Context, ruleName string, hostCode string) int64 {
 	var count int64 = 0
-	err := global.GWAF_LOCAL_DB.Model(&model.Rules{}).Where("rule_name = ? and host_code = ? and rule_status<> 999", ruleName, hostCode).Count(&count).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.Rules{}).Where("rule_name = ? and host_code = ? and rule_status<> 999", ruleName, hostCode).Count(&count).Error
 	if err != nil {
 		zlog.Error("检查是否存在错误", err)
 	}
 	return count
 }
 
-func (receiver *WafRuleService) ModifyApi(wafRuleEditReq request.WafRuleEditReq, chsName string, hostCode string, ruleContent string) error {
+func (receiver *WafRuleService) ModifyApi(ctx context.Context, wafRuleEditReq request.WafRuleEditReq, chsName string, hostCode string, ruleContent string) error {
 	var rule model.Rules
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 
-	global.GWAF_LOCAL_DB.Where("rule_name = ? and host_code= ?",
+	db.Where("rule_name = ? and host_code= ?",
 		chsName, hostCode).Find(&rule)
 
 	if rule.Id != "" && rule.RuleCode != wafRuleEditReq.CODE {
@@ -72,7 +76,7 @@ func (receiver *WafRuleService) ModifyApi(wafRuleEditReq request.WafRuleEditReq,
 		return errors.New("当前规则名称已经存在")
 	}
 
-	global.GWAF_LOCAL_DB.Where("rule_code=?", wafRuleEditReq.CODE).Find(&rule)
+	db.Where("rule_code=?", wafRuleEditReq.CODE).Find(&rule)
 
 	// 如果没有传入规则状态，保持原有状态
 	ruleStatus := wafRuleEditReq.RuleStatus
@@ -93,21 +97,23 @@ func (receiver *WafRuleService) ModifyApi(wafRuleEditReq request.WafRuleEditReq,
 		"RuleStatus":      ruleStatus,
 		"UPDATE_TIME":     customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.Rules{}).Where("rule_code=?", wafRuleEditReq.CODE).Updates(ruleMap).Error
+	err := db.Model(model.Rules{}).Where("rule_code=?", wafRuleEditReq.CODE).Updates(ruleMap).Error
 
 	return err
 }
-func (receiver *WafRuleService) GetDetailApi(wafRuleDetailReq request.WafRuleDetailReq) model.Rules {
+func (receiver *WafRuleService) GetDetailApi(ctx context.Context, wafRuleDetailReq request.WafRuleDetailReq) model.Rules {
 	var rules model.Rules
-	global.GWAF_LOCAL_DB.Where("RULE_CODE=?  and rule_status<> 999", wafRuleDetailReq.CODE).Find(&rules)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("RULE_CODE=?  and rule_status<> 999", wafRuleDetailReq.CODE).Find(&rules)
 	return rules
 }
-func (receiver *WafRuleService) GetDetailByCodeApi(ruleCode string) model.Rules {
+func (receiver *WafRuleService) GetDetailByCodeApi(ctx context.Context, ruleCode string) model.Rules {
 	var webRule model.Rules
-	global.GWAF_LOCAL_DB.Where("rule_code=?  and rule_status<> 999 ", ruleCode).Find(&webRule)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("rule_code=?  and rule_status<> 999 ", ruleCode).Find(&webRule)
 	return webRule
 }
-func (receiver *WafRuleService) GetListApi(wafRuleSearchReq request.WafRuleSearchReq) ([]model.Rules, int64, error) {
+func (receiver *WafRuleService) GetListApi(ctx context.Context, wafRuleSearchReq request.WafRuleSearchReq) ([]model.Rules, int64, error) {
 	var total int64 = 0
 	var rules []model.Rules
 	/*where条件*/
@@ -145,8 +151,9 @@ func (receiver *WafRuleService) GetListApi(wafRuleSearchReq request.WafRuleSearc
 		whereValues = append(whereValues, wafRuleSearchReq.RuleCode)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.Rules{}).Where(whereField, whereValues...).Limit(wafRuleSearchReq.PageSize).Offset(wafRuleSearchReq.PageSize * (wafRuleSearchReq.PageIndex - 1)).Find(&rules)
-	global.GWAF_LOCAL_DB.Model(&model.Rules{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.Rules{}).Where(whereField, whereValues...).Limit(wafRuleSearchReq.PageSize).Offset(wafRuleSearchReq.PageSize * (wafRuleSearchReq.PageIndex - 1)).Find(&rules)
+	db.Model(&model.Rules{}).Where(whereField, whereValues...).Count(&total)
 
 	fillRuleSalience(rules)
 	return rules, total, nil
@@ -161,22 +168,24 @@ func fillRuleSalience(rules []model.Rules) {
 	}
 }
 
-func (receiver *WafRuleService) GetListByHostCodeApi(wafRuleSearchReq request.WafRuleSearchReq) ([]model.Rules, int64, error) {
+func (receiver *WafRuleService) GetListByHostCodeApi(ctx context.Context, wafRuleSearchReq request.WafRuleSearchReq) ([]model.Rules, int64, error) {
 	var total int64 = 0
 	var rules []model.Rules
 	// tenant/user 由 before_query 自动追加，这里只传 host_code（占位符与参数数须一致，避免参数顺移）
-	global.GWAF_LOCAL_DB.Where("host_code = ? and rule_status <> 999 ",
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("host_code = ? and rule_status <> 999 ",
 		wafRuleSearchReq.HostCode).Limit(wafRuleSearchReq.PageSize).Offset(wafRuleSearchReq.PageSize * (wafRuleSearchReq.PageIndex - 1)).Find(&rules)
-	global.GWAF_LOCAL_DB.Where("host_code = ? and rule_status <> 999",
+	db.Where("host_code = ? and rule_status <> 999",
 		wafRuleSearchReq.HostCode).Model(&model.Rules{}).Count(&total)
 
 	fillRuleSalience(rules)
 	return rules, total, nil
 }
 
-func (receiver *WafRuleService) DelRuleApi(req request.WafRuleDelReq) error {
+func (receiver *WafRuleService) DelRuleApi(ctx context.Context, req request.WafRuleDelReq) error {
 	var rule model.Rules
-	err := global.GWAF_LOCAL_DB.Where("rule_code = ?", req.CODE).First(&rule).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("rule_code = ?", req.CODE).First(&rule).Error
 	if err != nil {
 
 		return errors.New("要删除的规则信息未找到")
@@ -185,7 +194,7 @@ func (receiver *WafRuleService) DelRuleApi(req request.WafRuleDelReq) error {
 		"RuleStatus":  "999",
 		"RuleVersion": 999999,
 	}
-	err = global.GWAF_LOCAL_DB.Model(model.Rules{}).Where("rule_code = ?", req.CODE).Updates(ruleMap).Error
+	err = db.Model(model.Rules{}).Where("rule_code = ?", req.CODE).Updates(ruleMap).Error
 	if err != nil {
 
 		return errors.New("删除失败")
@@ -194,14 +203,15 @@ func (receiver *WafRuleService) DelRuleApi(req request.WafRuleDelReq) error {
 }
 
 // BatchDelApi 批量删除指定编码的规则
-func (receiver *WafRuleService) BatchDelApi(req request.WafRuleBatchDelReq) error {
+func (receiver *WafRuleService) BatchDelApi(ctx context.Context, req request.WafRuleBatchDelReq) error {
 	if len(req.Codes) == 0 {
 		return errors.New("删除编码列表不能为空")
 	}
 
 	// 先检查所有编码是否存在
 	var count int64
-	err := global.GWAF_LOCAL_DB.Model(&model.Rules{}).Where("rule_code IN ? AND user_code = ? AND tenant_id = ? AND rule_status <> 999", req.Codes, global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Count(&count).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.Rules{}).Where("rule_code IN ? AND user_code = ? AND tenant_id = ? AND rule_status <> 999", req.Codes, global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Count(&count).Error
 	if err != nil {
 		return err
 	}
@@ -216,12 +226,12 @@ func (receiver *WafRuleService) BatchDelApi(req request.WafRuleBatchDelReq) erro
 		"RuleVersion": 999999,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	err = global.GWAF_LOCAL_DB.Model(&model.Rules{}).Where("rule_code IN ? AND user_code = ? AND tenant_id = ?", req.Codes, global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Updates(ruleMap).Error
+	err = db.Model(&model.Rules{}).Where("rule_code IN ? AND user_code = ? AND tenant_id = ?", req.Codes, global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Updates(ruleMap).Error
 	return err
 }
 
 // DelAllApi 删除指定网站的所有规则
-func (receiver *WafRuleService) DelAllApi(req request.WafRuleDelAllReq) error {
+func (receiver *WafRuleService) DelAllApi(ctx context.Context, req request.WafRuleDelAllReq) error {
 	var whereCondition string
 	var whereValues []interface{}
 
@@ -233,9 +243,10 @@ func (receiver *WafRuleService) DelAllApi(req request.WafRuleDelAllReq) error {
 		whereValues = append(whereValues, global.GWAF_USER_CODE, global.GWAF_TENANT_ID)
 	}
 
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	// 先检查是否存在记录
 	var count int64
-	err := global.GWAF_LOCAL_DB.Model(&model.Rules{}).Where(whereCondition, whereValues...).Count(&count).Error
+	err := db.Model(&model.Rules{}).Where(whereCondition, whereValues...).Count(&count).Error
 	if err != nil {
 		return err
 	}
@@ -250,31 +261,33 @@ func (receiver *WafRuleService) DelAllApi(req request.WafRuleDelAllReq) error {
 		"RuleVersion": 999999,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	err = global.GWAF_LOCAL_DB.Model(&model.Rules{}).Where(whereCondition, whereValues...).Updates(ruleMap).Error
+	err = db.Model(&model.Rules{}).Where(whereCondition, whereValues...).Updates(ruleMap).Error
 	return err
 }
 
 // GetHostCodesByCodes 根据规则编码列表获取HostCode列表
-func (receiver *WafRuleService) GetHostCodesByCodes(codes []string) ([]string, error) {
+func (receiver *WafRuleService) GetHostCodesByCodes(ctx context.Context, codes []string) ([]string, error) {
 	var hostCodes []string
-	err := global.GWAF_LOCAL_DB.Model(&model.Rules{}).Where("rule_code IN ? AND rule_status <> 999", codes).Pluck("host_code", &hostCodes).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.Rules{}).Where("rule_code IN ? AND rule_status <> 999", codes).Pluck("host_code", &hostCodes).Error
 	return hostCodes, err
 }
 
 // GetHostCodes 获取所有HostCode列表
-func (receiver *WafRuleService) GetHostCodes() ([]string, error) {
+func (receiver *WafRuleService) GetHostCodes(ctx context.Context) ([]string, error) {
 	var hostCodes []string
-	err := global.GWAF_LOCAL_DB.Model(&model.Rules{}).Where("rule_status <> 999").Pluck("host_code", &hostCodes).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.Rules{}).Where("rule_status <> 999").Pluck("host_code", &hostCodes).Error
 	return hostCodes, err
 }
 
 // ModifyRuleStatusApi 修改规则状态
-func (receiver *WafRuleService) ModifyRuleStatusApi(req request.WafRuleStatusReq) error {
+func (receiver *WafRuleService) ModifyRuleStatusApi(ctx context.Context, req request.WafRuleStatusReq) error {
 	ruleMap := map[string]interface{}{
 		"RuleStatus":  req.RULE_STATUS,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-
-	err := global.GWAF_LOCAL_DB.Model(model.Rules{}).Where("rule_code=?", req.CODE).Updates(ruleMap).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(model.Rules{}).Where("rule_code=?", req.CODE).Updates(ruleMap).Error
 	return err
 }

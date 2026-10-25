@@ -1,6 +1,7 @@
 package api
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/innerbean"
@@ -10,6 +11,7 @@ import (
 	"SamWaf/utils"
 	"SamWaf/wafdb"
 	"SamWaf/wafdb/dialect"
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -196,6 +198,11 @@ func (w *WafLogAPi) ExportDBApi(c *gin.Context) {
 		}
 	}
 
+	// 导出走后台 goroutine：脱离请求生命周期，用 WithoutCancel 派生，
+	// 同时把发起者的租户带进去——导出内容按请求租户过滤，不能落回平台租户
+	exportCtx := context.WithoutCancel(c.Request.Context())
+	exportTenant, _, _ := wafctx.TenantFrom(exportCtx)
+
 	go func() {
 		currentDir := utils.GetCurrentDir()
 		downLoadDir := currentDir + "/download"
@@ -213,7 +220,7 @@ func (w *WafLogAPi) ExportDBApi(c *gin.Context) {
 		// 创建下载文件
 		downloadFileName := fmt.Sprintf("local_log_export_%s.db", time.Now().Format("20060102150405"))
 		downloadFilePath := filepath.Join(downLoadDir, downloadFileName)
-		counts, err := wafLogService.ExportLogRange(downloadFilePath, startTime, endTime, tiers)
+		counts, err := wafLogService.ExportLogRange(exportCtx, downloadFilePath, startTime, endTime, tiers)
 		if err != nil {
 			_ = os.Remove(downloadFilePath)
 			global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.OpResultMessageInfo{
@@ -223,6 +230,7 @@ func (w *WafLogAPi) ExportDBApi(c *gin.Context) {
 			})
 		} else {
 			global.GWAF_RUNTIME_CURRENT_EXPORT_DB_LOG_FILE_PATH = downloadFilePath
+			global.GWAF_RUNTIME_EXPORT_DB_LOG_TENANT = exportTenant
 			//发送websocket 推送消息
 			global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.ExportResultMessageInfo{
 				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "DOWNLOAD_LOG", Server: global.GWAF_CUSTOM_SERVER_NAME},
@@ -259,11 +267,18 @@ func (w *WafLogAPi) DownloadApi(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to download file,not find file"})
 		return
 	}
+	// 导出件与发起者租户绑定：别的租户先调 download 也取不走他人的导出件
+	requesterTenant, _, _ := wafctx.TenantFrom(c.Request.Context())
+	if global.GWAF_RUNTIME_EXPORT_DB_LOG_TENANT != "" && requesterTenant != global.GWAF_RUNTIME_EXPORT_DB_LOG_TENANT {
+		c.JSON(http.StatusForbidden, gin.H{"message": "当前导出文件属于其他租户，请重新发起导出"})
+		return
+	}
 	// 提供文件下载
 	filePath := global.GWAF_RUNTIME_CURRENT_EXPORT_DB_LOG_FILE_PATH
 	c.FileAttachment(filePath, "log.db")
 
 	global.GWAF_RUNTIME_CURRENT_EXPORT_DB_LOG_FILE_PATH = ""
+	global.GWAF_RUNTIME_EXPORT_DB_LOG_TENANT = ""
 	// 下载完成后删除文件；删不掉有 download/ 的定时清理兜底
 	_ = os.Remove(filePath)
 }
@@ -381,7 +396,7 @@ func (w *WafLogAPi) GetAttackIPListApi(c *gin.Context) {
 	var req request.WafAttackIpTagSearch
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		ipAttackTags, total, err2 := wafLogService.GetAttackIpListApi(req)
+		ipAttackTags, total, err2 := wafLogService.GetAttackIpListApi(c.Request.Context(), req)
 		if err2 != nil {
 			response.FailWithMessage("访问列表失败:"+err2.Error(), c)
 		} else {
@@ -403,7 +418,7 @@ func (w *WafLogAPi) GetAllIpTagApi(c *gin.Context) {
 
 	// with_benign=1 用于批量删除弹窗：把被排除的标签也列出来，好清理历史数据
 	withBenign := c.Query("with_benign") == "1" || c.Query("with_benign") == "true"
-	ipAttackTags, err2 := wafLogService.GetAllAttackIPTagListApi(withBenign)
+	ipAttackTags, err2 := wafLogService.GetAllAttackIPTagListApi(c.Request.Context(), withBenign)
 	if err2 != nil {
 		response.FailWithMessage("访问ip tag 失败:"+err2.Error(), c)
 	} else {
@@ -433,7 +448,7 @@ func (w *WafLogAPi) DeleteTagByNameApi(c *gin.Context) {
 	}
 
 	// 执行删除
-	err2 := wafLogService.DeleteTagByNameApi(req.TagName, req.DeleteLogs)
+	err2 := wafLogService.DeleteTagByNameApi(c.Request.Context(), req.TagName, req.DeleteLogs)
 	if err2 != nil {
 		response.FailWithMessage("删除失败: "+err2.Error(), c)
 	} else {

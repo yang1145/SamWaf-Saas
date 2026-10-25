@@ -3,6 +3,7 @@ package api
 import (
 	"SamWaf/model"
 	"SamWaf/utils"
+	"context"
 	"errors"
 	"strings"
 )
@@ -20,7 +21,7 @@ type ipEntryInput struct {
 // 这是黑/白名单第一次有 IP 格式校验——此前 AddApi/ModifyApi 完全不校验，
 // 任意字符串都能写进去。校验只加在写入路径，加载路径依旧宽容，
 // 免得存量脏数据在升级后把站点卡死。
-func normalizeIPEntry(in ipEntryInput) (ipType string, ip string, groupCode string, err error) {
+func normalizeIPEntry(ctx context.Context, in ipEntryInput) (ipType string, ip string, groupCode string, err error) {
 	ipType = strings.TrimSpace(in.IpType)
 	ip = strings.TrimSpace(in.Ip)
 	groupCode = strings.TrimSpace(in.GroupCode)
@@ -29,7 +30,7 @@ func normalizeIPEntry(in ipEntryInput) (ipType string, ip string, groupCode stri
 		if groupCode == "" {
 			return "", "", "", errors.New("请选择要引用的IP组")
 		}
-		if wafIPGroupService.GetDetailByCodeApi(groupCode).GroupCode == "" {
+		if wafIPGroupService.GetDetailByCodeApi(ctx, groupCode).GroupCode == "" {
 			return "", "", "", errors.New("IP组不存在: " + groupCode)
 		}
 		// 引用组时 Ip 无意义，清空避免脏数据误导后续判定与导出

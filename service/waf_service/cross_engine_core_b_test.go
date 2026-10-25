@@ -10,6 +10,7 @@ import (
 	"SamWaf/common/uuid"
 	"SamWaf/model"
 	"SamWaf/model/request"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	crand "crypto/rand"
@@ -59,30 +60,30 @@ func runCoreCRUDCasesB(t *testing.T, db *gorm.DB) {
 	t.Run("PrivateInfo", func(t *testing.T) {
 		key := "pk_" + sfx()
 		grp := "g_" + sfx()
-		fatalIf(t, WafPrivateInfoServiceApp.AddApi(request.WafPrivateInfoAddReq{
+		fatalIf(t, WafPrivateInfoServiceApp.AddApi(context.Background(), request.WafPrivateInfoAddReq{
 			PrivateKey: key, PrivateValue: "v1", PrivateGroupName: grp, PrivateGroupBelongCloud: "tencent", Remarks: "r",
 		}))
 		var bean model.PrivateInfo
 		firstBy(t, db, &bean, "private_key = ?", key)
-		fatalIf(t, WafPrivateInfoServiceApp.ModifyApi(request.WafPrivateInfoEditReq{
+		fatalIf(t, WafPrivateInfoServiceApp.ModifyApi(context.Background(), request.WafPrivateInfoEditReq{
 			PrivateKey: key, PrivateValue: "v2", PrivateGroupName: grp, PrivateGroupBelongCloud: "tencent",
 		}))
-		got := WafPrivateInfoServiceApp.GetDetailByIdApi(bean.Id)
+		got := WafPrivateInfoServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.PrivateValue != "v2" {
 			t.Fatalf("PrivateInfo 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafPrivateInfoServiceApp.DelApi(request.WafPrivateInfoDelReq{Id: bean.Id}))
+		fatalIf(t, WafPrivateInfoServiceApp.DelApi(context.Background(), request.WafPrivateInfoDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.PrivateInfo{}, bean.Id)
 	})
 
 	t.Run("HostPathRule", func(t *testing.T) {
 		name := "hpr_" + sfx()
-		fatalIf(t, WafHostPathRuleServiceApp.AddApi(request.WafHostPathRuleAddReq{
+		fatalIf(t, WafHostPathRuleServiceApp.AddApi(context.Background(), request.WafHostPathRuleAddReq{
 			HostCode: "h1", RuleName: name, Path: "/api/", MatchType: 1, Priority: 100, TargetType: 1, RemoteHost: "backend", RemotePort: 8080,
 		}))
 		var bean model.HostPathRule
 		firstBy(t, db, &bean, "rule_name = ?", name)
-		fatalIf(t, WafHostPathRuleServiceApp.ModifyApi(request.WafHostPathRuleEditReq{
+		fatalIf(t, WafHostPathRuleServiceApp.ModifyApi(context.Background(), request.WafHostPathRuleEditReq{
 			Id: bean.Id, HostCode: "h2", RuleName: name, Path: "/v2/", MatchType: 2, Priority: 50, TargetType: 1, RemoteHost: "backend2", RemotePort: 9090,
 		}))
 		var got model.HostPathRule
@@ -90,7 +91,7 @@ func runCoreCRUDCasesB(t *testing.T, db *gorm.DB) {
 		if got.HostCode != "h2" || got.Path != "/v2/" || got.RemotePort != 9090 {
 			t.Fatalf("HostPathRule 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafHostPathRuleServiceApp.DelApi(request.WafHostPathRuleDelReq{Id: bean.Id}))
+		fatalIf(t, WafHostPathRuleServiceApp.DelApi(context.Background(), request.WafHostPathRuleDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.HostPathRule{}, bean.Id)
 	})
 
@@ -112,39 +113,39 @@ func runCoreCRUDCasesB(t *testing.T, db *gorm.DB) {
 
 	t.Run("SslExpire", func(t *testing.T) {
 		domain := "d_" + sfx() + ".com"
-		fatalIf(t, WafSslExpireServiceApp.AddApi(request.WafSslExpireAddReq{Domain: domain, Port: 443, VisitLog: "v", Status: "unknown"}))
+		fatalIf(t, WafSslExpireServiceApp.AddApi(context.Background(), request.WafSslExpireAddReq{Domain: domain, Port: 443, VisitLog: "v", Status: "unknown"}))
 		var bean model.SslExpire
 		firstBy(t, db, &bean, "domain = ?", domain)
-		fatalIf(t, WafSslExpireServiceApp.ModifyApi(request.WafSslExpireEditReq{Id: bean.Id, Domain: domain, Port: 8443, VisitLog: "v2", Status: "valid"}))
-		got := WafSslExpireServiceApp.GetDetailByIdApi(bean.Id)
+		fatalIf(t, WafSslExpireServiceApp.ModifyApi(context.Background(), request.WafSslExpireEditReq{Id: bean.Id, Domain: domain, Port: 8443, VisitLog: "v2", Status: "valid"}))
+		got := WafSslExpireServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.Port != 8443 || got.Status != "valid" {
 			t.Fatalf("SslExpire 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafSslExpireServiceApp.DelApi(request.WafSslExpireDelReq{Id: bean.Id}))
+		fatalIf(t, WafSslExpireServiceApp.DelApi(context.Background(), request.WafSslExpireDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.SslExpire{}, bean.Id)
 	})
 
 	t.Run("Rule_FullCRUD", func(t *testing.T) {
 		code := uuid.GenUUID()
 		name := "rule_" + sfx()
-		fatalIf(t, WafRuleServiceApp.AddApi(request.WafRuleAddReq{RuleCode: code, IsManualRule: 1, RuleStatus: 1}, code, name, "h1", "content-v1"))
-		if got := WafRuleServiceApp.GetDetailByCodeApi(code); got.RuleContent != "content-v1" || got.RuleName != name {
+		fatalIf(t, WafRuleServiceApp.AddApi(context.Background(), request.WafRuleAddReq{RuleCode: code, IsManualRule: 1, RuleStatus: 1}, code, name, "h1", "content-v1"))
+		if got := WafRuleServiceApp.GetDetailByCodeApi(context.Background(), code); got.RuleContent != "content-v1" || got.RuleName != name {
 			t.Fatalf("Rule 新增未落库: %+v", got)
 		}
-		fatalIf(t, WafRuleServiceApp.ModifyApi(request.WafRuleEditReq{CODE: code, IsManualRule: 1, RuleStatus: 1}, name, "h1", "content-v2"))
-		if got := WafRuleServiceApp.GetDetailByCodeApi(code); got.RuleContent != "content-v2" {
+		fatalIf(t, WafRuleServiceApp.ModifyApi(context.Background(), request.WafRuleEditReq{CODE: code, IsManualRule: 1, RuleStatus: 1}, name, "h1", "content-v2"))
+		if got := WafRuleServiceApp.GetDetailByCodeApi(context.Background(), code); got.RuleContent != "content-v2" {
 			t.Fatalf("Rule 更新未落库: %+v", got)
 		}
 		// DelRuleApi 是软删（RuleStatus=999）：GetDetailByCodeApi 会隐藏 999 行，
 		// 故直接读库断言状态位（bypass 服务层的 <>999 过滤）。
-		fatalIf(t, WafRuleServiceApp.DelRuleApi(request.WafRuleDelReq{CODE: code}))
+		fatalIf(t, WafRuleServiceApp.DelRuleApi(context.Background(), request.WafRuleDelReq{CODE: code}))
 		var deleted model.Rules
 		firstBy(t, db, &deleted, "rule_code = ?", code)
 		if deleted.RuleStatus != 999 {
 			t.Fatalf("Rule 软删后 rule_status 应为 999，实际 %d", deleted.RuleStatus)
 		}
 		// 且服务层的 GetDetailByCodeApi 应查不到（被 999 过滤隐藏）
-		if got := WafRuleServiceApp.GetDetailByCodeApi(code); got.Id != "" {
+		if got := WafRuleServiceApp.GetDetailByCodeApi(context.Background(), code); got.Id != "" {
 			t.Fatalf("软删后 GetDetailByCodeApi 仍返回记录: %+v", got)
 		}
 	})
@@ -152,7 +153,7 @@ func runCoreCRUDCasesB(t *testing.T, db *gorm.DB) {
 	t.Run("SslConfig", func(t *testing.T) {
 		cn := "t" + sfx() + ".example.com"
 		cert1, key1 := genSelfSignedCert(t, cn)
-		newId, addErr := WafSslConfigServiceApp.AddApi(request.SslConfigAddReq{CertContent: cert1, KeyContent: key1})
+		newId, addErr := WafSslConfigServiceApp.AddApi(context.Background(), request.SslConfigAddReq{CertContent: cert1, KeyContent: key1})
 		fatalIf(t, addErr)
 		if newId == "" {
 			t.Fatalf("SslConfig 新增未返回ID")
@@ -164,12 +165,12 @@ func runCoreCRUDCasesB(t *testing.T, db *gorm.DB) {
 		}
 		cn2 := "u" + sfx() + ".example.com"
 		cert2, key2 := genSelfSignedCert(t, cn2)
-		fatalIf(t, WafSslConfigServiceApp.ModifyApi(request.SslConfigEditReq{Id: bean.Id, CertContent: cert2, KeyContent: key2}))
-		got := WafSslConfigServiceApp.GetDetailInner(bean.Id)
+		fatalIf(t, WafSslConfigServiceApp.ModifyApi(context.Background(), request.SslConfigEditReq{Id: bean.Id, CertContent: cert2, KeyContent: key2}))
+		got := WafSslConfigServiceApp.GetDetailInner(context.Background(), bean.Id)
 		if got.Domains != cn2 {
 			t.Fatalf("SslConfig 更新未落库: domains=%q 期望 %q", got.Domains, cn2)
 		}
-		fatalIf(t, WafSslConfigServiceApp.DelApi(request.SslConfigDeleteReq{Id: bean.Id}))
+		fatalIf(t, WafSslConfigServiceApp.DelApi(context.Background(), request.SslConfigDeleteReq{Id: bean.Id}))
 		assertGone(t, db, &model.SslConfig{}, bean.Id)
 	})
 
@@ -185,7 +186,7 @@ func runCoreCRUDCasesB(t *testing.T, db *gorm.DB) {
 			AutoLoadPath: 0, // 自动管理证书：关闭路径自动加载
 		}
 		// 修复前：按值 Create + 零值默认列在此 panic（reflect.Value.SetInt unaddressable）
-		newId, createErr := WafSslConfigServiceApp.CreateInner(cfg)
+		newId, createErr := WafSslConfigServiceApp.CreateInner(context.Background(), cfg)
 		fatalIf(t, createErr)
 		if newId != cfg.Id {
 			t.Fatalf("CreateInner 应返回落库的ID: 返回 %q 期望 %q", newId, cfg.Id)
@@ -199,7 +200,7 @@ func runCoreCRUDCasesB(t *testing.T, db *gorm.DB) {
 		// 返回本次传入的新ID会让调用方把主机绑到一条不存在的证书夹上
 		dup := cfg
 		dup.BaseOrm = newBase(uuid.GenUUID())
-		dupId, dupErr := WafSslConfigServiceApp.CreateInner(dup)
+		dupId, dupErr := WafSslConfigServiceApp.CreateInner(context.Background(), dup)
 		fatalIf(t, dupErr)
 		if dupId != cfg.Id {
 			t.Fatalf("重复序列号应返回已有记录ID: 返回 %q 期望 %q", dupId, cfg.Id)

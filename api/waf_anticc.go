@@ -9,6 +9,7 @@ import (
 	response2 "SamWaf/model/response"
 	"SamWaf/model/spec"
 	"SamWaf/utils"
+	"context"
 	"errors"
 	"fmt"
 
@@ -54,11 +55,11 @@ func (w *WafAntiCCApi) AddApi(c *gin.Context) {
 			}
 		}
 
-		err = wafAntiCCService.CheckIsExistApi(req)
+		err = wafAntiCCService.CheckIsExistApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-			err = wafAntiCCService.AddApi(req)
+			err = wafAntiCCService.AddApi(c.Request.Context(), req)
 			if err == nil {
-				w.NotifyWaf(req.HostCode)
+				w.NotifyWaf(c.Request.Context(), req.HostCode)
 				response.OkWithMessage("添加成功", c)
 			} else {
 
@@ -89,7 +90,7 @@ func (w *WafAntiCCApi) GetDetailApi(c *gin.Context) {
 	var req request.WafAntiCCDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafAntiCCService.GetDetailApi(req)
+		bean := wafAntiCCService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -110,7 +111,7 @@ func (w *WafAntiCCApi) GetListApi(c *gin.Context) {
 	var req request.WafAntiCCSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		beans, total, _ := wafAntiCCService.GetListApi(req)
+		beans, total, _ := wafAntiCCService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      beans,
 			Total:     total,
@@ -129,7 +130,7 @@ func (w *WafAntiCCApi) GetBanIpListApi(c *gin.Context) {
 	// 站点码换显示名：界面上「仅本站点」得说清楚是哪个站点，只给一串 code 没法用。
 	// 带端口（同一域名常有多条记录，各是一个独立站点），与站点下拉的显示名保持一致
 	hostNames := map[string]string{}
-	for _, h := range wafHostService.GetAllHostApi() {
+	for _, h := range wafHostService.GetAllHostApi(c.Request.Context()) {
 		hostNames[h.Code] = HostDisplayName(h)
 	}
 
@@ -206,14 +207,14 @@ func (w *WafAntiCCApi) DelAntiCCApi(c *gin.Context) {
 	var req request.WafAntiCCDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafAntiCCService.GetDetailByIdApi(req.Id)
-		err = wafAntiCCService.DelApi(req)
+		bean := wafAntiCCService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafAntiCCService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
 			response.FailWithMessage("发生错误", c)
 		} else {
-			w.NotifyWaf(bean.HostCode)
+			w.NotifyWaf(c.Request.Context(), bean.HostCode)
 			response.OkWithMessage("删除成功", c)
 		}
 
@@ -253,12 +254,12 @@ func (w *WafAntiCCApi) ModifyAntiCCApi(c *gin.Context) {
 		}
 
 		//编辑前先取旧记录，拿到可能被本次编辑改掉的旧 host_code(issue #898)
-		bean := wafAntiCCService.GetDetailByIdApi(req.Id)
-		err = wafAntiCCService.ModifyApi(req)
+		bean := wafAntiCCService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafAntiCCService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误", c)
 		} else {
-			notifyWafHostChanged(w.NotifyWaf, bean.HostCode, req.HostCode)
+			notifyWafHostChanged(func(hostCode string) { w.NotifyWaf(c.Request.Context(), hostCode) }, bean.HostCode, req.HostCode)
 			response.OkWithMessage("编辑成功", c)
 		}
 
@@ -271,9 +272,9 @@ func (w *WafAntiCCApi) ModifyAntiCCApi(c *gin.Context) {
 *
 通知到waf引擎实时生效
 */
-func (w *WafAntiCCApi) NotifyWaf(host_code string) {
+func (w *WafAntiCCApi) NotifyWaf(ctx context.Context, host_code string) {
 	var antiCC model.AntiCC
-	global.GWAF_LOCAL_DB.Where("host_code = ? ", host_code).Limit(1).Find(&antiCC)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ? ", host_code).Limit(1).Find(&antiCC)
 	var chanInfo = spec.ChanCommonHost{
 		HostCode: host_code,
 		Type:     enums.ChanTypeAnticc,

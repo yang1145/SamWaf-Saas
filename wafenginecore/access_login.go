@@ -2,6 +2,7 @@ package wafenginecore
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/enums"
 	"SamWaf/global"
@@ -11,6 +12,7 @@ import (
 	"SamWaf/service/waf_service"
 	"SamWaf/utils"
 	"SamWaf/wafenginecore/accessgate"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -121,7 +123,7 @@ func (waf *WafEngine) accessTargetHostOtpMode(rq string, cfg *accessgate.Config,
 	if !ok || code == "" {
 		return fallback
 	}
-	host := accessHostService.GetDetailByCodeApi(code)
+	host := accessHostService.GetDetailByCodeApi(wafctx.PlatformScope(context.Background()), code)
 	if host.Code == "" {
 		return fallback
 	}

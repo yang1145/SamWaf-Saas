@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"time"
 )
@@ -15,7 +16,7 @@ type WafHttpAuthBaseService struct{}
 
 var WafHttpAuthBaseServiceApp = new(WafHttpAuthBaseService)
 
-func (receiver *WafHttpAuthBaseService) AddApi(req request.WafHttpAuthBaseAddReq) error {
+func (receiver *WafHttpAuthBaseService) AddApi(ctx context.Context, req request.WafHttpAuthBaseAddReq) error {
 	var bean = &model.HttpAuthBase{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -29,11 +30,11 @@ func (receiver *WafHttpAuthBaseService) AddApi(req request.WafHttpAuthBaseAddReq
 		UserName: req.UserName,
 		Password: req.Password,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean)
 	return nil
 }
 
-func (receiver *WafHttpAuthBaseService) CheckIsExistApi(req request.WafHttpAuthBaseAddReq) int {
+func (receiver *WafHttpAuthBaseService) CheckIsExistApi(ctx context.Context, req request.WafHttpAuthBaseAddReq) int {
 	var total int64 = 0
 	/*where条件*/
 	var whereField = ""
@@ -69,11 +70,11 @@ func (receiver *WafHttpAuthBaseService) CheckIsExistApi(req request.WafHttpAuthB
 		}
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.HttpAuthBase{}).Where(whereField, whereValues...).Count(&total)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HttpAuthBase{}).Where(whereField, whereValues...).Count(&total)
 	return int(total)
 }
 
-func (receiver *WafHttpAuthBaseService) ModifyApi(req request.WafHttpAuthBaseEditReq) error {
+func (receiver *WafHttpAuthBaseService) ModifyApi(ctx context.Context, req request.WafHttpAuthBaseEditReq) error {
 	// 根据唯一字段生成查询条件（只有在UniFields不为空时才进行存在性检查）
 	var total int64 = 0
 	/*where条件*/
@@ -106,10 +107,11 @@ func (receiver *WafHttpAuthBaseService) ModifyApi(req request.WafHttpAuthBaseEdi
 		whereValues = append(whereValues, req.UserName)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.HttpAuthBase{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.HttpAuthBase{}).Where(whereField, whereValues...).Count(&total)
 	// 查询是否已存在记录
 	var bean model.HttpAuthBase
-	global.GWAF_LOCAL_DB.Model(&model.HttpAuthBase{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
+	db.Model(&model.HttpAuthBase{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
 
 	if int(total) > 0 && bean.Id != "" && bean.Id != req.Id {
 		return errors.New("当前记录已经存在")
@@ -124,31 +126,31 @@ func (receiver *WafHttpAuthBaseService) ModifyApi(req request.WafHttpAuthBaseEdi
 	// 改之前先把老身份记下来：改密/改名之后，凭旧密码建立的会话必须一并作废，
 	// 否则「改了密码」只挡住新登录，已经登进去的人照样在里面。
 	var old model.HttpAuthBase
-	global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Limit(1).Find(&old)
+	db.Where("id = ?", req.Id).Limit(1).Find(&old)
 
-	err := global.GWAF_LOCAL_DB.Model(model.HttpAuthBase{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	err := db.Model(model.HttpAuthBase{}).Where("id = ?", req.Id).Updates(beanMap).Error
 	if err != nil {
 		return err
 	}
 	if old.UserName != "" {
-		WafHttpAuthSessionServiceApp.RevokeByUser(old.HostCode, old.UserName, model.HttpAuthRevokeByAccount)
+		WafHttpAuthSessionServiceApp.RevokeByUser(ctx, old.HostCode, old.UserName, model.HttpAuthRevokeByAccount)
 	}
 	if req.UserName != old.UserName || req.HostCode != old.HostCode {
-		WafHttpAuthSessionServiceApp.RevokeByUser(req.HostCode, req.UserName, model.HttpAuthRevokeByAccount)
+		WafHttpAuthSessionServiceApp.RevokeByUser(ctx, req.HostCode, req.UserName, model.HttpAuthRevokeByAccount)
 	}
 	return nil
 }
-func (receiver *WafHttpAuthBaseService) GetDetailApi(req request.WafHttpAuthBaseDetailReq) model.HttpAuthBase {
+func (receiver *WafHttpAuthBaseService) GetDetailApi(ctx context.Context, req request.WafHttpAuthBaseDetailReq) model.HttpAuthBase {
 	var bean model.HttpAuthBase
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafHttpAuthBaseService) GetDetailByIdApi(id string) model.HttpAuthBase {
+func (receiver *WafHttpAuthBaseService) GetDetailByIdApi(ctx context.Context, id string) model.HttpAuthBase {
 	var bean model.HttpAuthBase
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafHttpAuthBaseService) GetListApi(req request.WafHttpAuthBaseSearchReq) ([]model.HttpAuthBase, int64, error) {
+func (receiver *WafHttpAuthBaseService) GetListApi(ctx context.Context, req request.WafHttpAuthBaseSearchReq) ([]model.HttpAuthBase, int64, error) {
 	var list []model.HttpAuthBase
 	var total int64 = 0
 
@@ -177,22 +179,24 @@ func (receiver *WafHttpAuthBaseService) GetListApi(req request.WafHttpAuthBaseSe
 		whereValues = append(whereValues, req.UserName)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.HttpAuthBase{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.HttpAuthBase{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.HttpAuthBase{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.HttpAuthBase{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafHttpAuthBaseService) DelApi(req request.WafHttpAuthBaseDelReq) error {
+func (receiver *WafHttpAuthBaseService) DelApi(ctx context.Context, req request.WafHttpAuthBaseDelReq) error {
 	var bean model.HttpAuthBase
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.HttpAuthBase{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.HttpAuthBase{}).Error
 	if err != nil {
 		return err
 	}
 	// 账号没了，他的在线会话也不该继续有效
-	WafHttpAuthSessionServiceApp.RevokeByUser(bean.HostCode, bean.UserName, model.HttpAuthRevokeByAccount)
+	WafHttpAuthSessionServiceApp.RevokeByUser(ctx, bean.HostCode, bean.UserName, model.HttpAuthRevokeByAccount)
 	return nil
 }

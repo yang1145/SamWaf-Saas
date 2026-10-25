@@ -12,6 +12,7 @@ import (
 	"SamWaf/model/spec"
 	"SamWaf/utils"
 	"SamWaf/wafenginecore/wafhttpcore"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -99,7 +100,7 @@ func (w *WafRuleAPi) AddApi(c *gin.Context) {
 			response.FailWithMessage("请选择网站", c)
 			return
 		}
-		count := wafRuleService.CheckIsExistApi(ruleInfo.RuleBase.RuleName, ruleInfo.RuleBase.RuleDomainCode)
+		count := wafRuleService.CheckIsExistApi(c.Request.Context(), ruleInfo.RuleBase.RuleName, ruleInfo.RuleBase.RuleDomainCode)
 		if count > 0 {
 			response.FailWithMessage("当前规则已存在", c)
 			return
@@ -107,7 +108,7 @@ func (w *WafRuleAPi) AddApi(c *gin.Context) {
 		chsName := ruleInfo.RuleBase.RuleName
 
 		if req.IsManualRule == 1 {
-			existBean := wafRuleService.GetDetailByCodeApi(ruleCode)
+			existBean := wafRuleService.GetDetailByCodeApi(c.Request.Context(), ruleCode)
 			if existBean.RuleCode != "" {
 				response.FailWithMessage("当前编码已存在，请刷新页面重新尝试", c)
 				return
@@ -131,9 +132,9 @@ func (w *WafRuleAPi) AddApi(c *gin.Context) {
 			}
 		}
 
-		err = wafRuleService.AddApi(req, ruleCode, chsName, ruleInfo.RuleBase.RuleDomainCode, ruleContent)
+		err = wafRuleService.AddApi(c.Request.Context(), req, ruleCode, chsName, ruleInfo.RuleBase.RuleDomainCode, ruleContent)
 		if err == nil {
-			w.NotifyWaf(ruleInfo.RuleBase.RuleDomainCode)
+			w.NotifyWaf(c.Request.Context(), ruleInfo.RuleBase.RuleDomainCode)
 			response.OkWithMessage("添加成功", c)
 			return
 		} else {
@@ -161,7 +162,7 @@ func (w *WafRuleAPi) GetDetailApi(c *gin.Context) {
 	var req request.WafRuleDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		wafHost := wafRuleService.GetDetailApi(req)
+		wafHost := wafRuleService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(wafHost, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -182,7 +183,7 @@ func (w *WafRuleAPi) GetListApi(c *gin.Context) {
 	var req request.WafRuleSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		wafRules, total, _ := wafRuleService.GetListApi(req)
+		wafRules, total, _ := wafRuleService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      wafRules,
 			Total:     total,
@@ -198,7 +199,7 @@ func (w *WafRuleAPi) GetListByHostCodeApi(c *gin.Context) {
 	var req request.WafRuleSearchReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		wafRules, total, _ := wafRuleService.GetListByHostCodeApi(req)
+		wafRules, total, _ := wafRuleService.GetListByHostCodeApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      wafRules,
 			Total:     total,
@@ -224,8 +225,8 @@ func (w *WafRuleAPi) DelRuleApi(c *gin.Context) {
 	var req request.WafRuleDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		wafRule := wafRuleService.GetDetailByCodeApi(req.CODE)
-		err = wafRuleService.DelRuleApi(req)
+		wafRule := wafRuleService.GetDetailByCodeApi(c.Request.Context(), req.CODE)
+		err = wafRuleService.DelRuleApi(c.Request.Context(), req)
 		//TODO 通知引擎重新加载某个网站的规则信息
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
@@ -233,7 +234,7 @@ func (w *WafRuleAPi) DelRuleApi(c *gin.Context) {
 		} else if err != nil {
 			response.FailWithMessage("发生错误", c)
 		} else {
-			w.NotifyWaf(wafRule.HostCode)
+			w.NotifyWaf(c.Request.Context(), wafRule.HostCode)
 			response.OkWithMessage("删除成功", c)
 		}
 
@@ -258,7 +259,7 @@ func (w *WafRuleAPi) ModifyRuleApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		var ruleTool = model.RuleTool{}
-		rule := wafRuleService.GetDetailByCodeApi(req.CODE)
+		rule := wafRuleService.GetDetailByCodeApi(c.Request.Context(), req.CODE)
 
 		if req.IsManualRule == 1 {
 			ruleCodeFormDRL, err := ruleHelper.ExtractRuleName(req.RuleJson)
@@ -297,12 +298,12 @@ func (w *WafRuleAPi) ModifyRuleApi(c *gin.Context) {
 			}
 		}
 
-		err = wafRuleService.ModifyApi(req, ruleName, ruleInfo.RuleBase.RuleDomainCode, ruleContent)
+		err = wafRuleService.ModifyApi(c.Request.Context(), req, ruleName, ruleInfo.RuleBase.RuleDomainCode, ruleContent)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误", c)
 		} else {
 			//rule 是编辑前按 CODE 取出的旧记录，若本次把规则挪到了别的网站，旧网站也要一并刷新(issue #898)
-			notifyWafHostChanged(w.NotifyWaf, rule.HostCode, ruleInfo.RuleBase.RuleDomainCode)
+			notifyWafHostChanged(func(hostCode string) { w.NotifyWaf(c.Request.Context(), hostCode) }, rule.HostCode, ruleInfo.RuleBase.RuleDomainCode)
 			response.OkWithMessage("编辑成功", c)
 		}
 
@@ -315,9 +316,9 @@ func (w *WafRuleAPi) ModifyRuleApi(c *gin.Context) {
 *
 通知到waf引擎实时生效
 */
-func (w *WafRuleAPi) NotifyWaf(host_code string) {
+func (w *WafRuleAPi) NotifyWaf(ctx context.Context, host_code string) {
 	var ruleconfig []model.Rules
-	global.GWAF_LOCAL_DB.Where("host_code = ?  and rule_status=1", host_code).Find(&ruleconfig)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ?  and rule_status=1", host_code).Find(&ruleconfig)
 	var chanInfo = spec.ChanCommonHost{
 		HostCode: host_code,
 		Type:     enums.ChanTypeRule,
@@ -332,20 +333,20 @@ func (w *WafRuleAPi) BatchDelRuleApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		// 先获取要删除的记录对应的HostCode，用于后续通知WAF引擎
-		hostCodes, err := wafRuleService.GetHostCodesByCodes(req.Codes)
+		hostCodes, err := wafRuleService.GetHostCodesByCodes(c.Request.Context(), req.Codes)
 		if err != nil {
 			response.FailWithMessage("获取网站信息失败", c)
 			return
 		}
 
 		// 执行批量删除
-		err = wafRuleService.BatchDelApi(req)
+		err = wafRuleService.BatchDelApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("批量删除失败: "+err.Error(), c)
 		} else {
 			// 通知所有相关的网站更新配置
 			for _, hostCode := range hostCodes {
-				w.NotifyWaf(hostCode)
+				w.NotifyWaf(c.Request.Context(), hostCode)
 			}
 			response.OkWithMessage(fmt.Sprintf("成功删除 %d 条记录", len(req.Codes)), c)
 		}
@@ -360,19 +361,19 @@ func (w *WafRuleAPi) DelAllRuleApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		// 先获取要删除的记录对应的HostCode，用于后续通知WAF引擎
-		hostCodes, err := wafRuleService.GetHostCodes()
+		hostCodes, err := wafRuleService.GetHostCodes(c.Request.Context())
 		if err != nil {
 			response.FailWithMessage("获取网站信息失败", c)
 			return
 		}
 
-		err = wafRuleService.DelAllApi(req)
+		err = wafRuleService.DelAllApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("全部删除失败: "+err.Error(), c)
 		} else {
 			// 通知所有相关的网站更新配置
 			for _, hostCode := range hostCodes {
-				w.NotifyWaf(hostCode)
+				w.NotifyWaf(c.Request.Context(), hostCode)
 			}
 			if len(req.HostCode) > 0 {
 				response.OkWithMessage("成功删除该网站的所有规则", c)
@@ -448,13 +449,13 @@ func (w *WafRuleAPi) ModifyRuleStatusApi(c *gin.Context) {
 	var req request.WafRuleStatusReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafRuleService.ModifyRuleStatusApi(req)
+		err = wafRuleService.ModifyRuleStatusApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("更新状态发生错误", c)
 		} else {
-			wafRule := wafRuleService.GetDetailByCodeApi(req.CODE)
+			wafRule := wafRuleService.GetDetailByCodeApi(c.Request.Context(), req.CODE)
 			//通知引擎重新加载某个网站的规则信息
-			w.NotifyWaf(wafRule.HostCode)
+			w.NotifyWaf(c.Request.Context(), wafRule.HostCode)
 			response.OkWithMessage("状态更新成功", c)
 		}
 

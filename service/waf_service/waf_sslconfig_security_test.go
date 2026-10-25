@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -46,7 +47,7 @@ func TestAddApiRejectsArbitraryKeyContent(t *testing.T) {
 	setupSslExportTestDB(t)
 
 	certPEM, _ := genExportTestCert(t, "attack.example.com")
-	_, err := WafSslConfigServiceApp.AddApi(request.SslConfigAddReq{
+	_, err := WafSslConfigServiceApp.AddApi(context.Background(), request.SslConfigAddReq{
 		CertContent:    certPEM,
 		KeyContent:     "# PWNED by U-01\narbitrary attacker text\n",
 		ExportKeyPath:  "/tmp/should_never_be_written_ext0821.key",

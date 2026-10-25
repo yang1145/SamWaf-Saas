@@ -2,6 +2,7 @@ package wafenginecore
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/customtype"
 	"SamWaf/enums"
@@ -14,6 +15,7 @@ import (
 	"SamWaf/utils"
 	"SamWaf/utils/ssl"
 	"SamWaf/wafssl"
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -49,7 +51,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 		if filePathErr != nil {
 			zlog.Error("ApplySSLOrder", filePathErr.Error())
 		}
-		updateSSLOrder, err := ssl.RegistrationSSL(bean, filePath, waf_service.GetCAServerAddress(bean.ApplyPlatform), bean.ApplyPlatform, eab_kid, eab_hmac_key)
+		updateSSLOrder, err := ssl.RegistrationSSL(bean, filePath, waf_service.GetCAServerAddress(wafctx.PlatformScope(context.Background()), bean.ApplyPlatform), bean.ApplyPlatform, eab_kid, eab_hmac_key)
 		if err == nil {
 			zlog.Info(fmt.Sprintf("%s 首次证书申请成功", bean.ApplyDomain))
 
@@ -59,7 +61,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 				updateSSLOrder.ApplyStatus = "fail"
 				updateSSLOrder.ResultCertificate = nil
 				updateSSLOrder.ResultError = err.Error()
-				wafSslOrderService.ModifyById(updateSSLOrder)
+				wafSslOrderService.ModifyById(wafctx.PlatformScope(context.Background()), updateSSLOrder)
 
 				// 发送SSL证书申请失败的系统日志和消息通知
 				sslError := fmt.Sprintf("SSL证书申请失败 - 域名: %s, 错误: %v", bean.ApplyDomain, err.Error())
@@ -91,7 +93,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 				zlog.Info(fmt.Sprintf("%s 证书首次申请后续 成功", bean.ApplyDomain))
 				updateSSLOrder.ApplyStatus = "success"
 				updateSSLOrder.ResultError = ""
-				wafSslOrderService.ModifyById(updateSSLOrder)
+				wafSslOrderService.ModifyById(wafctx.PlatformScope(context.Background()), updateSSLOrder)
 
 				// 发送SSL证书申请成功的系统日志和消息通知
 				sslSuccess := fmt.Sprintf("SSL证书申请成功 - 域名: %s, 有效期至: %s", bean.ApplyDomain, time.Time(updateSSLOrder.ResultValidTo).Format("2006-01-02"))
@@ -126,7 +128,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 			updateSSLOrder.ApplyStatus = "fail"
 			updateSSLOrder.ResultCertificate = nil
 			updateSSLOrder.ResultError = err.Error()
-			wafSslOrderService.ModifyById(updateSSLOrder)
+			wafSslOrderService.ModifyById(wafctx.PlatformScope(context.Background()), updateSSLOrder)
 
 			// 发送SSL证书申请失败的系统日志和消息通知
 			sslError := fmt.Sprintf("SSL证书申请失败 - 域名: %s, 错误: %v", bean.ApplyDomain, err.Error())
@@ -164,7 +166,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 		if filePathErr != nil {
 			zlog.Error("ApplySSLOrder", filePathErr.Error())
 		}
-		updateSSLOrder, err := ssl.ReNewSSL(bean, filePath, waf_service.GetCAServerAddress(bean.ApplyPlatform), bean.ApplyPlatform, eab_kid, eab_hmac_key)
+		updateSSLOrder, err := ssl.ReNewSSL(bean, filePath, waf_service.GetCAServerAddress(wafctx.PlatformScope(context.Background()), bean.ApplyPlatform), bean.ApplyPlatform, eab_kid, eab_hmac_key)
 		if err == nil {
 			zlog.Info(fmt.Sprintf("%s 证书续期申请成功", bean.ApplyDomain))
 
@@ -173,7 +175,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 				zlog.Error(fmt.Sprintf("%s 证书续期申请处理后续 失败 %v", bean.ApplyDomain, err.Error()))
 				updateSSLOrder.ApplyStatus = "fail"
 				updateSSLOrder.ResultError = err.Error()
-				wafSslOrderService.ModifyById(updateSSLOrder)
+				wafSslOrderService.ModifyById(wafctx.PlatformScope(context.Background()), updateSSLOrder)
 
 				// 发送SSL证书续期失败的系统日志和消息通知
 				sslError := fmt.Sprintf("SSL证书续期失败 - 域名: %s, 错误: %v", bean.ApplyDomain, err.Error())
@@ -205,7 +207,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 				zlog.Info(fmt.Sprintf("%s 证书续期处理后续 成功", bean.ApplyDomain))
 				updateSSLOrder.ApplyStatus = "success"
 				updateSSLOrder.ResultError = ""
-				wafSslOrderService.ModifyById(updateSSLOrder)
+				wafSslOrderService.ModifyById(wafctx.PlatformScope(context.Background()), updateSSLOrder)
 
 				// 发送SSL证书续期成功的系统日志和消息通知
 				sslSuccess := fmt.Sprintf("SSL证书续期成功 - 域名: %s, 有效期至: %s", bean.ApplyDomain, time.Time(updateSSLOrder.ResultValidTo).Format("2006-01-02"))
@@ -239,7 +241,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 			zlog.Error(fmt.Sprintf("%s 续期证书申请 失败 %v", bean.ApplyDomain, err.Error()))
 			updateSSLOrder.ApplyStatus = "fail"
 			updateSSLOrder.ResultError = err.Error()
-			wafSslOrderService.ModifyById(updateSSLOrder)
+			wafSslOrderService.ModifyById(wafctx.PlatformScope(context.Background()), updateSSLOrder)
 
 			// 发送SSL证书续期失败的系统日志和消息通知
 			sslError := fmt.Sprintf("SSL证书续期失败 - 域名: %s, 错误: %v", bean.ApplyDomain, err.Error())
@@ -278,7 +280,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 // 之所以在这里额外发一条通知：续期是低频事件（一张证书 60 天一次），静默失败的话
 // 用户要等到外部程序拿着过期证书报错才会发现。
 func exportSslConfigFile(sslConfigId string, domain string, scene string) {
-	msg, err := wafSslConfigService.ExportById(sslConfigId)
+	msg, err := wafSslConfigService.ExportById(wafctx.PlatformScope(context.Background()), sslConfigId)
 	if err != nil {
 		exportErrMsg := fmt.Sprintf("SSL证书导出失败 - 域名: %s, 场景: %s, 错误: %v", domain, scene, err.Error())
 		zlog.Error(exportErrMsg)
@@ -330,8 +332,8 @@ func (waf *WafEngine) processSSL(updateSSLOrder model.SslOrder, bean model.SslOr
 	}
 
 	//1. 查找关联主机是否绑定了证书信息， 如有有则生成新证书夹信息，否则  新增
-	hostBean := wafHostService.GetDetailByCodeApi(bean.HostCode)
-	oldSslConfig := wafSslConfigService.GetDetailInner(hostBean.BindSslId)
+	hostBean := wafHostService.GetDetailByCodeApi(wafctx.PlatformScope(context.Background()), bean.HostCode)
+	oldSslConfig := wafSslConfigService.GetDetailInner(wafctx.PlatformScope(context.Background()), hostBean.BindSslId)
 	//如果绑定为空 ，或者绑定的数据没有对应的数据就生产一个新的到证书夹里面
 	if hostBean.BindSslId == "" || oldSslConfig.SerialNo == "" {
 		zlog.Info(fmt.Sprintf("%s 当前主机未配置证书新增一个证书文件夹", bean.ApplyDomain))
@@ -340,7 +342,7 @@ func (waf *WafEngine) processSSL(updateSSLOrder model.SslOrder, bean model.SslOr
 		//添加到证书夹内。绑定用的是 CreateInner 返回的ID：
 		//序列号已存在时它不会重复落库而是返回已有条目的ID，拿本地生成的ID去绑会绑到一条查不到的记录上，
 		//主机编辑页的证书夹下拉就只剩一串ID显示不出名称
-		sslConfigId, createErr := wafSslConfigService.CreateInner(newSslConfig)
+		sslConfigId, createErr := wafSslConfigService.CreateInner(wafctx.PlatformScope(context.Background()), newSslConfig)
 		if createErr != nil {
 			zlog.Error(fmt.Sprintf("%s 证书夹保存失败 %v", bean.ApplyDomain, createErr.Error()))
 		}
@@ -349,9 +351,9 @@ func (waf *WafEngine) processSSL(updateSSLOrder model.SslOrder, bean model.SslOr
 		//1.更新主机信息 2.发送主机通知
 		if sslConfigId == "" {
 			//证书夹没能落库：证书本身照常生效，但不写绑定ID，避免指向一条不存在的证书夹条目
-			err = wafHostService.UpdateSSLInfo(string(updateSSLOrder.ResultCertificate), string(updateSSLOrder.ResultPrivateKey), bean.HostCode)
+			err = wafHostService.UpdateSSLInfo(wafctx.PlatformScope(context.Background()), string(updateSSLOrder.ResultCertificate), string(updateSSLOrder.ResultPrivateKey), bean.HostCode)
 		} else {
-			err = wafHostService.UpdateSSLInfoAndBindId(string(updateSSLOrder.ResultCertificate), string(updateSSLOrder.ResultPrivateKey), bean.HostCode, sslConfigId)
+			err = wafHostService.UpdateSSLInfoAndBindId(wafctx.PlatformScope(context.Background()), string(updateSSLOrder.ResultCertificate), string(updateSSLOrder.ResultPrivateKey), bean.HostCode, sslConfigId)
 		}
 		if err == nil {
 			hostBean.Keyfile = string(updateSSLOrder.ResultPrivateKey)
@@ -370,12 +372,12 @@ func (waf *WafEngine) processSSL(updateSSLOrder model.SslOrder, bean model.SslOr
 			//将原来的证书备份，新证书更新到现有证书里面
 			zlog.Info(fmt.Sprintf("%s 当前主机已绑定的证书和新证书相比后允许更新", bean.ApplyDomain))
 			//备份原来的配置
-			wafSslConfigService.CreateNewIdInner(oldSslConfig)
+			wafSslConfigService.CreateNewIdInner(wafctx.PlatformScope(context.Background()), oldSslConfig)
 			newSslConfig.Id = oldSslConfig.Id
 			//该证书夹由 SamWaf 自动申请管理，关闭路径自动加载，避免凌晨3点被本地旧文件覆盖
 			newSslConfig.AutoLoadPath = 0
 			//把最新的配置上去
-			wafSslConfigService.ModifyInner(newSslConfig)
+			wafSslConfigService.ModifyInner(wafctx.PlatformScope(context.Background()), newSslConfig)
 
 			//证书导出(落盘)：申请/续期成功后把新证书同步成实体文件，供 nginx 等外部程序使用
 			exportSslConfigFile(newSslConfig.Id, bean.ApplyDomain, "证书申请/续期")
@@ -384,20 +386,20 @@ func (waf *WafEngine) processSSL(updateSSLOrder model.SslOrder, bean model.SslOr
 			waf_service.RefreshManagerCertBySslConfig(newSslConfig.Id, newSslConfig.CertContent, newSslConfig.KeyContent)
 
 			//获取所有绑定了相同证书夹的主机
-			relatedHosts := wafHostService.GetHostBySSLConfigId(newSslConfig.Id)
+			relatedHosts := wafHostService.GetHostBySSLConfigId(wafctx.PlatformScope(context.Background()), newSslConfig.Id)
 			zlog.Info(fmt.Sprintf("%s 找到 %d 个使用相同证书夹的主机", bean.ApplyDomain, len(relatedHosts)))
 
 			//更新所有关联主机的证书信息并发送通知
 			for _, host := range relatedHosts {
 				//更新主机的证书信息
-				err = wafHostService.UpdateSSLInfo(string(updateSSLOrder.ResultCertificate), string(updateSSLOrder.ResultPrivateKey), host.Code)
+				err = wafHostService.UpdateSSLInfo(wafctx.PlatformScope(context.Background()), string(updateSSLOrder.ResultCertificate), string(updateSSLOrder.ResultPrivateKey), host.Code)
 				if err != nil {
 					zlog.Error(fmt.Sprintf("更新主机 %s(%s) 证书信息失败: %v", host.Host, host.Code, err))
 					continue
 				}
 
 				//重新查询主机信息，确保获取最新数据
-				updatedHost := wafHostService.GetDetailByCodeApi(host.Code)
+				updatedHost := wafHostService.GetDetailByCodeApi(wafctx.PlatformScope(context.Background()), host.Code)
 				if updatedHost.Code == "" {
 					zlog.Error(fmt.Sprintf("无法获取更新后的主机信息: %s", host.Code))
 					continue

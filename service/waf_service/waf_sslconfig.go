@@ -11,6 +11,7 @@ import (
 	"SamWaf/model/response"
 	"SamWaf/utils"
 	"SamWaf/wafdb/dialect"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -44,7 +45,7 @@ func validateCertKeyPair(certContent, keyContent string) error {
 }
 
 // AddApi 新增证书夹，返回新记录的ID（供调用方触发证书导出）
-func (receiver *WafSslConfigService) AddApi(req request.SslConfigAddReq) (string, error) {
+func (receiver *WafSslConfigService) AddApi(ctx context.Context, req request.SslConfigAddReq) (string, error) {
 	block, _ := pem.Decode([]byte(req.CertContent))
 	if block == nil {
 		return "", errors.New("无法解码PEM数据")
@@ -88,7 +89,7 @@ func (receiver *WafSslConfigService) AddApi(req request.SslConfigAddReq) (string
 	if domains == "" {
 		domains = "未指定域名或IP"
 	}
-	err = receiver.CheckIsExistApi(serialNo)
+	err = receiver.CheckIsExistApi(ctx, serialNo)
 	if err == nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", errors.New("证书已存在")
 	}
@@ -127,13 +128,14 @@ func (receiver *WafSslConfigService) AddApi(req request.SslConfigAddReq) (string
 	if bean.KeyPath == "" {
 		bean.KeyPath = filepath.Join(utils.GetCurrentDir(), "ssl", bean.Id, "domain.key")
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean)
 	return bean.Id, nil
 }
 
-func (receiver *WafSslConfigService) CreateNewIdInner(config model.SslConfig) {
+func (receiver *WafSslConfigService) CreateNewIdInner(ctx context.Context, config model.SslConfig) {
 	//检测如果证书编号已经存在不需在进行添加了
-	err := global.GWAF_LOCAL_DB.First(&model.SslConfig{}, "serial_no = ?", config.SerialNo).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.First(&model.SslConfig{}, "serial_no = ?", config.SerialNo).Error
 	if err == nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		zlog.Info(fmt.Sprintf("%s 证书已经存在不进行再次备份", config.Domains))
 		return
@@ -150,17 +152,18 @@ func (receiver *WafSslConfigService) CreateNewIdInner(config model.SslConfig) {
 		config.KeyPath = filepath.Join(utils.GetCurrentDir(), "ssl", config.Id, "domain.key")
 	}
 	//必须传指针：按值传给 Create 会导致 GORM 回写字段默认值时对不可寻址反射值 SetInt 而 panic
-	global.GWAF_LOCAL_DB.Create(&config)
+	db.Create(&config)
 	zlog.Info(fmt.Sprintf("%s 原来证书已备份", config.Domains))
 }
 
 // CreateInner 新增证书夹条目，返回落库后可供主机绑定的证书夹ID。
 // 序列号已存在时不重复落库，返回的是库里那条已有记录的ID：
 // 调用方拿这个ID去绑主机，才不会绑到一个库里并不存在的ID上。
-func (receiver *WafSslConfigService) CreateInner(config model.SslConfig) (string, error) {
+func (receiver *WafSslConfigService) CreateInner(ctx context.Context, config model.SslConfig) (string, error) {
 	//检测如果证书编号已经存在不需在进行添加了
 	var exist model.SslConfig
-	err := global.GWAF_LOCAL_DB.First(&exist, "serial_no = ?", config.SerialNo).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.First(&exist, "serial_no = ?", config.SerialNo).Error
 	if err == nil {
 		zlog.Info(fmt.Sprintf("%s 证书已经存在不进行再次备份", config.Domains))
 		return exist.Id, nil
@@ -175,18 +178,18 @@ func (receiver *WafSslConfigService) CreateInner(config model.SslConfig) (string
 		config.KeyPath = filepath.Join(utils.GetCurrentDir(), "ssl", config.Id, "domain.key")
 	}
 	//必须传指针：按值传给 Create 会导致 GORM 回写字段默认值时对不可寻址反射值 SetInt 而 panic
-	if err = global.GWAF_LOCAL_DB.Create(&config).Error; err != nil {
+	if err = db.Create(&config).Error; err != nil {
 		return "", err
 	}
 	zlog.Info(fmt.Sprintf("%s 原来证书已备份", config.Domains))
 	return config.Id, nil
 }
 
-func (receiver *WafSslConfigService) CheckIsExistApi(serialNo string) error {
-	return global.GWAF_LOCAL_DB.First(&model.SslConfig{}, "serial_no = ?", serialNo).Error
+func (receiver *WafSslConfigService) CheckIsExistApi(ctx context.Context, serialNo string) error {
+	return global.GWAF_LOCAL_DB.WithContext(ctx).First(&model.SslConfig{}, "serial_no = ?", serialNo).Error
 }
 
-func (receiver *WafSslConfigService) ModifyApi(req request.SslConfigEditReq) error {
+func (receiver *WafSslConfigService) ModifyApi(ctx context.Context, req request.SslConfigEditReq) error {
 	block, _ := pem.Decode([]byte(req.CertContent))
 	if block == nil {
 		return errors.New("无法解码PEM数据")
@@ -232,7 +235,8 @@ func (receiver *WafSslConfigService) ModifyApi(req request.SslConfigEditReq) err
 	}
 
 	var bean model.SslConfig
-	global.GWAF_LOCAL_DB.Where("serial_no = ?", serialNo).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("serial_no = ?", serialNo).Find(&bean)
 	if bean.Id != "" && bean.SerialNo != serialNo {
 		return errors.New("该证书已经存在")
 	}
@@ -267,12 +271,12 @@ func (receiver *WafSslConfigService) ModifyApi(req request.SslConfigEditReq) err
 	if req.ExportKeyPath != nil {
 		beanMap["ExportKeyPath"] = strings.TrimSpace(*req.ExportKeyPath)
 	}
-	err = global.GWAF_LOCAL_DB.Model(model.SslConfig{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	err = db.Model(model.SslConfig{}).Where("id = ?", req.Id).Updates(beanMap).Error
 
 	return err
 }
 
-func (receiver *WafSslConfigService) ModifyInner(config model.SslConfig) error {
+func (receiver *WafSslConfigService) ModifyInner(ctx context.Context, config model.SslConfig) error {
 	if config.CertPath == "" {
 		config.CertPath = filepath.Join(utils.GetCurrentDir(), "ssl", config.Id, "domain.crt")
 	}
@@ -293,14 +297,14 @@ func (receiver *WafSslConfigService) ModifyInner(config model.SslConfig) error {
 		"KeyPath":      config.KeyPath,
 		"AutoLoadPath": config.AutoLoadPath,
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.SslConfig{}).Where("id = ?", config.Id).Updates(beanMap).Error
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(model.SslConfig{}).Where("id = ?", config.Id).Updates(beanMap).Error
 	return err
 }
 
 // GetDetailApi gets the SSL configuration details by its ID
-func (receiver *WafSslConfigService) GetDetailApi(req request.SslConfigDetailReq) response.WafSslConfigRep {
+func (receiver *WafSslConfigService) GetDetailApi(ctx context.Context, req request.SslConfigDetailReq) response.WafSslConfigRep {
 	var bean model.SslConfig
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
 	if bean.CertPath == "" {
 		bean.CertPath = filepath.Join(utils.GetCurrentDir(), "ssl", bean.Id, "domain.crt")
 	}
@@ -309,7 +313,7 @@ func (receiver *WafSslConfigService) GetDetailApi(req request.SslConfigDetailReq
 	}
 
 	// 查询绑定的主机并格式化显示
-	bindHosts := receiver.formatBindHosts(bean.Id)
+	bindHosts := receiver.formatBindHosts(ctx, bean.Id)
 
 	rep := response.WafSslConfigRep{
 		SslConfig:      bean,
@@ -320,12 +324,12 @@ func (receiver *WafSslConfigService) GetDetailApi(req request.SslConfigDetailReq
 }
 
 // GetDetailInner 获取详情信息
-func (receiver *WafSslConfigService) GetDetailInner(id string) model.SslConfig {
+func (receiver *WafSslConfigService) GetDetailInner(ctx context.Context, id string) model.SslConfig {
 	var bean model.SslConfig
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafSslConfigService) GetListApi(req request.SslConfigSearchReq) ([]response.WafSslConfigRep, int64, error) {
+func (receiver *WafSslConfigService) GetListApi(ctx context.Context, req request.SslConfigSearchReq) ([]response.WafSslConfigRep, int64, error) {
 	var list []model.SslConfig
 	var total int64 = 0
 	var whereField = ""
@@ -336,8 +340,9 @@ func (receiver *WafSslConfigService) GetListApi(req request.SslConfigSearchReq) 
 		whereValues = append(whereValues, "%"+req.Domains+"%")
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.SslConfig{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Order("valid_to desc").Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.SslConfig{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.SslConfig{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Order("valid_to desc").Find(&list)
+	db.Model(&model.SslConfig{}).Where(whereField, whereValues...).Count(&total)
 
 	// 初始化返回结果列表（空列表也要序列化成 [] 而不是 null，前端直接当数组用）
 	repList := make([]response.WafSslConfigRep, 0)
@@ -352,7 +357,7 @@ func (receiver *WafSslConfigService) GetListApi(req request.SslConfigSearchReq) 
 		}
 
 		// 查询绑定的主机并格式化显示
-		bindHosts := receiver.formatBindHosts(sslConfig.Id)
+		bindHosts := receiver.formatBindHosts(ctx, sslConfig.Id)
 
 		rep := response.WafSslConfigRep{
 			SslConfig:      sslConfig,
@@ -365,13 +370,14 @@ func (receiver *WafSslConfigService) GetListApi(req request.SslConfigSearchReq) 
 	return repList, total, nil
 }
 
-func (receiver *WafSslConfigService) GetAllListInner() ([]response.WafSslConfigRep, error) {
+func (receiver *WafSslConfigService) GetAllListInner(ctx context.Context) ([]response.WafSslConfigRep, error) {
 	var list []model.SslConfig
 
 	var bindSslIDs []string
-	global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Select("bind_ssl_id").Where(dialect.Q("ssl")+" = ? and bind_ssl_id <> ?", 1, "").Find(&bindSslIDs)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.Hosts{}).Select("bind_ssl_id").Where(dialect.Q("ssl")+" = ? and bind_ssl_id <> ?", 1, "").Find(&bindSslIDs)
 
-	global.GWAF_LOCAL_DB.Model(&model.SslConfig{}).Where("id IN ?", bindSslIDs).Order("valid_to desc").Find(&list)
+	db.Model(&model.SslConfig{}).Where("id IN ?", bindSslIDs).Order("valid_to desc").Find(&list)
 
 	// 初始化返回结果列表
 	var repList []response.WafSslConfigRep
@@ -394,23 +400,24 @@ func (receiver *WafSslConfigService) GetAllListInner() ([]response.WafSslConfigR
 	return repList, nil
 }
 
-func (receiver *WafSslConfigService) DelApi(req request.SslConfigDeleteReq) error {
+func (receiver *WafSslConfigService) DelApi(ctx context.Context, req request.SslConfigDeleteReq) error {
 	var bean model.SslConfig
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.SslConfig{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.SslConfig{}).Error
 	return err
 }
 
 // formatBindHosts 格式化绑定的主机列表
-func (receiver *WafSslConfigService) formatBindHosts(sslId string) []string {
+func (receiver *WafSslConfigService) formatBindHosts(ctx context.Context, sslId string) []string {
 	var hosts []model.Hosts
 	var result []string
 
 	// 查询绑定该SSL的所有主机
-	global.GWAF_LOCAL_DB.Where("bind_ssl_id = ?", sslId).Find(&hosts)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("bind_ssl_id = ?", sslId).Find(&hosts)
 
 	// 格式化每个主机的显示信息
 	for _, host := range hosts {

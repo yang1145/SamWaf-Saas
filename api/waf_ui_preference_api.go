@@ -23,7 +23,7 @@ func (w *WafUIPreferenceApi) GetApi(c *gin.Context) {
 		response.FailWithMessage("登录信息异常", c)
 		return
 	}
-	bean, err := wafUIPreferenceService.GetApi(account, req.PrefName)
+	bean, err := wafUIPreferenceService.GetApi(c.Request.Context(), account, req.PrefName)
 	if err != nil {
 		response.FailWithMessage("获取失败: "+err.Error(), c)
 		return
@@ -43,7 +43,7 @@ func (w *WafUIPreferenceApi) SaveApi(c *gin.Context) {
 		response.FailWithMessage("登录信息异常", c)
 		return
 	}
-	if err := wafUIPreferenceService.SaveApi(account, req); err != nil {
+	if err := wafUIPreferenceService.SaveApi(c.Request.Context(), account, req); err != nil {
 		response.FailWithMessage("保存失败: "+err.Error(), c)
 		return
 	}

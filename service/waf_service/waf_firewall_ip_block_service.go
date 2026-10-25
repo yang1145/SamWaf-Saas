@@ -9,6 +9,7 @@ import (
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
 	"SamWaf/wafdb/dialect"
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -36,9 +37,10 @@ func (receiver *WafFirewallIPBlockService) SupportsIPSet() bool {
 //   - 代理模式站点：系统防火墙只能看到上游代理IP，封真实客户端无效 → 推荐 WAF 应用层
 //   - 直连站点且防火墙可用：内核层 DROP 更省资源 → 推荐系统层
 //   - 直连但防火墙不可用：回退 WAF 应用层
-func (receiver *WafFirewallIPBlockService) RecommendBlockLayer(hostCode string) (layer string, reason string) {
+func (receiver *WafFirewallIPBlockService) RecommendBlockLayer(ctx context.Context, hostCode string) (layer string, reason string) {
 	var host model.Hosts
-	global.GWAF_LOCAL_DB.Where("code = ?", hostCode).First(&host)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("code = ?", hostCode).First(&host)
 	if host.IPMode == "proxy" {
 		return "waf", "该站点为代理模式，系统防火墙只能看到上游代理IP，封真实客户端无效，建议在WAF应用层封禁"
 	}
@@ -50,15 +52,17 @@ func (receiver *WafFirewallIPBlockService) RecommendBlockLayer(hostCode string) 
 }
 
 // AddApi 添加防火墙IP封禁（自动调用系统防火墙）
-func (receiver *WafFirewallIPBlockService) AddApi(req request.WafFirewallIPBlockAddReq) error {
+func (receiver *WafFirewallIPBlockService) AddApi(ctx context.Context, req request.WafFirewallIPBlockAddReq) error {
 	// 1. 环境不具备防火墙能力时直接给出明确原因，不要把底层命令错误抛给用户
 	if err := receiver.fw.CheckAvailable(); err != nil {
 		return err
 	}
 
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+
 	// 2. 检查IP是否已存在
 	var existBean model.FirewallIPBlock
-	err := global.GWAF_LOCAL_DB.Where("ip = ? AND "+dialect.Q("status")+" = ?", req.IP, "active").First(&existBean).Error
+	err := db.Where("ip = ? AND "+dialect.Q("status")+" = ?", req.IP, "active").First(&existBean).Error
 	if err == nil && existBean.Id != "" {
 		return errors.New("该IP已经被封禁")
 	}
@@ -92,7 +96,7 @@ func (receiver *WafFirewallIPBlockService) AddApi(req request.WafFirewallIPBlock
 		bean.BlockType = "manual"
 	}
 
-	err = global.GWAF_LOCAL_DB.Create(bean).Error
+	err = db.Create(bean).Error
 	if err != nil {
 		// 如果数据库保存失败，回滚防火墙规则
 		receiver.fw.UnblockIP(req.IP)
@@ -103,15 +107,18 @@ func (receiver *WafFirewallIPBlockService) AddApi(req request.WafFirewallIPBlock
 }
 
 // CheckIsExistApi 检查IP是否已存在
-func (receiver *WafFirewallIPBlockService) CheckIsExistApi(req request.WafFirewallIPBlockAddReq) error {
-	return global.GWAF_LOCAL_DB.First(&model.FirewallIPBlock{}, "ip = ? AND "+dialect.Q("status")+" = ?", req.IP, "active").Error
+func (receiver *WafFirewallIPBlockService) CheckIsExistApi(ctx context.Context, req request.WafFirewallIPBlockAddReq) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	return db.First(&model.FirewallIPBlock{}, "ip = ? AND "+dialect.Q("status")+" = ?", req.IP, "active").Error
 }
 
 // ModifyApi 修改防火墙IP封禁
-func (receiver *WafFirewallIPBlockService) ModifyApi(req request.WafFirewallIPBlockEditReq) error {
+func (receiver *WafFirewallIPBlockService) ModifyApi(ctx context.Context, req request.WafFirewallIPBlockEditReq) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+
 	// 1. 获取原记录
 	var oldBean model.FirewallIPBlock
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&oldBean).Error
+	err := db.Where("id = ?", req.Id).First(&oldBean).Error
 	if err != nil {
 		return errors.New("记录不存在")
 	}
@@ -154,7 +161,7 @@ func (receiver *WafFirewallIPBlockService) ModifyApi(req request.WafFirewallIPBl
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
 
-	err = global.GWAF_LOCAL_DB.Model(&model.FirewallIPBlock{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	err = db.Model(&model.FirewallIPBlock{}).Where("id = ?", req.Id).Updates(beanMap).Error
 	if err != nil {
 		// 如果数据库更新失败，回滚防火墙规则
 		if oldBean.IP != req.IP && fwErr == nil {
@@ -179,26 +186,28 @@ func (receiver *WafFirewallIPBlockService) ModifyApi(req request.WafFirewallIPBl
 }
 
 // GetDetailApi 获取防火墙IP封禁详情
-func (receiver *WafFirewallIPBlockService) GetDetailApi(req request.WafFirewallIPBlockDetailReq) model.FirewallIPBlock {
+func (receiver *WafFirewallIPBlockService) GetDetailApi(ctx context.Context, req request.WafFirewallIPBlockDetailReq) model.FirewallIPBlock {
 	var bean model.FirewallIPBlock
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", req.Id).Find(&bean)
 	return bean
 }
 
 // GetDetailByIdApi 根据ID获取详情
-func (receiver *WafFirewallIPBlockService) GetDetailByIdApi(id string) model.FirewallIPBlock {
+func (receiver *WafFirewallIPBlockService) GetDetailByIdApi(ctx context.Context, id string) model.FirewallIPBlock {
 	var bean model.FirewallIPBlock
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", id).Find(&bean)
 	return bean
 }
 
 // GetListApi 获取防火墙IP封禁列表
-func (receiver *WafFirewallIPBlockService) GetListApi(req request.WafFirewallIPBlockSearchReq) ([]model.FirewallIPBlock, int64, error) {
+func (receiver *WafFirewallIPBlockService) GetListApi(ctx context.Context, req request.WafFirewallIPBlockSearchReq) ([]model.FirewallIPBlock, int64, error) {
 	var list []model.FirewallIPBlock
 	var total int64 = 0
 
 	// 构建查询条件
-	query := global.GWAF_LOCAL_DB.Model(&model.FirewallIPBlock{})
+	query := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.FirewallIPBlock{})
 
 	if len(req.HostCode) > 0 {
 		query = query.Where("host_code = ?", req.HostCode)
@@ -229,10 +238,12 @@ func (receiver *WafFirewallIPBlockService) GetListApi(req request.WafFirewallIPB
 }
 
 // DelApi 删除防火墙IP封禁（同时删除系统防火墙规则）
-func (receiver *WafFirewallIPBlockService) DelApi(req request.WafFirewallIPBlockDelReq) error {
+func (receiver *WafFirewallIPBlockService) DelApi(ctx context.Context, req request.WafFirewallIPBlockDelReq) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+
 	// 1. 获取记录
 	var bean model.FirewallIPBlock
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return errors.New("记录不存在")
 	}
@@ -246,19 +257,20 @@ func (receiver *WafFirewallIPBlockService) DelApi(req request.WafFirewallIPBlock
 	}
 
 	// 3. 删除数据库记录
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(&model.FirewallIPBlock{}).Error
+	err = db.Where("id = ?", req.Id).Delete(&model.FirewallIPBlock{}).Error
 	return err
 }
 
 // BatchDelApi 批量删除防火墙IP封禁
-func (receiver *WafFirewallIPBlockService) BatchDelApi(req request.WafFirewallIPBlockBatchDelReq) error {
+func (receiver *WafFirewallIPBlockService) BatchDelApi(ctx context.Context, req request.WafFirewallIPBlockBatchDelReq) error {
 	if len(req.Ids) == 0 {
 		return errors.New("删除ID列表不能为空")
 	}
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 
 	// 1. 获取所有要删除的记录
 	var beans []model.FirewallIPBlock
-	err := global.GWAF_LOCAL_DB.Where("id IN ?", req.Ids).Find(&beans).Error
+	err := db.Where("id IN ?", req.Ids).Find(&beans).Error
 	if err != nil {
 		return err
 	}
@@ -281,12 +293,12 @@ func (receiver *WafFirewallIPBlockService) BatchDelApi(req request.WafFirewallIP
 	}
 
 	// 3. 批量删除数据库记录
-	err = global.GWAF_LOCAL_DB.Where("id IN ?", req.Ids).Delete(&model.FirewallIPBlock{}).Error
+	err = db.Where("id IN ?", req.Ids).Delete(&model.FirewallIPBlock{}).Error
 	return err
 }
 
 // BatchAddApi 批量添加防火墙IP封禁
-func (receiver *WafFirewallIPBlockService) BatchAddApi(req request.WafFirewallIPBlockBatchAddReq) (successCount int, failedIPs []string, err error) {
+func (receiver *WafFirewallIPBlockService) BatchAddApi(ctx context.Context, req request.WafFirewallIPBlockBatchAddReq) (successCount int, failedIPs []string, err error) {
 	if len(req.IPs) == 0 {
 		return 0, nil, errors.New("IP列表不能为空")
 	}
@@ -308,7 +320,7 @@ func (receiver *WafFirewallIPBlockService) BatchAddApi(req request.WafFirewallIP
 			Remarks:   req.Remarks,
 		}
 
-		err := receiver.AddApi(addReq)
+		err := receiver.AddApi(ctx, addReq)
 		if err != nil {
 			failedIPs = append(failedIPs, ip)
 		} else {
@@ -324,15 +336,16 @@ func (receiver *WafFirewallIPBlockService) BatchAddApi(req request.WafFirewallIP
 }
 
 // EnableApi 启用防火墙IP封禁
-func (receiver *WafFirewallIPBlockService) EnableApi(req request.WafFirewallIPBlockEnableReq) error {
+func (receiver *WafFirewallIPBlockService) EnableApi(ctx context.Context, req request.WafFirewallIPBlockEnableReq) error {
 	// 0. 环境不具备防火墙能力时直接给出明确原因
 	if err := receiver.fw.CheckAvailable(); err != nil {
 		return err
 	}
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 
 	// 1. 获取记录
 	var bean model.FirewallIPBlock
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return errors.New("记录不存在")
 	}
@@ -348,7 +361,7 @@ func (receiver *WafFirewallIPBlockService) EnableApi(req request.WafFirewallIPBl
 	}
 
 	// 3. 更新数据库状态
-	err = global.GWAF_LOCAL_DB.Model(&model.FirewallIPBlock{}).
+	err = db.Model(&model.FirewallIPBlock{}).
 		Where("id = ?", req.Id).
 		Updates(map[string]interface{}{
 			"Status":      "active",
@@ -359,10 +372,12 @@ func (receiver *WafFirewallIPBlockService) EnableApi(req request.WafFirewallIPBl
 }
 
 // DisableApi 禁用防火墙IP封禁
-func (receiver *WafFirewallIPBlockService) DisableApi(req request.WafFirewallIPBlockDisableReq) error {
+func (receiver *WafFirewallIPBlockService) DisableApi(ctx context.Context, req request.WafFirewallIPBlockDisableReq) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+
 	// 1. 获取记录
 	var bean model.FirewallIPBlock
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return errors.New("记录不存在")
 	}
@@ -380,7 +395,7 @@ func (receiver *WafFirewallIPBlockService) DisableApi(req request.WafFirewallIPB
 	}
 
 	// 3. 更新数据库状态
-	err = global.GWAF_LOCAL_DB.Model(&model.FirewallIPBlock{}).
+	err = db.Model(&model.FirewallIPBlock{}).
 		Where("id = ?", req.Id).
 		Updates(map[string]interface{}{
 			"Status":      "inactive",
@@ -391,7 +406,7 @@ func (receiver *WafFirewallIPBlockService) DisableApi(req request.WafFirewallIPB
 }
 
 // SyncFirewallRules 同步防火墙规则（从数据库恢复到系统防火墙）
-func (receiver *WafFirewallIPBlockService) SyncFirewallRules(hostCode string) (successCount int, failedCount int, err error) {
+func (receiver *WafFirewallIPBlockService) SyncFirewallRules(ctx context.Context, hostCode string) (successCount int, failedCount int, err error) {
 	// 0. 环境不具备防火墙能力时直接给出明确原因
 	if fwErr := receiver.fw.CheckAvailable(); fwErr != nil {
 		return 0, 0, fwErr
@@ -399,7 +414,7 @@ func (receiver *WafFirewallIPBlockService) SyncFirewallRules(hostCode string) (s
 
 	// 1. 获取所有active状态的记录
 	var beans []model.FirewallIPBlock
-	query := global.GWAF_LOCAL_DB.Where(dialect.Q("status")+" = ?", "active")
+	query := global.GWAF_LOCAL_DB.WithContext(ctx).Where(dialect.Q("status")+" = ?", "active")
 
 	if hostCode != "" {
 		query = query.Where("host_code = ?", hostCode)
@@ -429,13 +444,15 @@ func (receiver *WafFirewallIPBlockService) SyncFirewallRules(hostCode string) (s
 // 说明：过期记录(expire_time>0 且已过期)无论当前是 active 还是 inactive 都会被清掉；
 // 以前只是把状态置为 inactive，导致过期记录长期堆积在库里、再次点“清理过期”也不消失，
 // 用户期望“清理”即彻底删除，故改为硬删除(与手工删除一致)。永久封禁(expire_time=0)不受影响。
-func (receiver *WafFirewallIPBlockService) ClearExpiredRules() (int, error) {
+func (receiver *WafFirewallIPBlockService) ClearExpiredRules(ctx context.Context) (int, error) {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+
 	// 1. 查找所有过期的记录（ExpireTime > 0 且 < 当前时间，任意状态）
 	// 只取清理循环需要的列(id/ip/status)，避免把 reason/remarks 等大字段一并读出加重 IO；
 	// 命中 (status, expire_time) 复合索引后该查询应为毫秒级。
 	currentTime := time.Now().Unix()
 	var beans []model.FirewallIPBlock
-	err := global.GWAF_LOCAL_DB.Select("id", "ip", dialect.Q("status")).
+	err := db.Select("id", "ip", dialect.Q("status")).
 		Where("expire_time > 0 AND expire_time < ?", currentTime).
 		Find(&beans).Error
 	if err != nil {
@@ -460,7 +477,7 @@ func (receiver *WafFirewallIPBlockService) ClearExpiredRules() (int, error) {
 
 	// 3. 批量硬删除过期记录
 	if len(idsToDelete) > 0 {
-		if err := global.GWAF_LOCAL_DB.Where("id IN ?", idsToDelete).
+		if err := db.Where("id IN ?", idsToDelete).
 			Delete(&model.FirewallIPBlock{}).Error; err != nil {
 			return 0, err
 		}
@@ -470,9 +487,10 @@ func (receiver *WafFirewallIPBlockService) ClearExpiredRules() (int, error) {
 }
 
 // GetHostCodesByIds 根据ID列表获取对应的HostCode列表
-func (receiver *WafFirewallIPBlockService) GetHostCodesByIds(ids []string) ([]string, error) {
+func (receiver *WafFirewallIPBlockService) GetHostCodesByIds(ctx context.Context, ids []string) ([]string, error) {
 	var hostCodes []string
-	err := global.GWAF_LOCAL_DB.Model(&model.FirewallIPBlock{}).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.FirewallIPBlock{}).
 		Where("id IN ?", ids).
 		Distinct("host_code").
 		Pluck("host_code", &hostCodes).Error
@@ -480,24 +498,26 @@ func (receiver *WafFirewallIPBlockService) GetHostCodesByIds(ids []string) ([]st
 }
 
 // GetAllActiveIPs 获取所有active状态的IP列表
-func (receiver *WafFirewallIPBlockService) GetAllActiveIPs() ([]string, error) {
+func (receiver *WafFirewallIPBlockService) GetAllActiveIPs(ctx context.Context) ([]string, error) {
 	var ips []string
-	err := global.GWAF_LOCAL_DB.Model(&model.FirewallIPBlock{}).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.FirewallIPBlock{}).
 		Where(dialect.Q("status")+" = ?", "active").
 		Pluck("ip", &ips).Error
 	return ips, err
 }
 
 // GetStatistics 获取统计信息
-func (receiver *WafFirewallIPBlockService) GetStatistics() map[string]interface{} {
+func (receiver *WafFirewallIPBlockService) GetStatistics(ctx context.Context) map[string]interface{} {
 	var total, active, inactive, expired int64
 
-	global.GWAF_LOCAL_DB.Model(&model.FirewallIPBlock{}).Count(&total)
-	global.GWAF_LOCAL_DB.Model(&model.FirewallIPBlock{}).Where(dialect.Q("status")+" = ?", "active").Count(&active)
-	global.GWAF_LOCAL_DB.Model(&model.FirewallIPBlock{}).Where(dialect.Q("status")+" = ?", "inactive").Count(&inactive)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.FirewallIPBlock{}).Count(&total)
+	db.Model(&model.FirewallIPBlock{}).Where(dialect.Q("status")+" = ?", "active").Count(&active)
+	db.Model(&model.FirewallIPBlock{}).Where(dialect.Q("status")+" = ?", "inactive").Count(&inactive)
 
 	currentTime := time.Now().Unix()
-	global.GWAF_LOCAL_DB.Model(&model.FirewallIPBlock{}).
+	db.Model(&model.FirewallIPBlock{}).
 		Where("expire_time > 0 AND expire_time < ?", currentTime).Count(&expired)
 
 	return map[string]interface{}{

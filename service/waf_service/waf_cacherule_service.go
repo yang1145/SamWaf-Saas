@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"time"
 )
@@ -15,7 +16,7 @@ type WafCacheRuleService struct{}
 
 var WafCacheRuleServiceApp = new(WafCacheRuleService)
 
-func (receiver *WafCacheRuleService) AddApi(req request.WafCacheRuleAddReq) error {
+func (receiver *WafCacheRuleService) AddApi(ctx context.Context, req request.WafCacheRuleAddReq) error {
 	var bean = &model.CacheRule{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -35,11 +36,11 @@ func (receiver *WafCacheRuleService) AddApi(req request.WafCacheRuleAddReq) erro
 		RequestMethod: req.RequestMethod,
 		Remarks:       req.Remarks,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean)
 	return nil
 }
 
-func (receiver *WafCacheRuleService) CheckIsExistApi(req request.WafCacheRuleAddReq) int {
+func (receiver *WafCacheRuleService) CheckIsExistApi(ctx context.Context, req request.WafCacheRuleAddReq) int {
 	var total int64 = 0
 	/*where条件*/
 	var whereField = ""
@@ -75,11 +76,11 @@ func (receiver *WafCacheRuleService) CheckIsExistApi(req request.WafCacheRuleAdd
 		}
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.CacheRule{}).Where(whereField, whereValues...).Count(&total)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.CacheRule{}).Where(whereField, whereValues...).Count(&total)
 	return int(total)
 }
 
-func (receiver *WafCacheRuleService) ModifyApi(req request.WafCacheRuleEditReq) error {
+func (receiver *WafCacheRuleService) ModifyApi(ctx context.Context, req request.WafCacheRuleEditReq) error {
 	// 根据唯一字段生成查询条件（只有在UniFields不为空时才进行存在性检查）
 
 	var total int64 = 0
@@ -113,10 +114,11 @@ func (receiver *WafCacheRuleService) ModifyApi(req request.WafCacheRuleEditReq) 
 		whereValues = append(whereValues, req.RuleName)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.CacheRule{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.CacheRule{}).Where(whereField, whereValues...).Count(&total)
 	// 查询是否已存在记录
 	var bean model.CacheRule
-	global.GWAF_LOCAL_DB.Model(&model.CacheRule{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
+	db.Model(&model.CacheRule{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
 
 	if int(total) > 0 && bean.Id != "" && bean.Id != req.Id {
 		return errors.New("当前记录已经存在")
@@ -135,21 +137,21 @@ func (receiver *WafCacheRuleService) ModifyApi(req request.WafCacheRuleEditReq) 
 		"Remarks":       req.Remarks,
 		"UPDATE_TIME":   customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.CacheRule{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	err := db.Model(model.CacheRule{}).Where("id = ?", req.Id).Updates(beanMap).Error
 
 	return err
 }
-func (receiver *WafCacheRuleService) GetDetailApi(req request.WafCacheRuleDetailReq) model.CacheRule {
+func (receiver *WafCacheRuleService) GetDetailApi(ctx context.Context, req request.WafCacheRuleDetailReq) model.CacheRule {
 	var bean model.CacheRule
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafCacheRuleService) GetDetailByIdApi(id string) model.CacheRule {
+func (receiver *WafCacheRuleService) GetDetailByIdApi(ctx context.Context, id string) model.CacheRule {
 	var bean model.CacheRule
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafCacheRuleService) GetListApi(req request.WafCacheRuleSearchReq) ([]model.CacheRule, int64, error) {
+func (receiver *WafCacheRuleService) GetListApi(ctx context.Context, req request.WafCacheRuleSearchReq) ([]model.CacheRule, int64, error) {
 	var list []model.CacheRule
 	var total int64 = 0
 
@@ -169,17 +171,19 @@ func (receiver *WafCacheRuleService) GetListApi(req request.WafCacheRuleSearchRe
 		whereValues = append(whereValues, req.HostCode)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.CacheRule{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.CacheRule{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.CacheRule{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.CacheRule{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafCacheRuleService) DelApi(req request.WafCacheRuleDelReq) error {
+func (receiver *WafCacheRuleService) DelApi(ctx context.Context, req request.WafCacheRuleDelReq) error {
 	var bean model.CacheRule
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.CacheRule{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.CacheRule{}).Error
 	return err
 }

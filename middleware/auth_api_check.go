@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"SamWaf/cache"
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/enums"
 	"SamWaf/global"
@@ -202,6 +203,14 @@ func Auth() gin.HandlerFunc {
 			c.Set("loginIP", currentIP)
 			// 写入角色，供 RBAC 鉴权中间件判定（空角色兜底为超级管理员，向后兼容）
 			c.Set("userRole", enums.NormalizeRole(tokenInfo.Role))
+
+			// 共享库多租户（阶段0）：把令牌携带的租户身份写入请求上下文，
+			// 供 GORM 租户回调（wafdb.before_query）随 db.WithContext 按请求隔离数据。
+			// 存量令牌缓存没有租户字段（Tenant_ID 为空）时不注入，走全局回退，行为不变。
+			if tokenInfo.Tenant_ID != "" {
+				c.Request = c.Request.WithContext(wafctx.WithTenant(c.Request.Context(), tokenInfo.Tenant_ID, tokenInfo.USER_CODE))
+				c.Set("tenantId", tokenInfo.Tenant_ID)
+			}
 		}
 
 		// 这里执行路由 HandlerFunc

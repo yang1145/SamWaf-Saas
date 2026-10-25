@@ -11,6 +11,7 @@ import (
 	"SamWaf/model/response"
 	"SamWaf/utils"
 	"SamWaf/wafenginecore/accessgate"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -32,9 +33,9 @@ var pathPrefixPattern = regexp.MustCompile(`^/[a-z0-9_\-/]{2,63}$`)
 
 // GetConfig 读取全局配置；没有行就返回默认值（不落库）。
 // 「读的时候不建行」是刻意的：用户没进过配置页，库里就不该多出一行没人管的记录。
-func (receiver *WafAccessConfigService) GetConfig() model.AccessConfig {
+func (receiver *WafAccessConfigService) GetConfig(ctx context.Context) model.AccessConfig {
 	var bean model.AccessConfig
-	if err := global.GWAF_LOCAL_DB.Where("user_code = ? and tenant_id = ?",
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("user_code = ? and tenant_id = ?",
 		global.GWAF_USER_CODE, global.GWAF_TENANT_ID).First(&bean).Error; err != nil {
 		return model.DefaultAccessConfig()
 	}
@@ -44,15 +45,15 @@ func (receiver *WafAccessConfigService) GetConfig() model.AccessConfig {
 
 // GetDetailApi 给管理端用：把密钥类字段换成「是否已设置」的布尔量。
 // 密钥本身有 json:"-"，这里再补两个标志位，前端才能区分「没配」和「配了但不回显」。
-func (receiver *WafAccessConfigService) GetDetailApi() model.AccessConfig {
-	bean := receiver.GetConfig()
+func (receiver *WafAccessConfigService) GetDetailApi(ctx context.Context) model.AccessConfig {
+	bean := receiver.GetConfig(ctx)
 	bean.HasHmacSecret = strings.TrimSpace(bean.HmacSecret) != ""
 	bean.HasServiceToken = strings.TrimSpace(bean.ServiceTokenHashes) != ""
 	return bean
 }
 
 // SaveApi 保存全局配置并立即发布运行时快照。
-func (receiver *WafAccessConfigService) SaveApi(req request.WafAccessConfigSaveReq) error {
+func (receiver *WafAccessConfigService) SaveApi(ctx context.Context, req request.WafAccessConfigSaveReq) error {
 	center, centerHost, err := normalizeCenterOrigin(req.CenterOrigin)
 	if err != nil {
 		return err
@@ -65,7 +66,7 @@ func (receiver *WafAccessConfigService) SaveApi(req request.WafAccessConfigSaveR
 	}
 	// 认证中心必须是已经配置过的站点。请求进不到引擎（ServeHTTP 找不到 host 直接 403），
 	// 跳过去就是一个 403 死循环——与其让用户线上踩，不如保存时就拦住。
-	if !receiver.isCenterHostConfigured(centerHost) {
+	if !receiver.isCenterHostConfigured(ctx, centerHost) {
 		return errors.New("认证中心域名必须先在【网站维护】里配置为一个站点：" + centerHost)
 	}
 
@@ -87,7 +88,7 @@ func (receiver *WafAccessConfigService) SaveApi(req request.WafAccessConfigSaveR
 		return errors.New("Cookie 前缀只能包含小写字母、数字、下划线、短横线，长度 2-32")
 	}
 
-	old := receiver.GetConfig()
+	old := receiver.GetConfig(ctx)
 	now := customtype.JsonTime(time.Now())
 
 	bean := old
@@ -138,48 +139,50 @@ func (receiver *WafAccessConfigService) SaveApi(req request.WafAccessConfigSaveR
 
 	bean.FillDefaults()
 
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	if bean.Id == "" {
 		bean.Id = uuid.GenUUID()
 		bean.BaseOrm = baseorm.BaseOrm{
 			Id: bean.Id, USER_CODE: global.GWAF_USER_CODE, Tenant_ID: global.GWAF_TENANT_ID,
 			CREATE_TIME: now, UPDATE_TIME: now,
 		}
-		if err := global.GWAF_LOCAL_DB.Create(&bean).Error; err != nil {
+		if err := db.Create(&bean).Error; err != nil {
 			return err
 		}
 	} else {
-		if err := global.GWAF_LOCAL_DB.Save(&bean).Error; err != nil {
+		if err := db.Save(&bean).Error; err != nil {
 			return err
 		}
 	}
 
-	receiver.PublishConfig()
+	receiver.PublishConfig(ctx)
 	return nil
 }
 
 // RegenerateSecretApi 轮换 rq 签名密钥。
 // 副作用是所有在途的认证跳转会失效（用户重跳一次即可），已登录会话不受影响。
-func (receiver *WafAccessConfigService) RegenerateSecretApi() error {
-	bean := receiver.GetConfig()
+func (receiver *WafAccessConfigService) RegenerateSecretApi(ctx context.Context) error {
+	bean := receiver.GetConfig(ctx)
 	enc, err := receiver.newEncryptedSecret()
 	if err != nil {
 		return err
 	}
 	now := customtype.JsonTime(time.Now())
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	if bean.Id == "" {
 		bean.BaseOrm = baseorm.BaseOrm{
 			Id: uuid.GenUUID(), USER_CODE: global.GWAF_USER_CODE, Tenant_ID: global.GWAF_TENANT_ID,
 			CREATE_TIME: now, UPDATE_TIME: now,
 		}
 		bean.HmacSecret = enc
-		if err := global.GWAF_LOCAL_DB.Create(&bean).Error; err != nil {
+		if err := db.Create(&bean).Error; err != nil {
 			return err
 		}
-	} else if err := global.GWAF_LOCAL_DB.Model(&model.AccessConfig{}).Where("id = ?", bean.Id).
+	} else if err := db.Model(&model.AccessConfig{}).Where("id = ?", bean.Id).
 		Updates(map[string]interface{}{"hmac_secret": enc, "update_time": now}).Error; err != nil {
 		return err
 	}
-	receiver.PublishConfig()
+	receiver.PublishConfig(ctx)
 	return nil
 }
 
@@ -187,8 +190,8 @@ func (receiver *WafAccessConfigService) RegenerateSecretApi() error {
 //
 // 必须在 StartWaf() 之前同步调用一次（见 cmd/samwaf/main.go）。理由与 IP 组一致：
 // 访问控制晚生效就是一段裸奔窗口，而这个功能的全部意义就是不让人裸奔。
-func (receiver *WafAccessConfigService) PublishConfig() {
-	bean := receiver.GetConfig()
+func (receiver *WafAccessConfigService) PublishConfig(ctx context.Context) {
+	bean := receiver.GetConfig(ctx)
 
 	secret := decryptAccessSecret(bean.HmacSecret)
 	if secret == "" {
@@ -201,7 +204,7 @@ func (receiver *WafAccessConfigService) PublishConfig() {
 	// 认证中心站点被删除有专门的拦截（见 DelHostApi），改域名也拦（见 ModifyApi），
 	// 所以这里基本走不到。真走到了就清空——让引擎按"没有认证中心"处理并告警放行，
 	// 总好过让全站跳到一个必然 403 的地址。
-	if centerHost != "" && !receiver.isCenterHostConfigured(centerHost) {
+	if centerHost != "" && !receiver.isCenterHostConfigured(ctx, centerHost) {
 		zlog.Warn("统一访问认证：认证中心域名已不在网站列表中，访问控制将不生效",
 			"center_host", centerHost)
 		bean.CenterOrigin = ""
@@ -267,8 +270,8 @@ func (receiver *WafAccessConfigService) PublishConfig() {
 // "这个域名还有站点在托管吗"，遍历全表；这里要回答的是"删掉这一个站点会不会
 // 让认证中心失去托管"，只能拿这个站点自己的域名去比。泛域名站点也算数——
 // *.example.com 就是 sso.example.com 的托管方。
-func (receiver *WafAccessConfigService) IsHostUsedAsCenter(host model.Hosts) (bool, string) {
-	bean := receiver.GetConfig()
+func (receiver *WafAccessConfigService) IsHostUsedAsCenter(ctx context.Context, host model.Hosts) (bool, string) {
+	bean := receiver.GetConfig(ctx)
 	_, centerHost, _ := normalizeCenterOrigin(bean.CenterOrigin)
 	if centerHost == "" {
 		return false, ""
@@ -301,20 +304,20 @@ func (receiver *WafAccessConfigService) IsHostUsedAsCenter(host model.Hosts) (bo
 // 直接改库、或者将来新增了别的改站点入口）。库里的值必须一起清掉：留着的话
 // 配置页仍显示一个早已不存在的地址，用户看不出为什么统一认证不生效；
 // 而且哪天有人恰好新建了同名站点，一个被遗忘的配置会突然自己复活。
-func (receiver *WafAccessConfigService) SyncAfterHostChanged() {
-	bean := receiver.GetConfig()
+func (receiver *WafAccessConfigService) SyncAfterHostChanged(ctx context.Context) {
+	bean := receiver.GetConfig(ctx)
 	if bean.Id != "" && strings.TrimSpace(bean.CenterOrigin) != "" {
 		_, centerHost, _ := normalizeCenterOrigin(bean.CenterOrigin)
-		if centerHost != "" && !receiver.isCenterHostConfigured(centerHost) {
+		if centerHost != "" && !receiver.isCenterHostConfigured(ctx, centerHost) {
 			zlog.Warn("统一访问认证：认证中心站点已失效，已清空认证中心配置；在重新指定之前访问控制不会生效",
 				"center_host", centerHost)
-			global.GWAF_LOCAL_DB.Model(&model.AccessConfig{}).Where("id = ?", bean.Id).
+			global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.AccessConfig{}).Where("id = ?", bean.Id).
 				Updates(map[string]interface{}{
 					"center_origin": "", "update_time": customtype.JsonTime(time.Now()),
 				})
 		}
 	}
-	receiver.PublishConfig()
+	receiver.PublishConfig(ctx)
 }
 
 // GetCenterHostOptionsApi 列出可以直接拿来当认证中心的站点地址。
@@ -325,9 +328,9 @@ func (receiver *WafAccessConfigService) SyncAfterHostChanged() {
 //   - 未启动的站点：跳过去连不上
 //
 // 绑定的多域名也一并列出，它们同样能命中这个站点。
-func (receiver *WafAccessConfigService) GetCenterHostOptionsApi() []response.AccessCenterHostOption {
+func (receiver *WafAccessConfigService) GetCenterHostOptionsApi(ctx context.Context) []response.AccessCenterHostOption {
 	var hosts []model.Hosts
-	global.GWAF_LOCAL_DB.Where("user_code = ? and tenant_id = ?",
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("user_code = ? and tenant_id = ?",
 		global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Find(&hosts)
 
 	out := make([]response.AccessCenterHostOption, 0, len(hosts))
@@ -390,13 +393,13 @@ func (receiver *WafAccessConfigService) newEncryptedSecret() (string, error) {
 
 // isCenterHostConfigured 检查域名是否已被配置成某个站点。
 // 主域名、多域名绑定、泛域名三种情况都要认，否则用户用泛域名做认证中心会被误拦。
-func (receiver *WafAccessConfigService) isCenterHostConfigured(centerHost string) bool {
+func (receiver *WafAccessConfigService) isCenterHostConfigured(ctx context.Context, centerHost string) bool {
 	pure := centerHost
 	if idx := strings.LastIndex(pure, ":"); idx > 0 {
 		pure = pure[:idx]
 	}
 	var hosts []model.Hosts
-	global.GWAF_LOCAL_DB.Where("user_code = ? and tenant_id = ?",
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("user_code = ? and tenant_id = ?",
 		global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Find(&hosts)
 	for _, h := range hosts {
 		if strings.EqualFold(h.Host, pure) || h.Host == "*" {

@@ -4,6 +4,7 @@ import (
 	"SamWaf/cache"
 	"SamWaf/common/gwebsocket"
 	"SamWaf/common/tasklog"
+	"SamWaf/common/wafctx"
 	"SamWaf/common/wafexec"
 	"SamWaf/common/zlog"
 	"SamWaf/enums"
@@ -40,6 +41,7 @@ import (
 	"SamWaf/waftask"
 	"SamWaf/waftunnelengine"
 	"SamWaf/wafupdate"
+	"context"
 	"crypto/tls"
 	"embed"
 	_ "embed"
@@ -478,12 +480,12 @@ func (m *wafSystenService) run() {
 	//IP组匹配集必须在引擎接管流量之前发布完成：LoadHost 只预抽出组短码，
 	//真正的IP集合来自 ipset 全局快照。这里必须同步调用(不能像威胁情报那样 go 出去)——
 	//威胁情报晚生效只是少拦一点，IP组承载的是用户显式配置的白名单，晚生效就是误拦合法用户。
-	waf_service.WafIPGroupServiceApp.RebuildAllGroupMatchers()
+	waf_service.WafIPGroupServiceApp.RebuildAllGroupMatchers(wafctx.PlatformScope(context.Background()))
 	//统一访问认证配置同理必须在引擎接管流量之前同步发布：
 	//访问控制晚生效就是一段裸奔窗口，而这个功能的全部意义就是不让人裸奔。
 	//快照未发布时 accessgate.Get() 返回"全部关闭"的兜底配置(误放行而非误拦)，
 	//所以这一行的作用是把真实策略尽早顶上去。
-	waf_service.WafAccessConfigServiceApp.PublishConfig()
+	waf_service.WafAccessConfigServiceApp.PublishConfig(wafctx.PlatformScope(context.Background()))
 	http.Handle("/", globalobj.GWAF_RUNTIME_OBJ_WAF_ENGINE)
 	globalobj.GWAF_RUNTIME_OBJ_WAF_ENGINE.StartWaf()
 
@@ -547,7 +549,7 @@ func (m *wafSystenService) run() {
 	go waf_service.WafThreatIPServiceApp.RestoreAllOnStartup()
 	// 启动重放 CDN 回源段中心库(从库内快照恢复内存匹配集，不对外拉取)；
 	// 到期自动拉取由定时任务按各厂商节奏 + AutoFetch 开关处理
-	go waf_service.WafCDNIPServiceApp.RestoreAllOnStartup()
+	go waf_service.WafCDNIPServiceApp.RestoreAllOnStartup(wafctx.PlatformScope(context.Background()))
 
 	go waftask.TaskShareDbInfo()
 

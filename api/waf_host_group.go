@@ -26,7 +26,7 @@ func (w *WafHostGroupApi) AddApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	bean, err := wafHostGroupService.AddApi(req)
+	bean, err := wafHostGroupService.AddApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
@@ -50,7 +50,7 @@ func (w *WafHostGroupApi) ModifyApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	bean, err := wafHostGroupService.ModifyApi(req)
+	bean, err := wafHostGroupService.ModifyApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
@@ -77,7 +77,7 @@ func (w *WafHostGroupApi) DelApi(c *gin.Context) {
 		response.FailWithMessage("参数不完整", c)
 		return
 	}
-	affected, err := wafHostGroupService.DelApi(req)
+	affected, err := wafHostGroupService.DelApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
@@ -99,7 +99,7 @@ func (w *WafHostGroupApi) GetDetailApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	response.OkWithDetailed(wafHostGroupService.GetDetailApi(req), "获取成功", c)
+	response.OkWithDetailed(wafHostGroupService.GetDetailApi(c.Request.Context(), req), "获取成功", c)
 }
 
 // GetListApi 获取网站分组列表
@@ -118,7 +118,7 @@ func (w *WafHostGroupApi) GetListApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	list, total, _ := wafHostGroupService.GetListApi(req)
+	list, total, _ := wafHostGroupService.GetListApi(c.Request.Context(), req)
 	response.OkWithDetailed(response.PageResult{
 		List:      list,
 		Total:     total,
@@ -136,7 +136,7 @@ func (w *WafHostGroupApi) GetListApi(c *gin.Context) {
 // @Security     ApiKeyAuth
 // @Router       /wafhost/hostgroup/all [get]
 func (w *WafHostGroupApi) GetAllApi(c *gin.Context) {
-	response.OkWithDetailed(wafHostGroupService.GetOptionsApi(), "获取成功", c)
+	response.OkWithDetailed(wafHostGroupService.GetOptionsApi(c.Request.Context()), "获取成功", c)
 }
 
 // SortApi 网站分组排序
@@ -159,7 +159,7 @@ func (w *WafHostGroupApi) SortApi(c *gin.Context) {
 		response.FailWithMessage("排序内容过多", c)
 		return
 	}
-	if err := wafHostGroupService.SortApi(req); err != nil {
+	if err := wafHostGroupService.SortApi(c.Request.Context(), req); err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
@@ -184,7 +184,7 @@ func (w *WafHostGroupApi) AssignApi(c *gin.Context) {
 	}
 	// 分组只是管理端的组织维度，不参与请求期判定，
 	// 因此这里不需要通知引擎刷新主机（见 model/host_group.go）。
-	affected, err := wafHostGroupService.AssignApi(req)
+	affected, err := wafHostGroupService.AssignApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return

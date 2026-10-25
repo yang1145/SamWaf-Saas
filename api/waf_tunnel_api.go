@@ -72,16 +72,16 @@ func (w *WafTunnelApi) AddApi(c *gin.Context) {
 				return
 			}
 		}
-		cnt := wafTunnelService.CheckIsExistApi(req)
+		cnt := wafTunnelService.CheckIsExistApi(c.Request.Context(), req)
 		if cnt == 0 {
-			tunnel, err := wafTunnelService.AddApi(req)
+			tunnel, err := wafTunnelService.AddApi(c.Request.Context(), req)
 
 			if err == nil {
 				//发送新增通知信息
 				var chanInfo = spec.ChanCommon{
 					Type:    enums.ChanComTypeTunnel,
 					OpType:  enums.OP_TYPE_NEW,
-					Content: wafTunnelService.GetDetailByIdApi(tunnel.Id),
+					Content: wafTunnelService.GetDetailByIdApi(c.Request.Context(), tunnel.Id),
 				}
 				global.GWAF_CHAN_COMMON_MSG <- chanInfo
 				response.OkWithMessage("添加成功", c)
@@ -113,7 +113,7 @@ func (w *WafTunnelApi) GetDetailApi(c *gin.Context) {
 	var req request.WafTunnelDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafTunnelService.GetDetailApi(req)
+		bean := wafTunnelService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -134,7 +134,7 @@ func (w *WafTunnelApi) GetListApi(c *gin.Context) {
 	var req request.WafTunnelSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		Tunnel, total, _ := wafTunnelService.GetListApi(req)
+		Tunnel, total, _ := wafTunnelService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      Tunnel,
 			Total:     total,
@@ -160,8 +160,8 @@ func (w *WafTunnelApi) DelApi(c *gin.Context) {
 	var req request.WafTunnelDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		tunnel := wafTunnelService.GetDetailByIdApi(req.Id)
-		err = wafTunnelService.DelApi(req)
+		tunnel := wafTunnelService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafTunnelService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -195,12 +195,12 @@ func (w *WafTunnelApi) ModifyApi(c *gin.Context) {
 	var req request.WafTunnelEditReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		oldTunnel := wafTunnelService.GetDetailByIdApi(req.Id)
-		err = wafTunnelService.ModifyApi(req)
+		oldTunnel := wafTunnelService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafTunnelService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误"+err.Error(), c)
 		} else {
-			newTunnel := wafTunnelService.GetDetailByIdApi(req.Id)
+			newTunnel := wafTunnelService.GetDetailByIdApi(c.Request.Context(), req.Id)
 
 			//发送修改通知信息
 			var chanInfo = spec.ChanCommon{
@@ -231,7 +231,7 @@ func (w *WafTunnelApi) GetTunnelConnectionsApi(c *gin.Context) {
 	var req request.WafTunnelConnReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		tunnel, err := wafTunnelService.GetTunnelConnections(req.ID)
+		tunnel, err := wafTunnelService.GetTunnelConnections(c.Request.Context(), req.ID)
 		if err != nil {
 			response.FailWithMessage("获取隧道连接信息失败: "+err.Error(), c)
 			return

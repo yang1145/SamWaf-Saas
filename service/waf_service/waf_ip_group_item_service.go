@@ -8,6 +8,7 @@ import (
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
 	"SamWaf/utils"
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -32,26 +33,28 @@ type FailLine struct {
 	Reason string `json:"reason"`
 }
 
-func (receiver *WafIPGroupItemService) AddApi(req request.WafIPGroupItemAddReq) error {
+func (receiver *WafIPGroupItemService) AddApi(ctx context.Context, req request.WafIPGroupItemAddReq) error {
 	ip := strings.TrimSpace(req.Ip)
 	if err := validateGroupItemIP(ip); err != nil {
 		return err
 	}
-	if err := receiver.checkGroupExists(req.GroupCode); err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := receiver.checkGroupExists(ctx, req.GroupCode); err != nil {
 		return err
 	}
 	var cnt int64
-	global.GWAF_LOCAL_DB.Model(&model.IPGroupItem{}).Where("group_code = ? AND ip = ?", req.GroupCode, ip).Count(&cnt)
+	db.Model(&model.IPGroupItem{}).Where("group_code = ? AND ip = ?", req.GroupCode, ip).Count(&cnt)
 	if cnt > 0 {
 		return errors.New("该IP已在组内: " + ip)
 	}
 	bean := newGroupItem(req.GroupCode, ip, req.Remarks)
-	return global.GWAF_LOCAL_DB.Create(bean).Error
+	return db.Create(bean).Error
 }
 
-func (receiver *WafIPGroupItemService) ModifyApi(req request.WafIPGroupItemEditReq) (string, error) {
+func (receiver *WafIPGroupItemService) ModifyApi(ctx context.Context, req request.WafIPGroupItemEditReq) (string, error) {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var bean model.IPGroupItem
-	if err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error; err != nil {
+	if err := db.Where("id = ?", req.Id).First(&bean).Error; err != nil {
 		return "", errors.New("条目不存在")
 	}
 	ip := strings.TrimSpace(req.Ip)
@@ -59,7 +62,7 @@ func (receiver *WafIPGroupItemService) ModifyApi(req request.WafIPGroupItemEditR
 		return bean.GroupCode, err
 	}
 	var cnt int64
-	global.GWAF_LOCAL_DB.Model(&model.IPGroupItem{}).
+	db.Model(&model.IPGroupItem{}).
 		Where("group_code = ? AND ip = ? AND id <> ?", bean.GroupCode, ip, req.Id).Count(&cnt)
 	if cnt > 0 {
 		return bean.GroupCode, errors.New("该IP已在组内: " + ip)
@@ -69,22 +72,23 @@ func (receiver *WafIPGroupItemService) ModifyApi(req request.WafIPGroupItemEditR
 		"remarks":     req.Remarks,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.IPGroupItem{}).Where("id = ?", req.Id).Updates(updateMap).Error
+	err := db.Model(model.IPGroupItem{}).Where("id = ?", req.Id).Updates(updateMap).Error
 	return bean.GroupCode, err
 }
 
 // BatchAddApi 多行文本批量录入。空行与 # 开头的注释行忽略；逐行校验，非法行不阻断其余行。
 //
 // 返回的 groupCode 供调用方在最后统一重建一次匹配集——不要逐行重建。
-func (receiver *WafIPGroupItemService) BatchAddApi(req request.WafIPGroupItemBatchAddReq) (BatchAddResult, error) {
+func (receiver *WafIPGroupItemService) BatchAddApi(ctx context.Context, req request.WafIPGroupItemBatchAddReq) (BatchAddResult, error) {
 	result := BatchAddResult{FailLines: []FailLine{}}
-	if err := receiver.checkGroupExists(req.GroupCode); err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := receiver.checkGroupExists(ctx, req.GroupCode); err != nil {
 		return result, err
 	}
 
 	// 组内已有条目，用于去重（同时挡住同一批文本里的重复行）
 	var existRows []model.IPGroupItem
-	global.GWAF_LOCAL_DB.Where("group_code = ?", req.GroupCode).Find(&existRows)
+	db.Where("group_code = ?", req.GroupCode).Find(&existRows)
 	exist := make(map[string]struct{}, len(existRows))
 	for i := range existRows {
 		exist[existRows[i].Ip] = struct{}{}
@@ -118,7 +122,7 @@ func (receiver *WafIPGroupItemService) BatchAddApi(req request.WafIPGroupItemBat
 	}
 
 	if len(pending) > 0 {
-		if err := global.GWAF_LOCAL_DB.CreateInBatches(pending, 500).Error; err != nil {
+		if err := db.CreateInBatches(pending, 500).Error; err != nil {
 			return result, err
 		}
 		result.Success = len(pending)
@@ -126,13 +130,14 @@ func (receiver *WafIPGroupItemService) BatchAddApi(req request.WafIPGroupItemBat
 	return result, nil
 }
 
-func (receiver *WafIPGroupItemService) GetDetailApi(req request.WafIPGroupItemDetailReq) model.IPGroupItem {
+func (receiver *WafIPGroupItemService) GetDetailApi(ctx context.Context, req request.WafIPGroupItemDetailReq) model.IPGroupItem {
 	var bean model.IPGroupItem
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", req.Id).Find(&bean)
 	return bean
 }
 
-func (receiver *WafIPGroupItemService) GetListApi(req request.WafIPGroupItemSearchReq) ([]model.IPGroupItem, int64, error) {
+func (receiver *WafIPGroupItemService) GetListApi(ctx context.Context, req request.WafIPGroupItemSearchReq) ([]model.IPGroupItem, int64, error) {
 	var list []model.IPGroupItem
 	var total int64 = 0
 
@@ -143,49 +148,54 @@ func (receiver *WafIPGroupItemService) GetListApi(req request.WafIPGroupItemSear
 		whereValues = append(whereValues, "%"+req.Ip+"%")
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.IPGroupItem{}).Where(whereField, whereValues...).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.IPGroupItem{}).Where(whereField, whereValues...).
 		Order("CREATE_TIME desc").
 		Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.IPGroupItem{}).Where(whereField, whereValues...).Count(&total)
+	db.Model(&model.IPGroupItem{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
 
 // DelApi 删除单条，返回所属组短码供调用方重建匹配集
-func (receiver *WafIPGroupItemService) DelApi(req request.WafIPGroupItemDelReq) (string, error) {
+func (receiver *WafIPGroupItemService) DelApi(ctx context.Context, req request.WafIPGroupItemDelReq) (string, error) {
 	var bean model.IPGroupItem
-	if err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error; err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := db.Where("id = ?", req.Id).First(&bean).Error; err != nil {
 		return "", err
 	}
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.IPGroupItem{}).Error
+	err := db.Where("id = ?", req.Id).Delete(model.IPGroupItem{}).Error
 	return bean.GroupCode, err
 }
 
 // BatchDelApi 批量删除，返回涉及的组短码列表（去重）
-func (receiver *WafIPGroupItemService) BatchDelApi(req request.WafIPGroupItemBatchDelReq) ([]string, error) {
+func (receiver *WafIPGroupItemService) BatchDelApi(ctx context.Context, req request.WafIPGroupItemBatchDelReq) ([]string, error) {
 	if len(req.Ids) == 0 {
 		return nil, errors.New("删除ID列表不能为空")
 	}
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var codes []string
-	if err := global.GWAF_LOCAL_DB.Model(&model.IPGroupItem{}).
+	if err := db.Model(&model.IPGroupItem{}).
 		Where("id IN ?", req.Ids).Distinct("group_code").Pluck("group_code", &codes).Error; err != nil {
 		return nil, err
 	}
-	err := global.GWAF_LOCAL_DB.Where("id IN ?", req.Ids).Delete(&model.IPGroupItem{}).Error
+	err := db.Where("id IN ?", req.Ids).Delete(&model.IPGroupItem{}).Error
 	return codes, err
 }
 
 // DelAllApi 清空某个组的全部条目
-func (receiver *WafIPGroupItemService) DelAllApi(req request.WafIPGroupItemDelAllReq) error {
+func (receiver *WafIPGroupItemService) DelAllApi(ctx context.Context, req request.WafIPGroupItemDelAllReq) error {
 	if req.GroupCode == "" {
 		return errors.New("组短码不能为空")
 	}
-	return global.GWAF_LOCAL_DB.Where("group_code = ?", req.GroupCode).Delete(&model.IPGroupItem{}).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	return db.Where("group_code = ?", req.GroupCode).Delete(&model.IPGroupItem{}).Error
 }
 
-func (receiver *WafIPGroupItemService) checkGroupExists(groupCode string) error {
+func (receiver *WafIPGroupItemService) checkGroupExists(ctx context.Context, groupCode string) error {
 	var cnt int64
-	global.GWAF_LOCAL_DB.Model(&model.IPGroup{}).Where("group_code = ?", groupCode).Count(&cnt)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.IPGroup{}).Where("group_code = ?", groupCode).Count(&cnt)
 	if cnt == 0 {
 		return errors.New("IP组不存在: " + groupCode)
 	}

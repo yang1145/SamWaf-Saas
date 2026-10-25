@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -34,7 +35,7 @@ func validateTamperUrl(url string) error {
 	return nil
 }
 
-func (receiver *WafTamperRuleService) AddApi(req request.WafTamperRuleAddReq) error {
+func (receiver *WafTamperRuleService) AddApi(ctx context.Context, req request.WafTamperRuleAddReq) error {
 	if err := validateTamperUrl(req.Url); err != nil {
 		return err
 	}
@@ -54,30 +55,33 @@ func (receiver *WafTamperRuleService) AddApi(req request.WafTamperRuleAddReq) er
 		BaselineStatus: 0, // 待学习
 		Remarks:        req.Remarks,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Create(bean)
 	return nil
 }
 
-func (receiver *WafTamperRuleService) CheckIsExistApi(req request.WafTamperRuleAddReq) int {
+func (receiver *WafTamperRuleService) CheckIsExistApi(ctx context.Context, req request.WafTamperRuleAddReq) int {
 	var total int64 = 0
-	global.GWAF_LOCAL_DB.Model(&model.TamperRule{}).Where("host_code=? and url=?", req.HostCode, strings.TrimSpace(req.Url)).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.TamperRule{}).Where("host_code=? and url=?", req.HostCode, strings.TrimSpace(req.Url)).Count(&total)
 	return int(total)
 }
 
-func (receiver *WafTamperRuleService) ModifyApi(req request.WafTamperRuleEditReq) error {
+func (receiver *WafTamperRuleService) ModifyApi(ctx context.Context, req request.WafTamperRuleEditReq) error {
 	if err := validateTamperUrl(req.Url); err != nil {
 		return err
 	}
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	// 同站点同 URL 唯一（排除自身）
 	var total int64 = 0
-	global.GWAF_LOCAL_DB.Model(&model.TamperRule{}).Where("host_code=? and url=? and id<>?", req.HostCode, strings.TrimSpace(req.Url), req.Id).Count(&total)
+	db.Model(&model.TamperRule{}).Where("host_code=? and url=? and id<>?", req.HostCode, strings.TrimSpace(req.Url), req.Id).Count(&total)
 	if total > 0 {
 		return errors.New("同站点下该URL的防篡改规则已存在")
 	}
 
 	// 若 URL 变化则基线作废，需重新学习
 	var old model.TamperRule
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&old)
+	db.Where("id=?", req.Id).Find(&old)
 
 	beanMap := map[string]interface{}{
 		"HostCode":    req.HostCode,
@@ -94,12 +98,12 @@ func (receiver *WafTamperRuleService) ModifyApi(req request.WafTamperRuleEditReq
 		beanMap["BaselineContent"] = []byte{}
 		beanMap["BaselineMsg"] = "URL已变更，待重新学习"
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.TamperRule{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	err := db.Model(model.TamperRule{}).Where("id = ?", req.Id).Updates(beanMap).Error
 	return err
 }
 
 // RelearnApi 触发重新学习：清空基线状态并即时后端自抓重建（无后端则保持惰性，下次访问再学）
-func (receiver *WafTamperRuleService) RelearnApi(req request.WafTamperRuleRelearnReq) error {
+func (receiver *WafTamperRuleService) RelearnApi(ctx context.Context, req request.WafTamperRuleRelearnReq) error {
 	beanMap := map[string]interface{}{
 		"BaselineStatus":  0,
 		"BaselineHash":    "",
@@ -108,12 +112,13 @@ func (receiver *WafTamperRuleService) RelearnApi(req request.WafTamperRuleRelear
 		"BaselineMsg":     "已标记重新学习",
 		"UPDATE_TIME":     customtype.JsonTime(time.Now()),
 	}
-	if err := global.GWAF_LOCAL_DB.Model(model.TamperRule{}).Where("id = ?", req.Id).Updates(beanMap).Error; err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := db.Model(model.TamperRule{}).Where("id = ?", req.Id).Updates(beanMap).Error; err != nil {
 		return err
 	}
 	// 即时触发后端自抓重建基线
 	var rule model.TamperRule
-	global.GWAF_LOCAL_DB.Omit("baseline_content").Where("id=?", req.Id).Find(&rule)
+	db.Omit("baseline_content").Where("id=?", req.Id).Find(&rule)
 	if rule.HostCode != "" {
 		receiver.backgroundRecapture(rule.HostCode, []string{req.Id})
 	}
@@ -121,7 +126,7 @@ func (receiver *WafTamperRuleService) RelearnApi(req request.WafTamperRuleRelear
 }
 
 // RelearnBatchApi 批量/整站重新学习：Ids 为空则该站点全部规则重新学习（限定在 HostCode 内，防误伤其它站点）
-func (receiver *WafTamperRuleService) RelearnBatchApi(req request.WafTamperRuleRelearnBatchReq) error {
+func (receiver *WafTamperRuleService) RelearnBatchApi(ctx context.Context, req request.WafTamperRuleRelearnBatchReq) error {
 	if strings.TrimSpace(req.HostCode) == "" {
 		return errors.New("缺少站点标识")
 	}
@@ -133,7 +138,7 @@ func (receiver *WafTamperRuleService) RelearnBatchApi(req request.WafTamperRuleR
 		"BaselineMsg":     "已标记重新学习",
 		"UPDATE_TIME":     customtype.JsonTime(time.Now()),
 	}
-	db := global.GWAF_LOCAL_DB.Model(model.TamperRule{}).Where("host_code = ?", req.HostCode)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx).Model(model.TamperRule{}).Where("host_code = ?", req.HostCode)
 	if len(req.Ids) > 0 {
 		db = db.Where("id in ?", req.Ids)
 	}
@@ -146,23 +151,25 @@ func (receiver *WafTamperRuleService) RelearnBatchApi(req request.WafTamperRuleR
 }
 
 // DelBatchApi 批量删除受保护 URL（限定在 HostCode 内），返回删除条数
-func (receiver *WafTamperRuleService) DelBatchApi(req request.WafTamperRuleDelBatchReq) (int64, error) {
+func (receiver *WafTamperRuleService) DelBatchApi(ctx context.Context, req request.WafTamperRuleDelBatchReq) (int64, error) {
 	if strings.TrimSpace(req.HostCode) == "" {
 		return 0, errors.New("缺少站点标识")
 	}
 	if len(req.Ids) == 0 {
 		return 0, nil
 	}
-	res := global.GWAF_LOCAL_DB.Where("host_code=? and id in ?", req.HostCode, req.Ids).Delete(&model.TamperRule{})
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	res := db.Where("host_code=? and id in ?", req.HostCode, req.Ids).Delete(&model.TamperRule{})
 	return res.RowsAffected, res.Error
 }
 
 // AddBatchApi 批量新增受保护 URL：逐条校验 + 跳过已存在，返回新增/跳过数
-func (receiver *WafTamperRuleService) AddBatchApi(req request.WafTamperRuleAddBatchReq) (int, int, error) {
+func (receiver *WafTamperRuleService) AddBatchApi(ctx context.Context, req request.WafTamperRuleAddBatchReq) (int, int, error) {
 	if strings.TrimSpace(req.HostCode) == "" {
 		return 0, 0, errors.New("缺少站点标识")
 	}
 	added, skipped := 0, 0
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	for _, rawUrl := range req.Urls {
 		u := strings.TrimSpace(rawUrl)
 		if u == "" {
@@ -173,7 +180,7 @@ func (receiver *WafTamperRuleService) AddBatchApi(req request.WafTamperRuleAddBa
 			continue
 		}
 		var total int64 = 0
-		global.GWAF_LOCAL_DB.Model(&model.TamperRule{}).Where("host_code=? and url=?", req.HostCode, u).Count(&total)
+		db.Model(&model.TamperRule{}).Where("host_code=? and url=?", req.HostCode, u).Count(&total)
 		if total > 0 {
 			skipped++
 			continue
@@ -192,7 +199,7 @@ func (receiver *WafTamperRuleService) AddBatchApi(req request.WafTamperRuleAddBa
 			IgnoreQuery:    req.IgnoreQuery,
 			BaselineStatus: 0,
 		}
-		if err := global.GWAF_LOCAL_DB.Create(bean).Error; err != nil {
+		if err := db.Create(bean).Error; err != nil {
 			return added, skipped, err
 		}
 		added++
@@ -200,23 +207,26 @@ func (receiver *WafTamperRuleService) AddBatchApi(req request.WafTamperRuleAddBa
 	return added, skipped, nil
 }
 
-func (receiver *WafTamperRuleService) GetDetailApi(req request.WafTamperRuleDetailReq) model.TamperRule {
+func (receiver *WafTamperRuleService) GetDetailApi(ctx context.Context, req request.WafTamperRuleDetailReq) model.TamperRule {
 	var bean model.TamperRule
 	// 列表/详情不带大 blob，避免加载慢
-	global.GWAF_LOCAL_DB.Omit("baseline_content").Where("id=?", req.Id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Omit("baseline_content").Where("id=?", req.Id).Find(&bean)
 	return bean
 }
 
-func (receiver *WafTamperRuleService) GetDetailByIdApi(id string) model.TamperRule {
+func (receiver *WafTamperRuleService) GetDetailByIdApi(ctx context.Context, id string) model.TamperRule {
 	var bean model.TamperRule
-	global.GWAF_LOCAL_DB.Omit("baseline_content").Where("id=?", id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Omit("baseline_content").Where("id=?", id).Find(&bean)
 	return bean
 }
 
 // GetBaselineApi 按需取基线正文（含 blob），供“查看基线”弹窗
-func (receiver *WafTamperRuleService) GetBaselineApi(id string) model.TamperRule {
+func (receiver *WafTamperRuleService) GetBaselineApi(ctx context.Context, id string) model.TamperRule {
 	var bean model.TamperRule
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", id).Find(&bean)
 	return bean
 }
 
@@ -232,7 +242,7 @@ var tamperOrderCols = map[string]string{
 	"create_time":     "create_time",
 }
 
-func (receiver *WafTamperRuleService) GetListApi(req request.WafTamperRuleSearchReq) ([]model.TamperRule, int64, error) {
+func (receiver *WafTamperRuleService) GetListApi(ctx context.Context, req request.WafTamperRuleSearchReq) ([]model.TamperRule, int64, error) {
 	var list []model.TamperRule
 	var total int64 = 0
 
@@ -276,18 +286,20 @@ func (receiver *WafTamperRuleService) GetListApi(req request.WafTamperRuleSearch
 	}
 
 	// Omit baseline_content：列表绝不携带大 blob
-	global.GWAF_LOCAL_DB.Model(&model.TamperRule{}).Omit("baseline_content").Where(whereStr, vals...).Order(order).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.TamperRule{}).Where(whereStr, vals...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.TamperRule{}).Omit("baseline_content").Where(whereStr, vals...).Order(order).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.TamperRule{}).Where(whereStr, vals...).Count(&total)
 
 	return list, total, nil
 }
 
-func (receiver *WafTamperRuleService) DelApi(req request.WafTamperRuleDelReq) error {
+func (receiver *WafTamperRuleService) DelApi(ctx context.Context, req request.WafTamperRuleDelReq) error {
 	var bean model.TamperRule
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.TamperRule{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.TamperRule{}).Error
 	return err
 }

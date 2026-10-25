@@ -311,7 +311,7 @@ func (receiver *WafStatService) StatHomeSysinfo(c *gin.Context) (response2.WafHo
 	}
 	return response2.WafHomeSysinfoStat{
 		IsDefaultAccount: WafAccountServiceApp.IsExistDefaultAccount(),
-		IsEmptyHost:      WafHostServiceApp.IsEmptyHost(),
+		IsEmptyHost:      WafHostServiceApp.IsEmptyHost(c.Request.Context()),
 		IsEmptyOtp:       WafOtpServiceApp.IsEmptyOtp(tokenInfo.LoginAccount),
 	}, nil
 }

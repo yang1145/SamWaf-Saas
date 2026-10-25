@@ -30,11 +30,11 @@ func (w *WafIPGroupItemApi) AddApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	if err := wafIPGroupItemService.AddApi(req); err != nil {
+	if err := wafIPGroupItemService.AddApi(c.Request.Context(), req); err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
-	wafIPGroupService.RebuildGroupMatcher(req.GroupCode)
+	wafIPGroupService.RebuildGroupMatcher(c.Request.Context(), req.GroupCode)
 	response.OkWithMessage("添加成功", c)
 }
 
@@ -54,14 +54,14 @@ func (w *WafIPGroupItemApi) BatchAddApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	result, err := wafIPGroupItemService.BatchAddApi(req)
+	result, err := wafIPGroupItemService.BatchAddApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
 	// 整批入库完成后只重建一次，不要逐行重建
 	if result.Success > 0 {
-		wafIPGroupService.RebuildGroupMatcher(req.GroupCode)
+		wafIPGroupService.RebuildGroupMatcher(c.Request.Context(), req.GroupCode)
 	}
 	response.OkWithDetailed(result, "添加完成", c)
 }
@@ -81,7 +81,7 @@ func (w *WafIPGroupItemApi) GetListApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	list, total, _ := wafIPGroupItemService.GetListApi(req)
+	list, total, _ := wafIPGroupItemService.GetListApi(c.Request.Context(), req)
 	response.OkWithDetailed(response.PageResult{
 		List:      list,
 		Total:     total,
@@ -104,7 +104,7 @@ func (w *WafIPGroupItemApi) GetDetailApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	response.OkWithDetailed(wafIPGroupItemService.GetDetailApi(req), "获取成功", c)
+	response.OkWithDetailed(wafIPGroupItemService.GetDetailApi(c.Request.Context(), req), "获取成功", c)
 }
 
 // ModifyApi 编辑IP组条目
@@ -122,12 +122,12 @@ func (w *WafIPGroupItemApi) ModifyApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	groupCode, err := wafIPGroupItemService.ModifyApi(req)
+	groupCode, err := wafIPGroupItemService.ModifyApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
-	wafIPGroupService.RebuildGroupMatcher(groupCode)
+	wafIPGroupService.RebuildGroupMatcher(c.Request.Context(), groupCode)
 	response.OkWithMessage("编辑成功", c)
 }
 
@@ -145,12 +145,12 @@ func (w *WafIPGroupItemApi) DelApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	groupCode, err := wafIPGroupItemService.DelApi(req)
+	groupCode, err := wafIPGroupItemService.DelApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("删除失败", c)
 		return
 	}
-	wafIPGroupService.RebuildGroupMatcher(groupCode)
+	wafIPGroupService.RebuildGroupMatcher(c.Request.Context(), groupCode)
 	response.OkWithMessage("删除成功", c)
 }
 
@@ -169,13 +169,13 @@ func (w *WafIPGroupItemApi) BatchDelApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	groupCodes, err := wafIPGroupItemService.BatchDelApi(req)
+	groupCodes, err := wafIPGroupItemService.BatchDelApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
 	for _, code := range groupCodes {
-		wafIPGroupService.RebuildGroupMatcher(code)
+		wafIPGroupService.RebuildGroupMatcher(c.Request.Context(), code)
 	}
 	response.OkWithMessage("删除成功", c)
 }
@@ -196,10 +196,10 @@ func (w *WafIPGroupItemApi) DelAllApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	if err := wafIPGroupItemService.DelAllApi(req); err != nil {
+	if err := wafIPGroupItemService.DelAllApi(c.Request.Context(), req); err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
-	wafIPGroupService.RebuildGroupMatcher(req.GroupCode)
+	wafIPGroupService.RebuildGroupMatcher(c.Request.Context(), req.GroupCode)
 	response.OkWithMessage("清空成功", c)
 }

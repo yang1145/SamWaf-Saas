@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"time"
 )
@@ -15,7 +16,7 @@ type WafLdpUrlService struct{}
 
 var WafLdpUrlServiceApp = new(WafLdpUrlService)
 
-func (receiver *WafLdpUrlService) AddApi(req request.WafLdpUrlAddReq) error {
+func (receiver *WafLdpUrlService) AddApi(ctx context.Context, req request.WafLdpUrlAddReq) error {
 	var bean = &model.LDPUrl{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -29,17 +30,20 @@ func (receiver *WafLdpUrlService) AddApi(req request.WafLdpUrlAddReq) error {
 		Url:         req.Url,
 		Remarks:     req.Remarks,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Create(bean)
 	return nil
 }
 
-func (receiver *WafLdpUrlService) CheckIsExistApi(req request.WafLdpUrlAddReq) error {
-	return global.GWAF_LOCAL_DB.First(&model.LDPUrl{}, "host_code = ? and url= ?", req.HostCode,
+func (receiver *WafLdpUrlService) CheckIsExistApi(ctx context.Context, req request.WafLdpUrlAddReq) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	return db.First(&model.LDPUrl{}, "host_code = ? and url= ?", req.HostCode,
 		req.Url).Error
 }
-func (receiver *WafLdpUrlService) ModifyApi(req request.WafLdpUrlEditReq) error {
+func (receiver *WafLdpUrlService) ModifyApi(ctx context.Context, req request.WafLdpUrlEditReq) error {
 	var ipWhite model.LDPUrl
-	global.GWAF_LOCAL_DB.Where("host_code = ? and url= ?", req.HostCode,
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("host_code = ? and url= ?", req.HostCode,
 		req.Url).Find(&ipWhite)
 	if ipWhite.Id != "" && ipWhite.Url != req.Url {
 		return errors.New("当前网站和url已经存在")
@@ -51,21 +55,23 @@ func (receiver *WafLdpUrlService) ModifyApi(req request.WafLdpUrlEditReq) error 
 		"compare_type": req.CompareType,
 		"UPDATE_TIME":  customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.LDPUrl{}).Where("id = ?", req.Id).Updates(ipWhiteMap).Error
+	err := db.Model(model.LDPUrl{}).Where("id = ?", req.Id).Updates(ipWhiteMap).Error
 
 	return err
 }
-func (receiver *WafLdpUrlService) GetDetailApi(req request.WafLdpUrlDetailReq) model.LDPUrl {
+func (receiver *WafLdpUrlService) GetDetailApi(ctx context.Context, req request.WafLdpUrlDetailReq) model.LDPUrl {
 	var bean model.LDPUrl
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafLdpUrlService) GetDetailByIdApi(id string) model.LDPUrl {
+func (receiver *WafLdpUrlService) GetDetailByIdApi(ctx context.Context, id string) model.LDPUrl {
 	var bean model.LDPUrl
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafLdpUrlService) GetListApi(req request.WafLdpUrlSearchReq) ([]model.LDPUrl, int64, error) {
+func (receiver *WafLdpUrlService) GetListApi(ctx context.Context, req request.WafLdpUrlSearchReq) ([]model.LDPUrl, int64, error) {
 	var list []model.LDPUrl
 	var total int64 = 0
 
@@ -94,30 +100,33 @@ func (receiver *WafLdpUrlService) GetListApi(req request.WafLdpUrlSearchReq) ([]
 		whereValues = append(whereValues, req.Url)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.LDPUrl{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.LDPUrl{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.LDPUrl{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.LDPUrl{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafLdpUrlService) DelApi(req request.WafLdpUrlDelReq) error {
+func (receiver *WafLdpUrlService) DelApi(ctx context.Context, req request.WafLdpUrlDelReq) error {
 	var ipWhite model.LDPUrl
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&ipWhite).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&ipWhite).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.LDPUrl{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.LDPUrl{}).Error
 	return err
 }
 
 // BatchDelApi 批量删除指定ID的隐私保护URL
-func (receiver *WafLdpUrlService) BatchDelApi(req request.WafLdpUrlBatchDelReq) error {
+func (receiver *WafLdpUrlService) BatchDelApi(ctx context.Context, req request.WafLdpUrlBatchDelReq) error {
 	if len(req.Ids) == 0 {
 		return errors.New("删除ID列表不能为空")
 	}
 
 	// 先检查所有ID是否存在
 	var count int64
-	err := global.GWAF_LOCAL_DB.Model(&model.LDPUrl{}).Where("id IN ? AND user_code = ? AND tenant_id = ?", req.Ids, global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Count(&count).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.LDPUrl{}).Where("id IN ? AND user_code = ? AND tenant_id = ?", req.Ids, global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Count(&count).Error
 	if err != nil {
 		return err
 	}
@@ -127,12 +136,12 @@ func (receiver *WafLdpUrlService) BatchDelApi(req request.WafLdpUrlBatchDelReq) 
 	}
 
 	// 执行批量删除
-	err = global.GWAF_LOCAL_DB.Where("id IN ? AND user_code = ? AND tenant_id = ?", req.Ids, global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Delete(&model.LDPUrl{}).Error
+	err = db.Where("id IN ? AND user_code = ? AND tenant_id = ?", req.Ids, global.GWAF_USER_CODE, global.GWAF_TENANT_ID).Delete(&model.LDPUrl{}).Error
 	return err
 }
 
 // DelAllApi 删除指定网站的所有隐私保护URL
-func (receiver *WafLdpUrlService) DelAllApi(req request.WafLdpUrlDelAllReq) error {
+func (receiver *WafLdpUrlService) DelAllApi(ctx context.Context, req request.WafLdpUrlDelAllReq) error {
 	var whereCondition string
 	var whereValues []interface{}
 
@@ -144,9 +153,10 @@ func (receiver *WafLdpUrlService) DelAllApi(req request.WafLdpUrlDelAllReq) erro
 		whereValues = append(whereValues, global.GWAF_USER_CODE, global.GWAF_TENANT_ID)
 	}
 
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	// 先检查是否存在记录
 	var count int64
-	err := global.GWAF_LOCAL_DB.Model(&model.LDPUrl{}).Where(whereCondition, whereValues...).Count(&count).Error
+	err := db.Model(&model.LDPUrl{}).Where(whereCondition, whereValues...).Count(&count).Error
 	if err != nil {
 		return err
 	}
@@ -156,20 +166,22 @@ func (receiver *WafLdpUrlService) DelAllApi(req request.WafLdpUrlDelAllReq) erro
 	}
 
 	// 执行删除
-	err = global.GWAF_LOCAL_DB.Where(whereCondition, whereValues...).Delete(&model.LDPUrl{}).Error
+	err = db.Where(whereCondition, whereValues...).Delete(&model.LDPUrl{}).Error
 	return err
 }
 
 // GetHostCodesByIds 根据ID列表获取HostCode列表
-func (receiver *WafLdpUrlService) GetHostCodesByIds(ids []string) ([]string, error) {
+func (receiver *WafLdpUrlService) GetHostCodesByIds(ctx context.Context, ids []string) ([]string, error) {
 	var hostCodes []string
-	err := global.GWAF_LOCAL_DB.Model(&model.LDPUrl{}).Where("id IN ?", ids).Pluck("host_code", &hostCodes).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.LDPUrl{}).Where("id IN ?", ids).Pluck("host_code", &hostCodes).Error
 	return hostCodes, err
 }
 
 // GetHostCodes 获取所有HostCode列表
-func (receiver *WafLdpUrlService) GetHostCodes() ([]string, error) {
+func (receiver *WafLdpUrlService) GetHostCodes(ctx context.Context) ([]string, error) {
 	var hostCodes []string
-	err := global.GWAF_LOCAL_DB.Model(&model.LDPUrl{}).Pluck("host_code", &hostCodes).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(&model.LDPUrl{}).Pluck("host_code", &hostCodes).Error
 	return hostCodes, err
 }

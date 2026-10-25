@@ -2,6 +2,7 @@ package waftask
 
 import (
 	"SamWaf/common/tasklog"
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/iplocation"
@@ -14,6 +15,7 @@ import (
 	"SamWaf/wafipban"
 	"SamWaf/wafnotify/logfilewriter"
 	"SamWaf/wafowasp"
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -129,7 +131,7 @@ func setConfigIntValue(name string, value int64, change int) {
 		global.GCONFIG_ACCESS_ENABLE = value
 		// 总开关是运行时快照的一部分，改完必须重新发布，否则要等下次配置保存才生效。
 		// 这里也是"改错了能自救"的关键路径：管理端把开关拨回 0，最迟一个刷新周期就恢复。
-		waf_service.WafAccessConfigServiceApp.PublishConfig()
+		waf_service.WafAccessConfigServiceApp.PublishConfig(wafctx.PlatformScope(context.Background()))
 		break
 	case "access_audit_retain_days":
 		global.GCONFIG_ACCESS_AUDIT_RETAIN_DAYS = value

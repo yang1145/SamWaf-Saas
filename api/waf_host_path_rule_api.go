@@ -7,6 +7,7 @@ import (
 	"SamWaf/model/common/response"
 	"SamWaf/model/request"
 	"SamWaf/model/spec"
+	"context"
 	"errors"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -21,15 +22,15 @@ func (w *WafHostPathRuleApi) AddApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	if wafHostPathRuleService.CheckIsExistApi(req) > 0 {
+	if wafHostPathRuleService.CheckIsExistApi(c.Request.Context(), req) > 0 {
 		response.FailWithMessage("当前记录已经存在", c)
 		return
 	}
-	if err := wafHostPathRuleService.AddApi(req); err != nil {
+	if err := wafHostPathRuleService.AddApi(c.Request.Context(), req); err != nil {
 		response.FailWithMessage("添加失败", c)
 		return
 	}
-	w.NotifyWaf(req.HostCode)
+	w.NotifyWaf(c.Request.Context(), req.HostCode)
 	response.OkWithMessage("添加成功", c)
 }
 
@@ -40,7 +41,7 @@ func (w *WafHostPathRuleApi) GetDetailApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	bean := wafHostPathRuleService.GetDetailApi(req)
+	bean := wafHostPathRuleService.GetDetailApi(c.Request.Context(), req)
 	response.OkWithDetailed(bean, "获取成功", c)
 }
 
@@ -51,7 +52,7 @@ func (w *WafHostPathRuleApi) GetListApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	list, total, _ := wafHostPathRuleService.GetListApi(req)
+	list, total, _ := wafHostPathRuleService.GetListApi(c.Request.Context(), req)
 	response.OkWithDetailed(response.PageResult{
 		List:      list,
 		Total:     total,
@@ -67,18 +68,18 @@ func (w *WafHostPathRuleApi) DelApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	bean := wafHostPathRuleService.GetDetailByIdApi(req.Id)
+	bean := wafHostPathRuleService.GetDetailByIdApi(c.Request.Context(), req.Id)
 	if bean.Id == "" {
 		response.FailWithMessage("未找到信息", c)
 		return
 	}
-	err := wafHostPathRuleService.DelApi(req)
+	err := wafHostPathRuleService.DelApi(c.Request.Context(), req)
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		response.FailWithMessage("请检测参数", c)
 	} else if err != nil {
 		response.FailWithMessage("发生错误", c)
 	} else {
-		w.NotifyWaf(bean.HostCode)
+		w.NotifyWaf(c.Request.Context(), bean.HostCode)
 		response.OkWithMessage("删除成功", c)
 	}
 }
@@ -91,19 +92,19 @@ func (w *WafHostPathRuleApi) ModifyApi(c *gin.Context) {
 		return
 	}
 	//编辑前先取旧记录，拿到可能被本次编辑改掉的旧 host_code(issue #898)
-	bean := wafHostPathRuleService.GetDetailByIdApi(req.Id)
-	if err := wafHostPathRuleService.ModifyApi(req); err != nil {
+	bean := wafHostPathRuleService.GetDetailByIdApi(c.Request.Context(), req.Id)
+	if err := wafHostPathRuleService.ModifyApi(c.Request.Context(), req); err != nil {
 		response.FailWithMessage("编辑发生错误"+err.Error(), c)
 		return
 	}
-	notifyWafHostChanged(w.NotifyWaf, bean.HostCode, req.HostCode)
+	notifyWafHostChanged(func(hostCode string) { w.NotifyWaf(c.Request.Context(), hostCode) }, bean.HostCode, req.HostCode)
 	response.OkWithMessage("编辑成功", c)
 }
 
 // NotifyWaf 通知 WAF 引擎实时生效
-func (w *WafHostPathRuleApi) NotifyWaf(hostCode string) {
+func (w *WafHostPathRuleApi) NotifyWaf(ctx context.Context, hostCode string) {
 	var list []model.HostPathRule
-	global.GWAF_LOCAL_DB.Where("host_code = ?", hostCode).Order("priority asc, create_time asc").Find(&list)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ?", hostCode).Order("priority asc, create_time asc").Find(&list)
 	chanInfo := spec.ChanCommonHost{
 		HostCode: hostCode,
 		Type:     enums.ChanTypeHostPathRule,

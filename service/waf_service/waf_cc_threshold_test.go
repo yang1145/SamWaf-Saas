@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"SamWaf/innerbean"
 	"SamWaf/model"
 	"SamWaf/model/request"
+	"SamWaf/wafdb"
 	"SamWaf/wafdb/dialect"
 
 	sqlite "github.com/samwafgo/sqlitedriver"
@@ -32,6 +34,8 @@ func setupCCThresholdTestDB(t *testing.T) (*gorm.DB, *gorm.DB) {
 		if err := db.AutoMigrate(models...); err != nil {
 			t.Fatalf("AutoMigrate 失败: %v", err)
 		}
+		// 与生产一致注册租户回调：写入的行自动盖租户戳，Raw SQL 的租户条件才能命中
+		wafdb.RegisterTenantScopeCallbacks(db)
 		return db
 	}
 	core := open("cc_th_core.db", &model.Hosts{}, &model.ShareDb{})
@@ -116,7 +120,7 @@ func TestCCThCeil(t *testing.T) {
 // 客户端 IP 取哪一列必须跟站点的 IPMode 走，写死一列就会和运行时对不上
 func TestCCThBuildPlan_IPColumnFollowsIPMode(t *testing.T) {
 	proxy, err := ccThBuildPlan(request.WafCCThresholdRecommendReq{HostCode: "h"},
-		model.Hosts{IPMode: "proxy"}, 60)
+		model.Hosts{IPMode: "proxy"}, 60, "tenantA", "userA")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +128,7 @@ func TestCCThBuildPlan_IPColumnFollowsIPMode(t *testing.T) {
 		t.Fatalf("代理模式应取 src_ip，实际 %v", proxy.dimCols)
 	}
 	nic, err := ccThBuildPlan(request.WafCCThresholdRecommendReq{HostCode: "h"},
-		model.Hosts{IPMode: "nic"}, 60)
+		model.Hosts{IPMode: "nic"}, 60, "tenantA", "userA")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +141,7 @@ func TestCCThBuildPlan_IPColumnFollowsIPMode(t *testing.T) {
 func TestCCThBuildPlan_DynamicScopeHandlesQueryString(t *testing.T) {
 	plan, err := ccThBuildPlan(request.WafCCThresholdRecommendReq{
 		HostCode: "h", CountScope: model.CCCountScopeDynamic,
-	}, model.Hosts{}, 60)
+	}, model.Hosts{}, 60, "tenantA", "userA")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +165,7 @@ func TestCCThBuildPlan_NonURIConditionsAreDisclosed(t *testing.T) {
 		HostCode:   "h",
 		MatchMode:  model.CCMatchModeSimple,
 		Conditions: `[{"field":"uri","op":"prefix","value":["/api"]},{"field":"ua","op":"contains","value":["curl"]}]`,
-	}, model.Hosts{}, 60)
+	}, model.Hosts{}, 60, "tenantA", "userA")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +206,7 @@ func TestCCThRecommend_EndToEnd(t *testing.T) {
 	seedLogs(t, logDB, "hostA", "1.2.3.4", "/page", 7, 900, 60)
 	seedLogs(t, logDB, "hostA", "10.0.0.1", "/app.js?v=1", 3, 1500, 60)
 
-	rep := WafCCThresholdServiceApp.RecommendApi(request.WafCCThresholdRecommendReq{
+	rep := WafCCThresholdServiceApp.RecommendApi(context.Background(), request.WafCCThresholdRecommendReq{
 		HostCode:   "hostA",
 		WindowSec:  60,
 		CountScope: model.CCCountScopeDynamic,
@@ -234,7 +238,7 @@ func TestCCThRecommend_NotEnoughSample(t *testing.T) {
 	_ = global.GWAF_LOCAL_DB.Create(&host).Error
 	seedLogs(t, logDB, "hostB", "10.0.0.1", "/page", 1, 50, 60)
 
-	rep := WafCCThresholdServiceApp.RecommendApi(request.WafCCThresholdRecommendReq{
+	rep := WafCCThresholdServiceApp.RecommendApi(context.Background(), request.WafCCThresholdRecommendReq{
 		HostCode: "hostB", WindowSec: 60, StatDim: model.CCStatDimIP, Days: 7,
 	})
 	if rep.Supported {
@@ -251,13 +255,13 @@ func TestCCThRecommend_UnsupportedScope(t *testing.T) {
 	host := model.Hosts{Code: "hostC", Host: "t.com", Port: 80}
 	_ = global.GWAF_LOCAL_DB.Create(&host).Error
 
-	dim := WafCCThresholdServiceApp.RecommendApi(request.WafCCThresholdRecommendReq{
+	dim := WafCCThresholdServiceApp.RecommendApi(context.Background(), request.WafCCThresholdRecommendReq{
 		HostCode: "hostC", StatDim: model.CCStatDimCookie, StatDimField: "sid",
 	})
 	if dim.Supported || !strings.Contains(dim.Reason, "Cookie") {
 		t.Fatalf("Cookie 维度应明确拒绝并说明原因，实际 %+v", dim)
 	}
-	doc := WafCCThresholdServiceApp.RecommendApi(request.WafCCThresholdRecommendReq{
+	doc := WafCCThresholdServiceApp.RecommendApi(context.Background(), request.WafCCThresholdRecommendReq{
 		HostCode: "hostC", StatDim: model.CCStatDimIP, CountScope: model.CCCountScopeDocument,
 	})
 	if doc.Supported || !strings.Contains(doc.Reason, "Sec-Fetch-Dest") {

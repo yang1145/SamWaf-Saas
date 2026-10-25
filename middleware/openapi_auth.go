@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/model"
@@ -140,6 +141,12 @@ func ValidateOpenApiKey(c *gin.Context, apiKey string) (model.OPlatformKey, bool
 	c.Set("is_openapi", true)
 	c.Set("openapi_key_id", keyBean.Id)
 	c.Set("openapi_key_name", keyBean.KeyName)
+
+	// 8. 注入租户上下文：Key 当前为实例级凭证（未绑定租户），注入平台租户，
+	//    使 Key 调用的 DB 访问与登录会话语义一致。未来 Key 绑定租户后，
+	//    此处改为注入 Key 归属租户（oplatform_key 增加租户列）。
+	c.Request = c.Request.WithContext(wafctx.WithTenant(c.Request.Context(), global.GWAF_TENANT_ID, global.GWAF_USER_CODE))
+	c.Set("tenantId", global.GWAF_TENANT_ID)
 
 	return keyBean, true
 }

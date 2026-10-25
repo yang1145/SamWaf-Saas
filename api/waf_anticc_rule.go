@@ -2,6 +2,7 @@ package api
 
 import (
 	"SamWaf/model"
+	"context"
 	"strings"
 
 	"SamWaf/enums"
@@ -58,7 +59,7 @@ func (w *WafAntiCCRuleApi) GetListApi(c *gin.Context) {
 		}
 		req.HostCodes = codes
 	}
-	list, total, err := wafAntiCCRuleService.GetListApi(req)
+	list, total, err := wafAntiCCRuleService.GetListApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
@@ -77,7 +78,7 @@ func (w *WafAntiCCRuleApi) GetDetailApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	response.OkWithDetailed(wafAntiCCRuleService.GetDetailApi(req.Id), "获取成功", c)
+	response.OkWithDetailed(wafAntiCCRuleService.GetDetailApi(c.Request.Context(), req.Id), "获取成功", c)
 }
 
 func (w *WafAntiCCRuleApi) AddApi(c *gin.Context) {
@@ -86,7 +87,7 @@ func (w *WafAntiCCRuleApi) AddApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	rule, err := wafAntiCCRuleService.AddApi(req)
+	rule, err := wafAntiCCRuleService.AddApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
@@ -101,7 +102,7 @@ func (w *WafAntiCCRuleApi) ModifyApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	oldHostCode, err := wafAntiCCRuleService.ModifyApi(req)
+	oldHostCode, err := wafAntiCCRuleService.ModifyApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
@@ -116,7 +117,7 @@ func (w *WafAntiCCRuleApi) DelApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	hostCode, err := wafAntiCCRuleService.DelApi(req.Id)
+	hostCode, err := wafAntiCCRuleService.DelApi(c.Request.Context(), req.Id)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
@@ -134,7 +135,7 @@ func (w *WafAntiCCRuleApi) ToggleApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	hostCode, err := wafAntiCCRuleService.ToggleApi(req)
+	hostCode, err := wafAntiCCRuleService.ToggleApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
@@ -149,7 +150,7 @@ func (w *WafAntiCCRuleApi) SortApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	if err := wafAntiCCRuleService.SortApi(req); err != nil {
+	if err := wafAntiCCRuleService.SortApi(c.Request.Context(), req); err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
@@ -175,7 +176,7 @@ func withCaptchaExclude(list []model.AntiCCRule) []ccRuleWithMeta {
 	globalHostCodes := make([]string, 0, 2)
 	unionSeen := map[string]bool{}
 	union := make([]string, 0, 8)
-	for _, h := range wafHostService.GetAllHostApi() {
+	for _, h := range wafHostService.GetAllHostApi(context.Background()) {
 		// 全局网站可能不止一条记录，全都要挂上并集
 		if h.GLOBAL_HOST == 1 {
 			globalHostCodes = append(globalHostCodes, h.Code)
@@ -224,7 +225,7 @@ func withCaptchaExclude(list []model.AntiCCRule) []ccRuleWithMeta {
 // 前端要按站点逐条列出来，才知道哪几个站点会把这条规则要求的挑战跳过。
 func (w *WafAntiCCRuleApi) GetCaptchaOverviewApi(c *gin.Context) {
 	rep := response2.CCCaptchaOverviewRep{Sites: []response2.CCCaptchaSiteRep{}}
-	for _, h := range wafHostService.GetAllHostApi() {
+	for _, h := range wafHostService.GetAllHostApi(c.Request.Context()) {
 		if h.GLOBAL_HOST == 1 {
 			continue
 		}
@@ -274,7 +275,7 @@ func (w *WafAntiCCRuleApi) RecommendThresholdApi(c *gin.Context) {
 		response.FailWithMessage("参数过长", c)
 		return
 	}
-	response.OkWithDetailed(wafCCThresholdService.RecommendApi(req), "获取成功", c)
+	response.OkWithDetailed(wafCCThresholdService.RecommendApi(c.Request.Context(), req), "获取成功", c)
 }
 
 // GetHitsApi 一条规则的命中看板：触发总数、按动作分布、TOP N 客户端。
@@ -289,7 +290,7 @@ func (w *WafAntiCCRuleApi) GetHitsApi(c *gin.Context) {
 		return
 	}
 	// 规则必须真实存在且属于当前租户，否则等于把进程内统计做成了一个可枚举的探针
-	rule := wafAntiCCRuleService.GetDetailApi(req.RuleId)
+	rule := wafAntiCCRuleService.GetDetailApi(c.Request.Context(), req.RuleId)
 	if rule.Id == "" {
 		response.FailWithMessage("规则不存在", c)
 		return
@@ -329,7 +330,7 @@ func (w *WafAntiCCRuleApi) SetEmergencyApi(c *gin.Context) {
 		return
 	}
 	// 走与「防御状态」同一条通知：紧急模式读的是引擎里的站点快照，不通知的话开关点了不生效
-	global.GWAF_CHAN_HOST <- wafHostService.GetDetailByCodeApi(req.HostCode)
+	global.GWAF_CHAN_HOST <- wafHostService.GetDetailByCodeApi(c.Request.Context(), req.HostCode)
 	response.OkWithDetailed(gin.H{
 		"enable": host.EmergencyMode,
 		"until":  host.EmergencyUntil,

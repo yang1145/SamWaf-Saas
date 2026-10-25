@@ -45,7 +45,7 @@ func (w *WafSslOrderApi) AddApi(c *gin.Context) {
 		if req.ApplyMethod != "dns01" {
 			req.SkipDNSVerify = 0
 		}
-		hostBean := wafHostService.GetDetailByCodeApi(req.HostCode)
+		hostBean := wafHostService.GetDetailByCodeApi(c.Request.Context(), req.HostCode)
 		if hostBean.Id == "" {
 			response.FailWithMessage("查找主机未找到", c)
 			return
@@ -83,7 +83,7 @@ func (w *WafSslOrderApi) AddApi(c *gin.Context) {
 				}
 			}
 		}
-		addResult, err := wafSslOrderService.AddApi(req)
+		addResult, err := wafSslOrderService.AddApi(c.Request.Context(), req)
 		if err == nil {
 			w.NotifyWaf(enums.ChanSslOrderSubmitted, addResult)
 			response.OkWithMessage("添加成功", c)
@@ -111,7 +111,7 @@ func (w *WafSslOrderApi) GetDetailApi(c *gin.Context) {
 	var req request.WafSslorderdetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafSslOrderService.GetDetailApi(req)
+		bean := wafSslOrderService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -132,7 +132,7 @@ func (w *WafSslOrderApi) GetListApi(c *gin.Context) {
 	var req request.WafSslordersearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		beans, total, _ := wafSslOrderService.GetListApi(req)
+		beans, total, _ := wafSslOrderService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      beans,
 			Total:     total,
@@ -158,7 +158,7 @@ func (w *WafSslOrderApi) DelApi(c *gin.Context) {
 	var req request.WafSslorderdeleteReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafSslOrderService.DelApi(req)
+		err = wafSslOrderService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -193,7 +193,7 @@ func (w *WafSslOrderApi) ModifyApi(c *gin.Context) {
 		if req.ApplyMethod != "dns01" {
 			req.SkipDNSVerify = 0
 		}
-		existingOrder := wafSslOrderService.GetDetailById(req.Id)
+		existingOrder := wafSslOrderService.GetDetailById(c.Request.Context(), req.Id)
 		if existingOrder.Id == "" {
 			response.FailWithMessage("SSL订单不存在", c)
 			return
@@ -206,7 +206,7 @@ func (w *WafSslOrderApi) ModifyApi(c *gin.Context) {
 		// 续期与申请走同一套挑战：http01 同样要求 80 端口是 HTTP 明文，
 		// 否则每次续期都会在 ACME 侧失败（还会消耗服务商的失败频率配额）
 		if existingOrder.ApplyMethod == "http01" {
-			hostBean := wafHostService.GetDetailByCodeApi(existingOrder.HostCode)
+			hostBean := wafHostService.GetDetailByCodeApi(c.Request.Context(), existingOrder.HostCode)
 			if hostBean.Id != "" {
 				if ok, proto := w.check80Port(hostBean); !ok {
 					response.FailWithMessage(http01PortHint(proto), c)
@@ -228,12 +228,12 @@ func (w *WafSslOrderApi) ModifyApi(c *gin.Context) {
 			return
 		}
 
-		err = wafSslOrderService.ModifyApi(req)
+		err = wafSslOrderService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("续期发生错误", c)
 		} else {
 			//发起续期
-			renewAdd, err := wafSslOrderService.RenewAdd(req.Id)
+			renewAdd, err := wafSslOrderService.RenewAdd(c.Request.Context(), req.Id)
 			if err == nil {
 				w.NotifyWaf(enums.ChanSslOrderrenew, renewAdd)
 				response.OkWithMessage("续期成功", c)

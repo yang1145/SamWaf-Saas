@@ -8,6 +8,7 @@ import (
 	"SamWaf/model/baseorm"
 	"SamWaf/model/common/response"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -41,7 +42,7 @@ func (w *WafCommonApi) ExportExcelApi(c *gin.Context) {
 		f := excelize.NewFile()
 		sheetName := "Sheet1"
 		// 获取数据的类型和值
-		dataType, dataValue := getStructTypeValueByName(req.TableName)
+		dataType, dataValue := getStructTypeValueByName(c.Request.Context(), req.TableName)
 
 		/*dataType := reflect.TypeOf(data)
 		dataValue := reflect.ValueOf(data)*/
@@ -136,15 +137,15 @@ func (w *WafCommonApi) ImportExcelApi(c *gin.Context) {
 }
 
 // 获取结构体类型通过名称
-func getStructTypeValueByName(name string) (reflect.Type, reflect.Value) {
+func getStructTypeValueByName(ctx context.Context, name string) (reflect.Type, reflect.Value) {
 	switch name {
 	case "hosts":
 		// 模拟获取数据
-		webHosts := wafHostService.GetAllHostApi()
+		webHosts := wafHostService.GetAllHostApi(ctx)
 		return reflect.TypeOf(model.Hosts{}), reflect.ValueOf(webHosts)
 	case "ipblock":
 		// 获取所有IP黑名单数据
-		ipBlocks := wafIpBlockService.GetAllBlockIpApi()
+		ipBlocks := wafIpBlockService.GetAllBlockIpApi(ctx)
 		return reflect.TypeOf(model.IPBlockList{}), reflect.ValueOf(ipBlocks)
 	default:
 		return nil, reflect.ValueOf(nil)
@@ -324,7 +325,7 @@ func processImportData(dataType interface{}, tableName string, rows [][]string, 
 // checkHostData 检查host信息是否合法
 func checkHostCodeData(code string) (string, error) {
 	// 唯一性校验：检查 `Code` 是否已存在
-	if wafHostService.GetDetailByCodeApi(code).Code != "" {
+	if wafHostService.GetDetailByCodeApi(context.Background(), code).Code != "" {
 		errorMsg := "Code 数据已存在不进行插入"
 		// 数据已存在，不插入
 		return errorMsg, errors.New(errorMsg)
@@ -333,7 +334,7 @@ func checkHostCodeData(code string) (string, error) {
 }
 func checkHostPortData(host string, port string) (string, error) {
 	//唯一性校验：检查 `Host` 和 `Port` 的组合是否已存在
-	if err := wafHostService.CheckIsExist(host, port); err == nil {
+	if err := wafHostService.CheckIsExist(context.Background(), host, port); err == nil {
 		errorMsg := "Host+Port 数据已存在不进行插入"
 		// 数据已存在，不插入
 		return errorMsg, errors.New(errorMsg)

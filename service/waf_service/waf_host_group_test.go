@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -47,7 +48,7 @@ func setupHostGroupTestDB(t *testing.T) *gorm.DB {
 
 func mustAddHostGroup(t *testing.T, name string) model.HostGroup {
 	t.Helper()
-	g, err := WafHostGroupServiceApp.AddApi(request.WafHostGroupAddReq{GroupName: name})
+	g, err := WafHostGroupServiceApp.AddApi(context.Background(), request.WafHostGroupAddReq{GroupName: name})
 	if err != nil {
 		t.Fatalf("新建分组失败: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestHostGroupDelKeepsHosts(t *testing.T) {
 	mustCreateHost(t, "a.com", g.GroupCode, 0)
 	mustCreateHost(t, "b.com", g.GroupCode, 0)
 
-	affected, err := WafHostGroupServiceApp.DelApi(request.WafHostGroupDelReq{Id: g.Id})
+	affected, err := WafHostGroupServiceApp.DelApi(context.Background(), request.WafHostGroupDelReq{Id: g.Id})
 	if err != nil {
 		t.Fatalf("删除分组失败: %v", err)
 	}
@@ -116,7 +117,7 @@ func TestHostGroupNoneFilterCoversNullAndEmpty(t *testing.T) {
 		t.Fatalf("构造 NULL 行失败: %v", err)
 	}
 
-	list, total, err := WafHostServiceApp.GetListApi(request.WafHostSearchReq{
+	list, total, err := WafHostServiceApp.GetListApi(context.Background(), request.WafHostSearchReq{
 		GroupCode: model.HostGroupNone,
 		PageInfo:  commonreq.PageInfo{PageIndex: 1, PageSize: 20},
 	})
@@ -128,7 +129,7 @@ func TestHostGroupNoneFilterCoversNullAndEmpty(t *testing.T) {
 	}
 
 	// 指定分组时走精确匹配
-	list, total, err = WafHostServiceApp.GetListApi(request.WafHostSearchReq{
+	list, total, err = WafHostServiceApp.GetListApi(context.Background(), request.WafHostSearchReq{
 		GroupCode: g.GroupCode,
 		PageInfo:  commonreq.PageInfo{PageIndex: 1, PageSize: 20},
 	})
@@ -146,7 +147,7 @@ func TestHostGroupGroupCodeIsExactMatch(t *testing.T) {
 	mustCreateHost(t, "a.com", "abc", 0)
 	mustCreateHost(t, "b.com", "abcdef", 0)
 
-	_, total, err := WafHostServiceApp.GetListApi(request.WafHostSearchReq{
+	_, total, err := WafHostServiceApp.GetListApi(context.Background(), request.WafHostSearchReq{
 		GroupCode: "abc",
 		PageInfo:  commonreq.PageInfo{PageIndex: 1, PageSize: 20},
 	})
@@ -165,7 +166,7 @@ func TestHostGroupAssignSkipsGlobalHost(t *testing.T) {
 	normal := mustCreateHost(t, "a.com", "", 0)
 	globalHost := mustCreateHost(t, "全局网站", "", 1)
 
-	affected, err := WafHostGroupServiceApp.AssignApi(request.WafHostGroupAssignReq{
+	affected, err := WafHostGroupServiceApp.AssignApi(context.Background(), request.WafHostGroupAssignReq{
 		HostCodes: []string{normal.Code, globalHost.Code},
 		GroupCode: g.GroupCode,
 	})
@@ -186,14 +187,14 @@ func TestHostGroupAssignSkipsGlobalHost(t *testing.T) {
 func TestHostGroupAssignRejectsMissingGroup(t *testing.T) {
 	setupHostGroupTestDB(t)
 	h := mustCreateHost(t, "a.com", "", 0)
-	if _, err := WafHostGroupServiceApp.AssignApi(request.WafHostGroupAssignReq{
+	if _, err := WafHostGroupServiceApp.AssignApi(context.Background(), request.WafHostGroupAssignReq{
 		HostCodes: []string{h.Code},
 		GroupCode: "not-exist",
 	}); err == nil {
 		t.Fatal("目标分组不存在时应报错")
 	}
 	// 移出分组（空 group_code）始终允许
-	if _, err := WafHostGroupServiceApp.AssignApi(request.WafHostGroupAssignReq{
+	if _, err := WafHostGroupServiceApp.AssignApi(context.Background(), request.WafHostGroupAssignReq{
 		HostCodes: []string{h.Code},
 		GroupCode: "",
 	}); err != nil {
@@ -205,7 +206,7 @@ func TestHostGroupAssignRejectsMissingGroup(t *testing.T) {
 func TestHostGroupDuplicateNameRejected(t *testing.T) {
 	setupHostGroupTestDB(t)
 	mustAddHostGroup(t, "生产环境")
-	if _, err := WafHostGroupServiceApp.AddApi(request.WafHostGroupAddReq{GroupName: " 生产环境 "}); err == nil {
+	if _, err := WafHostGroupServiceApp.AddApi(context.Background(), request.WafHostGroupAddReq{GroupName: " 生产环境 "}); err == nil {
 		t.Fatal("同名分组(trim 后相同)应被拒绝")
 	}
 }
@@ -213,12 +214,12 @@ func TestHostGroupDuplicateNameRejected(t *testing.T) {
 // TestHostGroupColorWhitelist 颜色只收预设枚举——它是唯一会被渲染进管理端 DOM 属性的分组字段。
 func TestHostGroupColorWhitelist(t *testing.T) {
 	setupHostGroupTestDB(t)
-	if _, err := WafHostGroupServiceApp.AddApi(request.WafHostGroupAddReq{
+	if _, err := WafHostGroupServiceApp.AddApi(context.Background(), request.WafHostGroupAddReq{
 		GroupName: "注入组", Color: "red;background:url(javascript:1)",
 	}); err == nil {
 		t.Fatal("非预设颜色应被拒绝")
 	}
-	g, err := WafHostGroupServiceApp.AddApi(request.WafHostGroupAddReq{GroupName: "默认色组"})
+	g, err := WafHostGroupServiceApp.AddApi(context.Background(), request.WafHostGroupAddReq{GroupName: "默认色组"})
 	if err != nil {
 		t.Fatalf("新建分组失败: %v", err)
 	}
@@ -238,7 +239,7 @@ func TestHostGroupOptionsCounts(t *testing.T) {
 	mustCreateHost(t, "d.com", "", 0)
 	mustCreateHost(t, "全局网站", "", 1)
 
-	opts := WafHostGroupServiceApp.GetOptionsApi()
+	opts := WafHostGroupServiceApp.GetOptionsApi(context.Background())
 	if opts.AllCount != 4 {
 		t.Fatalf("全部计数应排除全局网站，期望 4，实际 %d", opts.AllCount)
 	}
@@ -268,12 +269,12 @@ func TestHostGroupSort(t *testing.T) {
 	g2 := mustAddHostGroup(t, "B")
 	g3 := mustAddHostGroup(t, "C")
 
-	if err := WafHostGroupServiceApp.SortApi(request.WafHostGroupSortReq{
+	if err := WafHostGroupServiceApp.SortApi(context.Background(), request.WafHostGroupSortReq{
 		Ids: []string{g3.Id, g1.Id, g2.Id},
 	}); err != nil {
 		t.Fatalf("排序失败: %v", err)
 	}
-	opts := WafHostGroupServiceApp.GetOptionsApi()
+	opts := WafHostGroupServiceApp.GetOptionsApi(context.Background())
 	want := []string{"C", "A", "B"}
 	for i, w := range want {
 		if opts.List[i].GroupName != w {

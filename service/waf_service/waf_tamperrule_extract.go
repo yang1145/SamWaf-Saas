@@ -41,12 +41,12 @@ type DiscoveredURL struct {
 // ExtractUrlsApi 抓取「当前站点后端」的一个页面，解析出同站静态资源引用供批量添加。
 // 安全边界：只抓该站点已配置的后端（Remote_host:Remote_port，SamWaf 本就代理的目标），
 // 不接受任意外部地址；用户填的 page_url 只取其 path，强制走本站后端，无新增对外请求出口、无 SSRF。
-func (receiver *WafTamperRuleService) ExtractUrlsApi(req request.WafTamperRuleExtractReq) ([]DiscoveredURL, error) {
+func (receiver *WafTamperRuleService) ExtractUrlsApi(ctx context.Context, req request.WafTamperRuleExtractReq) ([]DiscoveredURL, error) {
 	if strings.TrimSpace(req.HostCode) == "" {
 		return nil, errors.New("缺少站点标识")
 	}
 	var host model.Hosts
-	global.GWAF_LOCAL_DB.Where("code=?", req.HostCode).First(&host)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("code=?", req.HostCode).First(&host)
 	if host.Id == "" {
 		return nil, errors.New("站点不存在")
 	}

@@ -8,6 +8,7 @@ import (
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
 	"SamWaf/model/response"
+	"context"
 	"errors"
 	"time"
 )
@@ -16,7 +17,7 @@ type WafSslExpireService struct{}
 
 var WafSslExpireServiceApp = new(WafSslExpireService)
 
-func (receiver *WafSslExpireService) AddApi(req request.WafSslExpireAddReq) error {
+func (receiver *WafSslExpireService) AddApi(ctx context.Context, req request.WafSslExpireAddReq) error {
 	var bean = &model.SslExpire{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -31,11 +32,11 @@ func (receiver *WafSslExpireService) AddApi(req request.WafSslExpireAddReq) erro
 		VisitLog: req.VisitLog,
 		Status:   req.Status,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean)
 	return nil
 }
 
-func (receiver *WafSslExpireService) Add(domain string, port int) error {
+func (receiver *WafSslExpireService) Add(ctx context.Context, domain string, port int) error {
 	var bean = &model.SslExpire{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -48,11 +49,11 @@ func (receiver *WafSslExpireService) Add(domain string, port int) error {
 		Domain: domain,
 		Port:   port,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean)
 	return nil
 }
 
-func (receiver *WafSslExpireService) CheckIsExistApi(req request.WafSslExpireAddReq) int {
+func (receiver *WafSslExpireService) CheckIsExistApi(ctx context.Context, req request.WafSslExpireAddReq) int {
 	var total int64 = 0
 	/*where条件*/
 	var whereField = ""
@@ -81,11 +82,11 @@ func (receiver *WafSslExpireService) CheckIsExistApi(req request.WafSslExpireAdd
 	if req.Port > 0 {
 		whereValues = append(whereValues, req.Port)
 	}
-	global.GWAF_LOCAL_DB.Model(&model.SslExpire{}).Where(whereField, whereValues...).Count(&total)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.SslExpire{}).Where(whereField, whereValues...).Count(&total)
 	return int(total)
 }
 
-func (receiver *WafSslExpireService) CheckIsExist(domain string, port int) int {
+func (receiver *WafSslExpireService) CheckIsExist(ctx context.Context, domain string, port int) int {
 	var total int64 = 0
 	/*where条件*/
 	var whereField = ""
@@ -114,11 +115,11 @@ func (receiver *WafSslExpireService) CheckIsExist(domain string, port int) int {
 	if port > 0 {
 		whereValues = append(whereValues, port)
 	}
-	global.GWAF_LOCAL_DB.Model(&model.SslExpire{}).Where(whereField, whereValues...).Count(&total)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.SslExpire{}).Where(whereField, whereValues...).Count(&total)
 	return int(total)
 }
 
-func (receiver *WafSslExpireService) ModifyApi(req request.WafSslExpireEditReq) error {
+func (receiver *WafSslExpireService) ModifyApi(ctx context.Context, req request.WafSslExpireEditReq) error {
 	// 根据唯一字段生成查询条件（只有在UniFields不为空时才进行存在性检查）
 
 	var total int64 = 0
@@ -149,10 +150,11 @@ func (receiver *WafSslExpireService) ModifyApi(req request.WafSslExpireEditReq) 
 	if req.Port > 0 {
 		whereValues = append(whereValues, req.Port)
 	}
-	global.GWAF_LOCAL_DB.Model(&model.SslExpire{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.SslExpire{}).Where(whereField, whereValues...).Count(&total)
 	// 查询是否已存在记录
 	var bean model.SslExpire
-	global.GWAF_LOCAL_DB.Model(&model.SslExpire{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
+	db.Model(&model.SslExpire{}).Where(whereField, whereValues...).Limit(1).Find(&bean)
 
 	if int(total) > 0 && bean.Id != "" && bean.Id != req.Id {
 		return errors.New("当前记录已经存在")
@@ -167,12 +169,12 @@ func (receiver *WafSslExpireService) ModifyApi(req request.WafSslExpireEditReq) 
 
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.SslExpire{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	err := db.Model(model.SslExpire{}).Where("id = ?", req.Id).Updates(beanMap).Error
 
 	return err
 }
 
-func (receiver *WafSslExpireService) Modify(req model.SslExpire) error {
+func (receiver *WafSslExpireService) Modify(ctx context.Context, req model.SslExpire) error {
 
 	beanMap := map[string]interface{}{
 		"Domain":      req.Domain,
@@ -182,25 +184,26 @@ func (receiver *WafSslExpireService) Modify(req model.SslExpire) error {
 		"ValidTo":     req.ValidTo,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.SslExpire{}).Where("id = ?", req.Id).Updates(beanMap).Error
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(model.SslExpire{}).Where("id = ?", req.Id).Updates(beanMap).Error
 
 	return err
 }
-func (receiver *WafSslExpireService) GetDetailApi(req request.WafSslExpireDetailReq) model.SslExpire {
+func (receiver *WafSslExpireService) GetDetailApi(ctx context.Context, req request.WafSslExpireDetailReq) model.SslExpire {
 	var bean model.SslExpire
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafSslExpireService) GetDetailByIdApi(id string) model.SslExpire {
+func (receiver *WafSslExpireService) GetDetailByIdApi(ctx context.Context, id string) model.SslExpire {
 	var bean model.SslExpire
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafSslExpireService) GetListApi(req request.WafSslExpireSearchReq) ([]response.WafSslCheckRep, int64, error) {
+func (receiver *WafSslExpireService) GetListApi(ctx context.Context, req request.WafSslExpireSearchReq) ([]response.WafSslCheckRep, int64, error) {
 	var list []model.SslExpire
 	var total int64 = 0
-	global.GWAF_LOCAL_DB.Model(&model.SslExpire{}).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Order("valid_to asc").Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.SslExpire{}).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.SslExpire{}).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Order("valid_to asc").Find(&list)
+	db.Model(&model.SslExpire{}).Count(&total)
 
 	var repList []response.WafSslCheckRep
 
@@ -216,20 +219,22 @@ func (receiver *WafSslExpireService) GetListApi(req request.WafSslExpireSearchRe
 	return repList, total, nil
 }
 
-func (receiver *WafSslExpireService) GetAllList() ([]model.SslExpire, int64, error) {
+func (receiver *WafSslExpireService) GetAllList(ctx context.Context) ([]model.SslExpire, int64, error) {
 	var list []model.SslExpire
 	var total int64 = 0
-	global.GWAF_LOCAL_DB.Model(&model.SslExpire{}).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.SslExpire{}).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.SslExpire{}).Find(&list)
+	db.Model(&model.SslExpire{}).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafSslExpireService) DelApi(req request.WafSslExpireDelReq) error {
+func (receiver *WafSslExpireService) DelApi(ctx context.Context, req request.WafSslExpireDelReq) error {
 	var bean model.SslExpire
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.SslExpire{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.SslExpire{}).Error
 	return err
 }

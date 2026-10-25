@@ -7,6 +7,7 @@ import (
 	"SamWaf/model/common/response"
 	"SamWaf/model/request"
 	"SamWaf/model/spec"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -24,11 +25,11 @@ func (w *WafTamperRuleApi) AddApi(c *gin.Context) {
 	var req request.WafTamperRuleAddReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		cnt := wafTamperRuleService.CheckIsExistApi(req)
+		cnt := wafTamperRuleService.CheckIsExistApi(c.Request.Context(), req)
 		if cnt == 0 {
-			err = wafTamperRuleService.AddApi(req)
+			err = wafTamperRuleService.AddApi(c.Request.Context(), req)
 			if err == nil {
-				w.NotifyWaf(req.HostCode)
+				w.NotifyWaf(c.Request.Context(), req.HostCode)
 				response.OkWithMessage("添加成功", c)
 			} else {
 				response.FailWithMessage("添加失败:"+err.Error(), c)
@@ -48,7 +49,7 @@ func (w *WafTamperRuleApi) GetDetailApi(c *gin.Context) {
 	var req request.WafTamperRuleDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafTamperRuleService.GetDetailApi(req)
+		bean := wafTamperRuleService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -60,7 +61,7 @@ func (w *WafTamperRuleApi) GetListApi(c *gin.Context) {
 	var req request.WafTamperRuleSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		list, total, _ := wafTamperRuleService.GetListApi(req)
+		list, total, _ := wafTamperRuleService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      list,
 			Total:     total,
@@ -77,18 +78,18 @@ func (w *WafTamperRuleApi) DelApi(c *gin.Context) {
 	var req request.WafTamperRuleDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafTamperRuleService.GetDetailByIdApi(req.Id)
+		bean := wafTamperRuleService.GetDetailByIdApi(c.Request.Context(), req.Id)
 		if bean.Id == "" {
 			response.FailWithMessage("未找到信息", c)
 			return
 		}
-		err = wafTamperRuleService.DelApi(req)
+		err = wafTamperRuleService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
 			response.FailWithMessage("发生错误", c)
 		} else {
-			w.NotifyWaf(bean.HostCode)
+			w.NotifyWaf(c.Request.Context(), bean.HostCode)
 			response.OkWithMessage("删除成功", c)
 		}
 	} else {
@@ -102,12 +103,12 @@ func (w *WafTamperRuleApi) ModifyApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		//编辑前先取旧记录，拿到可能被本次编辑改掉的旧 host_code(issue #898)
-		bean := wafTamperRuleService.GetDetailByIdApi(req.Id)
-		err = wafTamperRuleService.ModifyApi(req)
+		bean := wafTamperRuleService.GetDetailByIdApi(c.Request.Context(), req.Id)
+		err = wafTamperRuleService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误:"+err.Error(), c)
 		} else {
-			notifyWafHostChanged(w.NotifyWaf, bean.HostCode, req.HostCode)
+			notifyWafHostChanged(func(hostCode string) { w.NotifyWaf(c.Request.Context(), hostCode) }, bean.HostCode, req.HostCode)
 			response.OkWithMessage("编辑成功", c)
 		}
 	} else {
@@ -120,16 +121,16 @@ func (w *WafTamperRuleApi) RelearnApi(c *gin.Context) {
 	var req request.WafTamperRuleRelearnReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafTamperRuleService.GetDetailByIdApi(req.Id)
+		bean := wafTamperRuleService.GetDetailByIdApi(c.Request.Context(), req.Id)
 		if bean.Id == "" {
 			response.FailWithMessage("未找到信息", c)
 			return
 		}
-		err = wafTamperRuleService.RelearnApi(req)
+		err = wafTamperRuleService.RelearnApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("操作失败:"+err.Error(), c)
 		} else {
-			w.NotifyWaf(bean.HostCode)
+			w.NotifyWaf(c.Request.Context(), bean.HostCode)
 			response.OkWithMessage("已触发重新学习，正在后端重新抓取基线（无后端的站点将在下次访问时重学）", c)
 		}
 	} else {
@@ -142,11 +143,11 @@ func (w *WafTamperRuleApi) RelearnBatchApi(c *gin.Context) {
 	var req request.WafTamperRuleRelearnBatchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		err = wafTamperRuleService.RelearnBatchApi(req)
+		err = wafTamperRuleService.RelearnBatchApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("操作失败:"+err.Error(), c)
 		} else {
-			w.NotifyWaf(req.HostCode)
+			w.NotifyWaf(c.Request.Context(), req.HostCode)
 			response.OkWithMessage("已触发重新学习，正在后端重新抓取基线（无后端的站点将在下次访问时重学）", c)
 		}
 	} else {
@@ -159,7 +160,7 @@ func (w *WafTamperRuleApi) ExtractUrlsApi(c *gin.Context) {
 	var req request.WafTamperRuleExtractReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		list, e := wafTamperRuleService.ExtractUrlsApi(req)
+		list, e := wafTamperRuleService.ExtractUrlsApi(c.Request.Context(), req)
 		if e != nil {
 			response.FailWithMessage(e.Error(), c)
 		} else {
@@ -175,11 +176,11 @@ func (w *WafTamperRuleApi) AddBatchApi(c *gin.Context) {
 	var req request.WafTamperRuleAddBatchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		added, skipped, e := wafTamperRuleService.AddBatchApi(req)
+		added, skipped, e := wafTamperRuleService.AddBatchApi(c.Request.Context(), req)
 		if e != nil {
 			response.FailWithMessage("批量添加失败:"+e.Error(), c)
 		} else {
-			w.NotifyWaf(req.HostCode)
+			w.NotifyWaf(c.Request.Context(), req.HostCode)
 			response.OkWithDetailed(gin.H{"added": added, "skipped": skipped},
 				fmt.Sprintf("批量添加完成：新增 %d 条，跳过 %d 条", added, skipped), c)
 		}
@@ -193,11 +194,11 @@ func (w *WafTamperRuleApi) DelBatchApi(c *gin.Context) {
 	var req request.WafTamperRuleDelBatchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		cnt, e := wafTamperRuleService.DelBatchApi(req)
+		cnt, e := wafTamperRuleService.DelBatchApi(c.Request.Context(), req)
 		if e != nil {
 			response.FailWithMessage("批量删除失败:"+e.Error(), c)
 		} else {
-			w.NotifyWaf(req.HostCode)
+			w.NotifyWaf(c.Request.Context(), req.HostCode)
 			response.OkWithMessage(fmt.Sprintf("已删除 %d 条", cnt), c)
 		}
 	} else {
@@ -213,7 +214,7 @@ func (w *WafTamperRuleApi) GetBaselineApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	bean := wafTamperRuleService.GetBaselineApi(req.Id)
+	bean := wafTamperRuleService.GetBaselineApi(c.Request.Context(), req.Id)
 	if bean.Id == "" {
 		response.FailWithMessage("未找到信息", c)
 		return
@@ -254,9 +255,9 @@ func isTextContentType(ct string) bool {
 }
 
 // NotifyWaf 通知到 waf 引擎实时生效
-func (w *WafTamperRuleApi) NotifyWaf(host_code string) {
+func (w *WafTamperRuleApi) NotifyWaf(ctx context.Context, host_code string) {
 	var list []model.TamperRule
-	global.GWAF_LOCAL_DB.Where("host_code = ? ", host_code).Find(&list)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ? ", host_code).Find(&list)
 	var chanInfo = spec.ChanCommonHost{
 		HostCode: host_code,
 		Type:     enums.ChanTypeTamperRule,

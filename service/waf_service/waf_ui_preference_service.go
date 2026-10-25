@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"encoding/json"
 	"errors"
 	"time"
@@ -33,18 +34,18 @@ func (receiver *WafUIPreferenceService) checkPrefName(prefName string) error {
 }
 
 // GetApi 获取指定账号的偏好，未存过时返回零值（Id 为空），由调用方按默认值处理
-func (receiver *WafUIPreferenceService) GetApi(loginAccount string, prefName string) (model.UIPreference, error) {
+func (receiver *WafUIPreferenceService) GetApi(ctx context.Context, loginAccount string, prefName string) (model.UIPreference, error) {
 	var bean model.UIPreference
 	if err := receiver.checkPrefName(prefName); err != nil {
 		return bean, err
 	}
-	global.GWAF_LOCAL_DB.Where("user_code=? and tenant_id=? and login_account=? and pref_name=?",
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("user_code=? and tenant_id=? and login_account=? and pref_name=?",
 		global.GWAF_USER_CODE, global.GWAF_TENANT_ID, loginAccount, prefName).Find(&bean)
 	return bean, nil
 }
 
 // SaveApi 保存（不存在则新增，存在则更新）指定账号的偏好
-func (receiver *WafUIPreferenceService) SaveApi(loginAccount string, req request.WafUIPreferenceSaveReq) error {
+func (receiver *WafUIPreferenceService) SaveApi(ctx context.Context, loginAccount string, req request.WafUIPreferenceSaveReq) error {
 	if err := receiver.checkPrefName(req.PrefName); err != nil {
 		return err
 	}
@@ -59,15 +60,16 @@ func (receiver *WafUIPreferenceService) SaveApi(loginAccount string, req request
 
 	// 先查后写不是原子的：同一账号多标签页首次进页面会并发写，
 	// 新增撞唯一索引 uni_ui_pref 时重查一次改走更新，避免偶发"保存失败"
-	if err := receiver.upsert(loginAccount, req); err != nil {
-		return receiver.updateExisting(loginAccount, req)
+	if err := receiver.upsert(ctx, loginAccount, req); err != nil {
+		return receiver.updateExisting(ctx, loginAccount, req)
 	}
 	return nil
 }
 
-func (receiver *WafUIPreferenceService) upsert(loginAccount string, req request.WafUIPreferenceSaveReq) error {
+func (receiver *WafUIPreferenceService) upsert(ctx context.Context, loginAccount string, req request.WafUIPreferenceSaveReq) error {
 	var bean model.UIPreference
-	global.GWAF_LOCAL_DB.Where("user_code=? and tenant_id=? and login_account=? and pref_name=?",
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("user_code=? and tenant_id=? and login_account=? and pref_name=?",
 		global.GWAF_USER_CODE, global.GWAF_TENANT_ID, loginAccount, req.PrefName).Find(&bean)
 
 	if bean.Id == "" {
@@ -83,18 +85,18 @@ func (receiver *WafUIPreferenceService) upsert(loginAccount string, req request.
 			PrefName:     req.PrefName,
 			PrefJson:     req.PrefJson,
 		}
-		return global.GWAF_LOCAL_DB.Create(newBean).Error
+		return db.Create(newBean).Error
 	}
 
-	return global.GWAF_LOCAL_DB.Model(model.UIPreference{}).Where("id = ?", bean.Id).Updates(map[string]interface{}{
+	return db.Model(model.UIPreference{}).Where("id = ?", bean.Id).Updates(map[string]interface{}{
 		"PrefJson":    req.PrefJson,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}).Error
 }
 
 // updateExisting 按唯一键直接更新（新增撞唯一索引后的兜底；若索引缺失导致存在多行，这里会全部更新为同一内容，最终一致）
-func (receiver *WafUIPreferenceService) updateExisting(loginAccount string, req request.WafUIPreferenceSaveReq) error {
-	return global.GWAF_LOCAL_DB.Model(model.UIPreference{}).
+func (receiver *WafUIPreferenceService) updateExisting(ctx context.Context, loginAccount string, req request.WafUIPreferenceSaveReq) error {
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Model(model.UIPreference{}).
 		Where("user_code=? and tenant_id=? and login_account=? and pref_name=?",
 			global.GWAF_USER_CODE, global.GWAF_TENANT_ID, loginAccount, req.PrefName).
 		Updates(map[string]interface{}{

@@ -40,7 +40,7 @@ func (w *WafFirewallIPBlockApi) AddApi(c *gin.Context) {
 		return
 	}
 
-	err = wafFirewallIPBlockService.AddApi(req)
+	err = wafFirewallIPBlockService.AddApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("添加失败: "+err.Error(), c)
 		return
@@ -58,7 +58,7 @@ func (w *WafFirewallIPBlockApi) GetDetailApi(c *gin.Context) {
 		return
 	}
 
-	bean := wafFirewallIPBlockService.GetDetailApi(req)
+	bean := wafFirewallIPBlockService.GetDetailApi(c.Request.Context(), req)
 	response.OkWithDetailed(bean, "获取成功", c)
 }
 
@@ -80,7 +80,7 @@ func (w *WafFirewallIPBlockApi) GetListApi(c *gin.Context) {
 		return
 	}
 
-	list, total, err := wafFirewallIPBlockService.GetListApi(req)
+	list, total, err := wafFirewallIPBlockService.GetListApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("获取失败: "+err.Error(), c)
 		return
@@ -112,7 +112,7 @@ func (w *WafFirewallIPBlockApi) DelApi(c *gin.Context) {
 		return
 	}
 
-	err = wafFirewallIPBlockService.DelApi(req)
+	err = wafFirewallIPBlockService.DelApi(c.Request.Context(), req)
 	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 		response.FailWithMessage("请检测参数", c)
 	} else if err != nil {
@@ -140,7 +140,7 @@ func (w *WafFirewallIPBlockApi) ModifyApi(c *gin.Context) {
 		return
 	}
 
-	err = wafFirewallIPBlockService.ModifyApi(req)
+	err = wafFirewallIPBlockService.ModifyApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("编辑失败: "+err.Error(), c)
 	} else {
@@ -157,7 +157,7 @@ func (w *WafFirewallIPBlockApi) BatchDelApi(c *gin.Context) {
 		return
 	}
 
-	err = wafFirewallIPBlockService.BatchDelApi(req)
+	err = wafFirewallIPBlockService.BatchDelApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("批量删除失败: "+err.Error(), c)
 	} else {
@@ -174,7 +174,7 @@ func (w *WafFirewallIPBlockApi) BatchAddApi(c *gin.Context) {
 		return
 	}
 
-	successCount, failedIPs, err := wafFirewallIPBlockService.BatchAddApi(req)
+	successCount, failedIPs, err := wafFirewallIPBlockService.BatchAddApi(c.Request.Context(), req)
 	if err != nil {
 		msg := fmt.Sprintf("批量添加完成，成功 %d 个，失败 %d 个", successCount, len(failedIPs))
 		if len(failedIPs) > 0 {
@@ -199,7 +199,7 @@ func (w *WafFirewallIPBlockApi) EnableApi(c *gin.Context) {
 		return
 	}
 
-	err = wafFirewallIPBlockService.EnableApi(req)
+	err = wafFirewallIPBlockService.EnableApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("启用失败: "+err.Error(), c)
 	} else {
@@ -216,7 +216,7 @@ func (w *WafFirewallIPBlockApi) DisableApi(c *gin.Context) {
 		return
 	}
 
-	err = wafFirewallIPBlockService.DisableApi(req)
+	err = wafFirewallIPBlockService.DisableApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("禁用失败: "+err.Error(), c)
 	} else {
@@ -233,7 +233,7 @@ func (w *WafFirewallIPBlockApi) SyncApi(c *gin.Context) {
 		return
 	}
 
-	successCount, failedCount, err := wafFirewallIPBlockService.SyncFirewallRules(req.HostCode)
+	successCount, failedCount, err := wafFirewallIPBlockService.SyncFirewallRules(c.Request.Context(), req.HostCode)
 	if err != nil {
 		response.FailWithMessage("同步失败: "+err.Error(), c)
 	} else {
@@ -247,7 +247,7 @@ func (w *WafFirewallIPBlockApi) SyncApi(c *gin.Context) {
 
 // ClearExpiredApi 清理过期的封禁规则
 func (w *WafFirewallIPBlockApi) ClearExpiredApi(c *gin.Context) {
-	count, err := wafFirewallIPBlockService.ClearExpiredRules()
+	count, err := wafFirewallIPBlockService.ClearExpiredRules(c.Request.Context())
 	if err != nil {
 		response.FailWithMessage("清理失败: "+err.Error(), c)
 	} else {
@@ -257,7 +257,7 @@ func (w *WafFirewallIPBlockApi) ClearExpiredApi(c *gin.Context) {
 
 // GetStatisticsApi 获取统计信息
 func (w *WafFirewallIPBlockApi) GetStatisticsApi(c *gin.Context) {
-	stats := wafFirewallIPBlockService.GetStatistics()
+	stats := wafFirewallIPBlockService.GetStatistics(c.Request.Context())
 	response.OkWithDetailed(stats, "获取成功", c)
 }
 

@@ -14,7 +14,7 @@ type WafCDNIPApi struct {
 
 // GetListApi 厂商列表(合并元数据+运行态，脱敏，不含明文凭证)
 func (w *WafCDNIPApi) GetListApi(c *gin.Context) {
-	list := wafCDNIPService.GetProviderList()
+	list := wafCDNIPService.GetProviderList(c.Request.Context())
 	response.OkWithDetailed(list, "获取成功", c)
 }
 
@@ -25,7 +25,7 @@ func (w *WafCDNIPApi) GetInfoApi(c *gin.Context) {
 		response.FailWithMessage("缺少 provider 参数", c)
 		return
 	}
-	info := wafCDNIPService.GetProviderInfo(provider)
+	info := wafCDNIPService.GetProviderInfo(c.Request.Context(), provider)
 	if info == nil {
 		response.FailWithMessage("未知 CDN 厂商", c)
 		return
@@ -40,7 +40,7 @@ func (w *WafCDNIPApi) RangesApi(c *gin.Context) {
 		response.FailWithMessage("解析失败: "+err.Error(), c)
 		return
 	}
-	ips, total := wafCDNIPService.GetProviderRanges(req.Provider, req.Keyword, req.PageIndex, req.PageSize)
+	ips, total := wafCDNIPService.GetProviderRanges(c.Request.Context(), req.Provider, req.Keyword, req.PageIndex, req.PageSize)
 	response.OkWithDetailed(response.PageResult{
 		List:      ips,
 		Total:     total,
@@ -56,7 +56,7 @@ func (w *WafCDNIPApi) SetAutoFetchApi(c *gin.Context) {
 		response.FailWithMessage("解析失败: "+err.Error(), c)
 		return
 	}
-	if err := wafCDNIPService.SetAutoFetch(req.Provider, req.AutoFetch, req.IntervalHour); err != nil {
+	if err := wafCDNIPService.SetAutoFetch(c.Request.Context(), req.Provider, req.AutoFetch, req.IntervalHour); err != nil {
 		response.FailWithMessage("设置失败: "+err.Error(), c)
 		return
 	}
@@ -70,7 +70,7 @@ func (w *WafCDNIPApi) SetCredentialApi(c *gin.Context) {
 		response.FailWithMessage("解析失败: "+err.Error(), c)
 		return
 	}
-	if err := wafCDNIPService.SetCredential(req.Provider, req.SecretId, req.SecretKey, req.ExtraParam); err != nil {
+	if err := wafCDNIPService.SetCredential(c.Request.Context(), req.Provider, req.SecretId, req.SecretKey, req.ExtraParam); err != nil {
 		response.FailWithMessage("保存失败: "+err.Error(), c)
 		return
 	}
@@ -84,7 +84,7 @@ func (w *WafCDNIPApi) ClearCredentialApi(c *gin.Context) {
 		response.FailWithMessage("解析失败: "+err.Error(), c)
 		return
 	}
-	if err := wafCDNIPService.ClearCredential(req.Provider); err != nil {
+	if err := wafCDNIPService.ClearCredential(c.Request.Context(), req.Provider); err != nil {
 		response.FailWithMessage("清空失败: "+err.Error(), c)
 		return
 	}
@@ -98,7 +98,7 @@ func (w *WafCDNIPApi) RefreshApi(c *gin.Context) {
 		response.FailWithMessage("解析失败: "+err.Error(), c)
 		return
 	}
-	if err := wafCDNIPService.RefreshProvider(req.Provider); err != nil {
+	if err := wafCDNIPService.RefreshProvider(c.Request.Context(), req.Provider); err != nil {
 		response.FailWithMessage("拉取失败: "+err.Error(), c)
 		return
 	}

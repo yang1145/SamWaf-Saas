@@ -370,6 +370,10 @@ func (waf *WafEngine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		//URL 解码
 		deRawQueryUrl := wafhttpcore.WafHttpCoreUrlEncode(r.URL.RawQuery, 10)
 		datetimeNow := time.Now()
+		logTenantId := hostTarget.Host.Tenant_ID
+		if logTenantId == "" {
+			logTenantId = global.GWAF_TENANT_ID
+		}
 		weblogbean := innerbean.WebLog{
 			HOST:                 r.Host,
 			URL:                  r.RequestURI,
@@ -391,7 +395,7 @@ func (waf *WafEngine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			REQ_UUID:             uuid.GenUUID(),
 			USER_CODE:            global.GWAF_USER_CODE,
 			HOST_CODE:            hostCode,
-			TenantId:             global.GWAF_TENANT_ID,
+			TenantId:             logTenantId,
 			RULE:                 "",
 			ACTION:               "通过",
 			Day:                  currentDay,

@@ -10,6 +10,7 @@ import (
 	"SamWaf/model/request"
 	"SamWaf/utils"
 	"SamWaf/wafdb/dialect"
+	"context"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -32,7 +33,7 @@ func normalizeIsEnableResponseBuffering(v int) int {
 	return 1
 }
 
-func (receiver *WafHostService) AddApi(wafHostAddReq request.WafHostAddReq) (string, error) {
+func (receiver *WafHostService) AddApi(ctx context.Context, wafHostAddReq request.WafHostAddReq) (string, error) {
 	uniCode := ""
 	if wafHostAddReq.Code == "" {
 		uniCode = uuid.GenUUID()
@@ -129,20 +130,24 @@ func (receiver *WafHostService) AddApi(wafHostAddReq request.WafHostAddReq) (str
 		GroupCode:                 wafHostAddReq.GroupCode,
 		PortListensJSON:           wafHostAddReq.PortListensJSON,
 	}
-	global.GWAF_LOCAL_DB.Create(wafHost)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Create(wafHost)
 	return wafHost.Code, nil
 }
 
-func (receiver *WafHostService) CheckIsExistApi(wafHostAddReq request.WafHostAddReq) error {
-	return global.GWAF_LOCAL_DB.First(&model.Hosts{}, "host = ? and port= ?", wafHostAddReq.Host, wafHostAddReq.Port).Error
+func (receiver *WafHostService) CheckIsExistApi(ctx context.Context, wafHostAddReq request.WafHostAddReq) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	return db.First(&model.Hosts{}, "host = ? and port= ?", wafHostAddReq.Host, wafHostAddReq.Port).Error
 }
-func (receiver *WafHostService) CheckIsExist(host string, port string) error {
-	return global.GWAF_LOCAL_DB.First(&model.Hosts{}, "host = ? and port= ?", host, port).Error
+func (receiver *WafHostService) CheckIsExist(ctx context.Context, host string, port string) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	return db.First(&model.Hosts{}, "host = ? and port= ?", host, port).Error
 }
 
-func (receiver *WafHostService) ModifyApi(wafHostEditReq request.WafHostEditReq) error {
+func (receiver *WafHostService) ModifyApi(ctx context.Context, wafHostEditReq request.WafHostEditReq) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var webHost model.Hosts
-	global.GWAF_LOCAL_DB.Where("host = ? and port= ?", wafHostEditReq.Host, wafHostEditReq.Port).Find(&webHost)
+	db.Where("host = ? and port= ?", wafHostEditReq.Host, wafHostEditReq.Port).Find(&webHost)
 	if webHost.Id != "" && webHost.Code != wafHostEditReq.CODE {
 		return errors.New("当前网站和端口已经存在")
 	}
@@ -152,10 +157,10 @@ func (receiver *WafHostService) ModifyApi(wafHostEditReq request.WafHostEditReq)
 	// 改域名同样能把认证中心悬空——效果和删站点一模一样（所有站点失去登录入口），
 	// 只是更隐蔽。这里只拦「改之前托管着认证中心、改之后不再托管」这一种情况，
 	// 认证中心站点的其它字段（后端地址、证书……）照常可改。
-	oldHost := receiver.GetDetailByCodeApi(wafHostEditReq.CODE)
-	if used, centerHost := WafAccessConfigServiceApp.IsHostUsedAsCenter(oldHost); used {
+	oldHost := receiver.GetDetailByCodeApi(ctx, wafHostEditReq.CODE)
+	if used, centerHost := WafAccessConfigServiceApp.IsHostUsedAsCenter(ctx, oldHost); used {
 		after := model.Hosts{Host: wafHostEditReq.Host, BindMoreHost: wafHostEditReq.BindMoreHost}
-		if stillUsed, _ := WafAccessConfigServiceApp.IsHostUsedAsCenter(after); !stillUsed {
+		if stillUsed, _ := WafAccessConfigServiceApp.IsHostUsedAsCenter(ctx, after); !stillUsed {
 			return errors.New("该站点正被统一访问认证用作认证中心（" + centerHost +
 				"），改掉域名后所有站点都将失去登录入口。请先到【统一访问认证-认证配置】改用其它域名")
 		}
@@ -225,28 +230,28 @@ func (receiver *WafHostService) ModifyApi(wafHostEditReq request.WafHostEditReq)
 	if wafHostEditReq.PortListensJSON != nil {
 		hostMap["PortListensJSON"] = *wafHostEditReq.PortListensJSON
 	}
-	err := global.GWAF_LOCAL_DB.Debug().Model(model.Hosts{}).Where("CODE=?", wafHostEditReq.CODE).Updates(hostMap).Error
+	err := db.Debug().Model(model.Hosts{}).Where("CODE=?", wafHostEditReq.CODE).Updates(hostMap).Error
 	if err != nil {
 		return err
 	}
 	// 关掉「网站密码访问」时把在线会话一并作废：留着的话，等哪天再打开开关，
 	// 那批旧 Cookie 会直接复活，用户看到的是「刚开的门里已经站着人」。
 	if oldHost.IsEnableHttpAuthBase == 1 && wafHostEditReq.IsEnableHttpAuthBase != 1 {
-		WafHttpAuthSessionServiceApp.RevokeByHostCode(wafHostEditReq.CODE, model.HttpAuthRevokeByHost)
+		WafHttpAuthSessionServiceApp.RevokeByHostCode(ctx, wafHostEditReq.CODE, model.HttpAuthRevokeByHost)
 	}
 	return nil
 }
-func (receiver *WafHostService) GetDetailApi(req request.WafHostDetailReq) model.Hosts {
+func (receiver *WafHostService) GetDetailApi(ctx context.Context, req request.WafHostDetailReq) model.Hosts {
 	var webHost model.Hosts
-	global.GWAF_LOCAL_DB.Where("CODE=?", req.CODE).Find(&webHost)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("CODE=?", req.CODE).Find(&webHost)
 	return webHost
 }
-func (receiver *WafHostService) GetDetailByCodeApi(code string) model.Hosts {
+func (receiver *WafHostService) GetDetailByCodeApi(ctx context.Context, code string) model.Hosts {
 	var webHost model.Hosts
-	global.GWAF_LOCAL_DB.Where("CODE=?", code).Find(&webHost)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("CODE=?", code).Find(&webHost)
 	return webHost
 }
-func (receiver *WafHostService) GetListApi(req request.WafHostSearchReq) ([]model.Hosts, int64, error) {
+func (receiver *WafHostService) GetListApi(ctx context.Context, req request.WafHostSearchReq) ([]model.Hosts, int64, error) {
 	var list []model.Hosts
 	var total int64 = 0
 
@@ -346,18 +351,20 @@ func (receiver *WafHostService) GetListApi(req request.WafHostSearchReq) ([]mode
 
 	// 查询错误必须抛出去：吞掉的话前端只会看到"共 0 条数据"，
 	// 分不清是"确实没有"还是"这条 SQL 在当前数据库上根本执行不了"
-	if err := global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Order(orderInfo).Find(&list).Error; err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := db.Model(&model.Hosts{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Order(orderInfo).Find(&list).Error; err != nil {
 		return nil, 0, err
 	}
-	if err := global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Where(whereField, whereValues...).Count(&total).Error; err != nil {
+	if err := db.Model(&model.Hosts{}).Where(whereField, whereValues...).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	return list, total, nil
 }
-func (receiver *WafHostService) DelHostApi(req request.WafHostDelReq) (model.Hosts, error) {
+func (receiver *WafHostService) DelHostApi(ctx context.Context, req request.WafHostDelReq) (model.Hosts, error) {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var webhost model.Hosts
-	err := global.GWAF_LOCAL_DB.Where("CODE = ?", req.CODE).First(&webhost).Error
+	err := db.Where("CODE = ?", req.CODE).First(&webhost).Error
 	if webhost.GLOBAL_HOST == 1 {
 		return model.Hosts{}, errors.New("全局网站不允许单独删除")
 	}
@@ -367,31 +374,31 @@ func (receiver *WafHostService) DelHostApi(req request.WafHostDelReq) (model.Hos
 	// 认证中心站点删不得。统一访问认证只有「先跳到认证中心登录」这一条路，
 	// 中心站点没了就等于所有站点同时失去登录入口 —— 要么全站锁死，要么访问控制静默失效，
 	// 两种都不该由一次删站点静悄悄地造成。让用户先去改认证配置，把意图说清楚。
-	if used, centerHost := WafAccessConfigServiceApp.IsHostUsedAsCenter(webhost); used {
+	if used, centerHost := WafAccessConfigServiceApp.IsHostUsedAsCenter(ctx, webhost); used {
 		return model.Hosts{}, errors.New("该站点正被统一访问认证用作认证中心（" + centerHost +
 			"），删除后所有站点都将失去登录入口。请先到【统一访问认证-认证配置】改用其它域名")
 	}
-	err = global.GWAF_LOCAL_DB.Where("CODE = ?", req.CODE).Delete(model.Hosts{}).Error
+	err = db.Where("CODE = ?", req.CODE).Delete(model.Hosts{}).Error
 	//删除规则
-	err = global.GWAF_LOCAL_DB.Where("Host_Code = ?", req.CODE).Delete(model.Rules{}).Error
+	err = db.Where("Host_Code = ?", req.CODE).Delete(model.Rules{}).Error
 	//删除Anticc
-	err = global.GWAF_LOCAL_DB.Where("Host_Code = ?", req.CODE).Delete(model.AntiCC{}).Error
+	err = db.Where("Host_Code = ?", req.CODE).Delete(model.AntiCC{}).Error
 	//删除CC多规则
-	err = global.GWAF_LOCAL_DB.Where("host_code = ?", req.CODE).Delete(model.AntiCCRule{}).Error
+	err = db.Where("host_code = ?", req.CODE).Delete(model.AntiCCRule{}).Error
 	//删除禁用ip
-	err = global.GWAF_LOCAL_DB.Where("Host_Code = ?", req.CODE).Delete(model.IPBlockList{}).Error
+	err = db.Where("Host_Code = ?", req.CODE).Delete(model.IPBlockList{}).Error
 	//删除禁用url
-	err = global.GWAF_LOCAL_DB.Where("Host_Code = ?", req.CODE).Delete(model.URLBlockList{}).Error
+	err = db.Where("Host_Code = ?", req.CODE).Delete(model.URLBlockList{}).Error
 	//删除隐私保护url
-	err = global.GWAF_LOCAL_DB.Where("Host_Code = ?", req.CODE).Delete(model.LDPUrl{}).Error
+	err = db.Where("Host_Code = ?", req.CODE).Delete(model.LDPUrl{}).Error
 	//删除白名单ip
-	err = global.GWAF_LOCAL_DB.Where("Host_Code = ?", req.CODE).Delete(model.IPAllowList{}).Error
+	err = db.Where("Host_Code = ?", req.CODE).Delete(model.IPAllowList{}).Error
 	//删除白名单URL
-	err = global.GWAF_LOCAL_DB.Where("Host_Code = ?", req.CODE).Delete(model.URLAllowList{}).Error
+	err = db.Where("Host_Code = ?", req.CODE).Delete(model.URLAllowList{}).Error
 	//删除用户名和密码访问
-	err = global.GWAF_LOCAL_DB.Where("Host_Code = ?", req.CODE).Delete(model.HttpAuthBase{}).Error
+	err = db.Where("Host_Code = ?", req.CODE).Delete(model.HttpAuthBase{}).Error
 	//站点没了，它的在线会话也一起作废：站点若被同名重建，旧 Cookie 不该还能用
-	WafHttpAuthSessionServiceApp.RevokeByHostCode(req.CODE, model.HttpAuthRevokeByHost)
+	WafHttpAuthSessionServiceApp.RevokeByHostCode(ctx, req.CODE, model.HttpAuthRevokeByHost)
 
 	// 统一访问认证的残留清理。这三件事必须一起做，否则站点删了配置还在到处生效：
 	//   ① 该站点上已签发的子令牌作废（站点若被同名重建，旧 Cookie 不该还能用）
@@ -400,52 +407,54 @@ func (receiver *WafHostService) DelHostApi(req request.WafHostDelReq) (model.Hos
 	//   ③ 重新发布运行时配置（认证中心站点删不掉，这里只是兜底对齐）
 	WafAccessSessionServiceApp.RevokeByHostCode(req.CODE)
 	WafAccessAccountServiceApp.RemoveHostCode(req.CODE)
-	WafAccessConfigServiceApp.SyncAfterHostChanged()
+	WafAccessConfigServiceApp.SyncAfterHostChanged(ctx)
 
 	return webhost, err
 }
-func (receiver *WafHostService) ModifyGuardStatusApi(req request.WafHostGuardStatusReq) error {
+func (receiver *WafHostService) ModifyGuardStatusApi(ctx context.Context, req request.WafHostGuardStatusReq) error {
 	hostMap := map[string]interface{}{
 		"GUARD_STATUS": req.GUARD_STATUS,
 		"UPDATE_TIME":  customtype.JsonTime(time.Now()),
 	}
 
-	err := global.GWAF_LOCAL_DB.Model(model.Hosts{}).Where("CODE=?", req.CODE).Updates(hostMap).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(model.Hosts{}).Where("CODE=?", req.CODE).Updates(hostMap).Error
 	return err
 }
-func (receiver *WafHostService) ModifyStartStatusApi(req request.WafHostStartStatusReq) error {
+func (receiver *WafHostService) ModifyStartStatusApi(ctx context.Context, req request.WafHostStartStatusReq) error {
 	hostMap := map[string]interface{}{
 		"START_STATUS": req.START_STATUS,
 		"UPDATE_TIME":  customtype.JsonTime(time.Now()),
 	}
 
-	err := global.GWAF_LOCAL_DB.Model(model.Hosts{}).Where("CODE=?", req.CODE).Updates(hostMap).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Model(model.Hosts{}).Where("CODE=?", req.CODE).Updates(hostMap).Error
 	return err
 }
-func (receiver *WafHostService) GetAllHostApi() []model.Hosts {
+func (receiver *WafHostService) GetAllHostApi(ctx context.Context) []model.Hosts {
 	var webHosts []model.Hosts
-	global.GWAF_LOCAL_DB.Order("global_host desc").Find(&webHosts)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Order("global_host desc").Find(&webHosts)
 	return webHosts
 }
 
 // GetAllRunningHostApi 获取所有正在启动的主机
-func (receiver *WafHostService) GetAllRunningHostApi() []model.Hosts {
+func (receiver *WafHostService) GetAllRunningHostApi(ctx context.Context) []model.Hosts {
 	var webHosts []model.Hosts
-	global.GWAF_LOCAL_DB.Where("global_host <>?", 1).Where("start_status = ?", 0).Find(&webHosts)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("global_host <>?", 1).Where("start_status = ?", 0).Find(&webHosts)
 	return webHosts
 }
 
-func (receiver *WafHostService) CheckPortExistApi(port int) int64 {
+func (receiver *WafHostService) CheckPortExistApi(ctx context.Context, port int) int64 {
 	var total int64 = 0
-	global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Where("port=?", port).Count(&total)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Hosts{}).Where("port=?", port).Count(&total)
 	return total
 }
 
-func (receiver *WafHostService) CheckAvailablePortExistApi(port int) int64 {
+func (receiver *WafHostService) CheckAvailablePortExistApi(ctx context.Context, port int) int64 {
 	// 端口引用统一按监听表判定（含显式 port_listens_json、副端口与 AutoJumpHTTPS 隐式 80）：
 	// 漏算会导致 RemovePortServer 误关仍在使用的监听
 	var hosts []model.Hosts
-	global.GWAF_LOCAL_DB.Model(&model.Hosts{}).
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Hosts{}).
 		Where("start_status = 0 and global_host = 0").Find(&hosts)
 	for _, h := range hosts {
 		for _, p := range utils.HostListenPorts(h) {
@@ -469,13 +478,13 @@ type ListenConflict struct {
 
 // CheckPortListensConflict 校验监听表与其它启用站点是否存在「同端口不同协议」冲突。
 // excludeCode 排除自身（编辑场景）；对端同样走 ResolveHostListens（含空表派生）。
-func (receiver *WafHostService) CheckPortListensConflict(excludeCode string, listens []utils.HostListen) []ListenConflict {
+func (receiver *WafHostService) CheckPortListensConflict(ctx context.Context, excludeCode string, listens []utils.HostListen) []ListenConflict {
 	var conflicts []ListenConflict
 	if len(listens) == 0 {
 		return conflicts
 	}
 	var hosts []model.Hosts
-	global.GWAF_LOCAL_DB.Model(&model.Hosts{}).
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Hosts{}).
 		Where("start_status = 0 and global_host = 0 and code != ?", excludeCode).Find(&hosts)
 	for _, other := range hosts {
 		for _, ol := range utils.ResolveHostListens(other) {
@@ -593,9 +602,9 @@ type PortOverviewRow struct {
 }
 
 // GetPortOverviewApi 端口占用总览：端口 → 协议 → 占用站点（仅启用的非全局站点），按端口升序
-func (receiver *WafHostService) GetPortOverviewApi() []PortOverviewRow {
+func (receiver *WafHostService) GetPortOverviewApi(ctx context.Context) []PortOverviewRow {
 	var hosts []model.Hosts
-	global.GWAF_LOCAL_DB.Model(&model.Hosts{}).
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Hosts{}).
 		Where("start_status = 0 and global_host = 0").Order("create_time asc").Find(&hosts)
 	rowMap := map[int]*PortOverviewRow{}
 	var portsOrder []int
@@ -625,10 +634,10 @@ func (receiver *WafHostService) GetPortOverviewApi() []PortOverviewRow {
 }
 
 // HostPortConflictCodes 返回当前处于端口协议冲突中的启用站点 code 集合（列表红标用）
-func (receiver *WafHostService) HostPortConflictCodes() map[string]bool {
+func (receiver *WafHostService) HostPortConflictCodes(ctx context.Context) map[string]bool {
 	res := map[string]bool{}
 	var hosts []model.Hosts
-	global.GWAF_LOCAL_DB.Model(&model.Hosts{}).
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Hosts{}).
 		Where("start_status = 0 and global_host = 0").Find(&hosts)
 	type occ struct {
 		proto string
@@ -658,9 +667,9 @@ func (receiver *WafHostService) HostPortConflictCodes() map[string]bool {
 	return res
 }
 
-func (receiver *WafHostService) IsEmptyHost() bool {
+func (receiver *WafHostService) IsEmptyHost(ctx context.Context) bool {
 	var total int64 = 0
-	err := global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Where("global_host=?", 0).Count(&total).Error
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Hosts{}).Where("global_host=?", 0).Count(&total).Error
 	if err == nil {
 		if total == 0 {
 			return true
@@ -673,32 +682,34 @@ func (receiver *WafHostService) IsEmptyHost() bool {
 }
 
 // GetHostBySSLConfigId 通过SSL绑定ID获取主机信息
-func (receiver *WafHostService) GetHostBySSLConfigId(sslId string) []model.Hosts {
+func (receiver *WafHostService) GetHostBySSLConfigId(ctx context.Context, sslId string) []model.Hosts {
 	var webHosts []model.Hosts
-	global.GWAF_LOCAL_DB.Where("bind_ssl_id=?", sslId).Find(&webHosts)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("bind_ssl_id=?", sslId).Find(&webHosts)
 	return webHosts
 }
 
 // UpdateSSLInfo 更新ssl证书信息
-func (receiver *WafHostService) UpdateSSLInfo(certContent string, keyContent string, hostCode string) error {
+func (receiver *WafHostService) UpdateSSLInfo(ctx context.Context, certContent string, keyContent string, hostCode string) error {
 	hostMap := map[string]interface{}{
 		"Certfile":    certContent,
 		"Keyfile":     keyContent,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Debug().Model(model.Hosts{}).Where("CODE=?", hostCode).Updates(hostMap).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Debug().Model(model.Hosts{}).Where("CODE=?", hostCode).Updates(hostMap).Error
 	return err
 }
 
 // UpdateSSLInfoAndBindId 更新ssl证书信息 有绑定ID 说明是新来的
-func (receiver *WafHostService) UpdateSSLInfoAndBindId(certContent string, keyContent string, hostCode string, bindId string) error {
+func (receiver *WafHostService) UpdateSSLInfoAndBindId(ctx context.Context, certContent string, keyContent string, hostCode string, bindId string) error {
 	hostMap := map[string]interface{}{
 		"BindSslId":   bindId,
 		"Certfile":    certContent,
 		"Keyfile":     keyContent,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Debug().Model(model.Hosts{}).Where("CODE=?", hostCode).Updates(hostMap).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Debug().Model(model.Hosts{}).Where("CODE=?", hostCode).Updates(hostMap).Error
 	return err
 }
 
@@ -718,17 +729,18 @@ func (receiver *WafHostService) isValidSortField(field string) bool {
 }
 
 // 查询所有SSL证书的
-func (receiver *WafHostService) GetAllSSLHost() ([]model.Hosts, int64, error) {
+func (receiver *WafHostService) GetAllSSLHost(ctx context.Context) ([]model.Hosts, int64, error) {
 	var list []model.Hosts
 	var total int64 = 0
 
 	/**排序*/
 	orderInfo := "create_time desc"
 
-	if err := global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Where(dialect.Q("ssl")+" = ? ", 1).Order(orderInfo).Find(&list).Error; err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := db.Model(&model.Hosts{}).Where(dialect.Q("ssl")+" = ? ", 1).Order(orderInfo).Find(&list).Error; err != nil {
 		return nil, 0, err
 	}
-	if err := global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Where(dialect.Q("ssl")+" = ? ", 1).Count(&total).Error; err != nil {
+	if err := db.Model(&model.Hosts{}).Where(dialect.Q("ssl")+" = ? ", 1).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -736,17 +748,18 @@ func (receiver *WafHostService) GetAllSSLHost() ([]model.Hosts, int64, error) {
 }
 
 // 查询所有SSL证书的(只看绑定过的主机信息)
-func (receiver *WafHostService) GetAllSSLBindHost() ([]model.Hosts, int64, error) {
+func (receiver *WafHostService) GetAllSSLBindHost(ctx context.Context) ([]model.Hosts, int64, error) {
 	var list []model.Hosts
 	var total int64 = 0
 
 	/**排序*/
 	orderInfo := "create_time desc"
 
-	if err := global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Where(dialect.Q("ssl")+" = ? and bind_ssl_id <> ?", 1, "").Order(orderInfo).Find(&list).Error; err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := db.Model(&model.Hosts{}).Where(dialect.Q("ssl")+" = ? and bind_ssl_id <> ?", 1, "").Order(orderInfo).Find(&list).Error; err != nil {
 		return nil, 0, err
 	}
-	if err := global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Where(dialect.Q("ssl")+" = ? and bind_ssl_id <> ?", 1, "").Count(&total).Error; err != nil {
+	if err := db.Model(&model.Hosts{}).Where(dialect.Q("ssl")+" = ? and bind_ssl_id <> ?", 1, "").Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -754,33 +767,34 @@ func (receiver *WafHostService) GetAllSSLBindHost() ([]model.Hosts, int64, error
 }
 
 // ModifyAllGuardStatusApi 新增批量修改防御状态的方法
-func (receiver *WafHostService) ModifyAllGuardStatusApi(req request.WafHostBatchGuardStatusReq) error {
+func (receiver *WafHostService) ModifyAllGuardStatusApi(ctx context.Context, req request.WafHostBatchGuardStatusReq) error {
 	hostMap := map[string]interface{}{
 		"GUARD_STATUS": req.GUARD_STATUS,
 		"UPDATE_TIME":  customtype.JsonTime(time.Now()),
 	}
 
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	// 更新所有非全局主机的防御状态，且只更新与目标状态不同的主机
-	err := global.GWAF_LOCAL_DB.Model(model.Hosts{}).Where("GLOBAL_HOST <> ? AND GUARD_STATUS <> ?", 1, req.GUARD_STATUS).Updates(hostMap).Error
+	err := db.Model(model.Hosts{}).Where("GLOBAL_HOST <> ? AND GUARD_STATUS <> ?", 1, req.GUARD_STATUS).Updates(hostMap).Error
 	return err
 }
 
 // CopyConfigApi 复制配置
-func (receiver *WafHostService) CopyConfigApi(req request.WafHostBatchCopyConfigReq) error {
+func (receiver *WafHostService) CopyConfigApi(ctx context.Context, req request.WafHostBatchCopyConfigReq) error {
 	// 获取源主机信息
-	sourceHost := receiver.GetDetailByCodeApi(req.SourceHostCode)
+	sourceHost := receiver.GetDetailByCodeApi(ctx, req.SourceHostCode)
 	if sourceHost.Code == "" {
 		return errors.New("源主机不存在")
 	}
 
 	// 获取目标主机信息
-	targetHost := receiver.GetDetailByCodeApi(req.TargetHostCode)
+	targetHost := receiver.GetDetailByCodeApi(ctx, req.TargetHostCode)
 	if targetHost.Code == "" {
 		return errors.New("目标主机不存在")
 	}
 
 	// 开始事务
-	tx := global.GWAF_LOCAL_DB.Begin()
+	tx := global.GWAF_LOCAL_DB.WithContext(ctx).Begin()
 	defer func() {
 		if r := recover(); r != nil {
 			tx.Rollback()
@@ -926,8 +940,8 @@ func (receiver *WafHostService) copyCacheRules(tx *gorm.DB, sourceHostCode, targ
 }
 
 // GetHostsByGuardStatus 获取指定防御状态的主机
-func (receiver *WafHostService) GetHostsByGuardStatus(guardStatus int) []model.Hosts {
+func (receiver *WafHostService) GetHostsByGuardStatus(ctx context.Context, guardStatus int) []model.Hosts {
 	var webHosts []model.Hosts
-	global.GWAF_LOCAL_DB.Where("global_host <> ? AND guard_status = ? ", 1, guardStatus).Find(&webHosts)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("global_host <> ? AND guard_status = ? ", 1, guardStatus).Find(&webHosts)
 	return webHosts
 }

@@ -1,8 +1,10 @@
 package waftask
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/service/waf_service"
+	"context"
 )
 
 var (
@@ -19,5 +21,5 @@ func TaskThreatIPSync() {
 	// 落地可能被中断(Windows 一次重建是几十次独立 netsh)、被用户手工清理、被组策略刷掉，
 	// 这些都不会改变内容 sha，只能靠对账发现并用库里的快照覆盖式修复。
 	wafThreatIPService.ReconcileLanding()
-	waf_service.WafCDNIPServiceApp.SyncAllDue()
+	waf_service.WafCDNIPServiceApp.SyncAllDue(wafctx.PlatformScope(context.Background()))
 }

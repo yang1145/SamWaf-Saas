@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -32,7 +33,7 @@ type HostGroupOptions struct {
 	AllCount  int               `json:"all_count"`  //全部网站数（不含全局网站）
 }
 
-func (receiver *WafHostGroupService) AddApi(req request.WafHostGroupAddReq) (model.HostGroup, error) {
+func (receiver *WafHostGroupService) AddApi(ctx context.Context, req request.WafHostGroupAddReq) (model.HostGroup, error) {
 	name, err := normalizeGroupName(req.GroupName)
 	if err != nil {
 		return model.HostGroup{}, err
@@ -45,7 +46,7 @@ func (receiver *WafHostGroupService) AddApi(req request.WafHostGroupAddReq) (mod
 	if err != nil {
 		return model.HostGroup{}, err
 	}
-	if err = receiver.checkNameFree(name, ""); err != nil {
+	if err = receiver.checkNameFree(ctx, name, ""); err != nil {
 		return model.HostGroup{}, err
 	}
 
@@ -61,10 +62,10 @@ func (receiver *WafHostGroupService) AddApi(req request.WafHostGroupAddReq) (mod
 		// 分组短码固定由后端生成：它只是网站引用本组的内部键，用户无需关心
 		GroupCode: uuid.GenUUID(),
 		Color:     color,
-		SortNo:    receiver.nextSortNo(),
+		SortNo:    receiver.nextSortNo(ctx),
 		Remarks:   remarks,
 	}
-	if err = global.GWAF_LOCAL_DB.Create(bean).Error; err != nil {
+	if err = global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean).Error; err != nil {
 		return model.HostGroup{}, err
 	}
 	return *bean, nil
@@ -72,9 +73,10 @@ func (receiver *WafHostGroupService) AddApi(req request.WafHostGroupAddReq) (mod
 
 // ModifyApi 只允许改名称、颜色与备注。分组短码创建后不可变——网站在引用它，
 // 改码等于让组内所有网站悄悄变成「未知分组」。
-func (receiver *WafHostGroupService) ModifyApi(req request.WafHostGroupEditReq) (model.HostGroup, error) {
+func (receiver *WafHostGroupService) ModifyApi(ctx context.Context, req request.WafHostGroupEditReq) (model.HostGroup, error) {
 	var bean model.HostGroup
-	if err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error; err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := db.Where("id = ?", req.Id).First(&bean).Error; err != nil {
 		return model.HostGroup{}, errors.New("分组不存在")
 	}
 	name, err := normalizeGroupName(req.GroupName)
@@ -89,7 +91,7 @@ func (receiver *WafHostGroupService) ModifyApi(req request.WafHostGroupEditReq) 
 	if err != nil {
 		return model.HostGroup{}, err
 	}
-	if err = receiver.checkNameFree(name, bean.Id); err != nil {
+	if err = receiver.checkNameFree(ctx, name, bean.Id); err != nil {
 		return model.HostGroup{}, err
 	}
 
@@ -99,7 +101,7 @@ func (receiver *WafHostGroupService) ModifyApi(req request.WafHostGroupEditReq) 
 		"remarks":     remarks,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	if err = global.GWAF_LOCAL_DB.Model(model.HostGroup{}).Where("id = ?", req.Id).Updates(updateMap).Error; err != nil {
+	if err = db.Model(model.HostGroup{}).Where("id = ?", req.Id).Updates(updateMap).Error; err != nil {
 		return model.HostGroup{}, err
 	}
 	bean.GroupName, bean.Color, bean.Remarks = name, color, remarks
@@ -111,13 +113,14 @@ func (receiver *WafHostGroupService) ModifyApi(req request.WafHostGroupEditReq) 
 // 组内网站不跟着删：先在同一事务里把它们的 group_code 清空（回落「未分组」），
 // 再删组记录。两步必须同事务——中途失败会留下一批指向已删分组的网站。
 // 返回被移出的网站数量，供前端提示。
-func (receiver *WafHostGroupService) DelApi(req request.WafHostGroupDelReq) (int64, error) {
+func (receiver *WafHostGroupService) DelApi(ctx context.Context, req request.WafHostGroupDelReq) (int64, error) {
 	var bean model.HostGroup
-	if err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error; err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := db.Where("id = ?", req.Id).First(&bean).Error; err != nil {
 		return 0, errors.New("分组不存在")
 	}
 	var affected int64
-	err := global.GWAF_LOCAL_DB.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		ret := tx.Model(&model.Hosts{}).Where("group_code = ?", bean.GroupCode).
 			Updates(map[string]interface{}{"group_code": "", "UPDATE_TIME": customtype.JsonTime(time.Now())})
 		if ret.Error != nil {
@@ -132,24 +135,24 @@ func (receiver *WafHostGroupService) DelApi(req request.WafHostGroupDelReq) (int
 	return affected, nil
 }
 
-func (receiver *WafHostGroupService) GetDetailApi(req request.WafHostGroupDetailReq) model.HostGroup {
+func (receiver *WafHostGroupService) GetDetailApi(ctx context.Context, req request.WafHostGroupDetailReq) model.HostGroup {
 	var bean model.HostGroup
-	global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", req.Id).Find(&bean)
 	if bean.GroupCode != "" {
 		list := []model.HostGroup{bean}
-		receiver.fillHostCounts(list)
+		receiver.fillHostCounts(ctx, list)
 		bean = list[0]
 	}
 	return bean
 }
 
-func (receiver *WafHostGroupService) GetDetailByCodeApi(groupCode string) model.HostGroup {
+func (receiver *WafHostGroupService) GetDetailByCodeApi(ctx context.Context, groupCode string) model.HostGroup {
 	var bean model.HostGroup
-	global.GWAF_LOCAL_DB.Where("group_code = ?", groupCode).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("group_code = ?", groupCode).Find(&bean)
 	return bean
 }
 
-func (receiver *WafHostGroupService) GetListApi(req request.WafHostGroupSearchReq) ([]model.HostGroup, int64, error) {
+func (receiver *WafHostGroupService) GetListApi(ctx context.Context, req request.WafHostGroupSearchReq) ([]model.HostGroup, int64, error) {
 	var list []model.HostGroup
 	var total int64 = 0
 
@@ -160,37 +163,39 @@ func (receiver *WafHostGroupService) GetListApi(req request.WafHostGroupSearchRe
 		whereValues = append(whereValues, "%"+req.GroupName+"%")
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.HostGroup{}).Where(whereField, whereValues...).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.HostGroup{}).Where(whereField, whereValues...).
 		Order("sort_no asc, CREATE_TIME asc").
 		Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.HostGroup{}).Where(whereField, whereValues...).Count(&total)
+	db.Model(&model.HostGroup{}).Where(whereField, whereValues...).Count(&total)
 
-	receiver.fillHostCounts(list)
+	receiver.fillHostCounts(ctx, list)
 	return list, total, nil
 }
 
 // GetOptionsApi 返回全部分组（不分页）+ 未分组/全部的计数，供网站列表左栏与表单下拉使用
-func (receiver *WafHostGroupService) GetOptionsApi() HostGroupOptions {
+func (receiver *WafHostGroupService) GetOptionsApi(ctx context.Context) HostGroupOptions {
 	list := make([]model.HostGroup, 0)
-	global.GWAF_LOCAL_DB.Where("user_code = ? AND tenant_id = ?", global.GWAF_USER_CODE, global.GWAF_TENANT_ID).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("user_code = ? AND tenant_id = ?", global.GWAF_USER_CODE, global.GWAF_TENANT_ID).
 		Order("sort_no asc, CREATE_TIME asc").Find(&list)
-	receiver.fillHostCounts(list)
+	receiver.fillHostCounts(ctx, list)
 
 	var noneCount, allCount int64
 	// 全局网站不参与分组（它不是真实站点，只承载全局规则），计数里一并排除
-	global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Where("global_host <> 1").Count(&allCount)
-	global.GWAF_LOCAL_DB.Model(&model.Hosts{}).Where("global_host <> 1").
+	db.Model(&model.Hosts{}).Where("global_host <> 1").Count(&allCount)
+	db.Model(&model.Hosts{}).Where("global_host <> 1").
 		Where("group_code = '' or group_code is null").Count(&noneCount)
 
 	return HostGroupOptions{List: list, NoneCount: int(noneCount), AllCount: int(allCount)}
 }
 
 // SortApi 按 ids 数组下标批量写 sort_no，一次事务提交
-func (receiver *WafHostGroupService) SortApi(req request.WafHostGroupSortReq) error {
+func (receiver *WafHostGroupService) SortApi(ctx context.Context, req request.WafHostGroupSortReq) error {
 	if len(req.Ids) == 0 {
 		return errors.New("排序内容不能为空")
 	}
-	return global.GWAF_LOCAL_DB.Transaction(func(tx *gorm.DB) error {
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for i, id := range req.Ids {
 			if err := tx.Model(model.HostGroup{}).Where("id = ?", id).
 				Updates(map[string]interface{}{"sort_no": i, "UPDATE_TIME": customtype.JsonTime(time.Now())}).Error; err != nil {
@@ -203,7 +208,7 @@ func (receiver *WafHostGroupService) SortApi(req request.WafHostGroupSortReq) er
 
 // AssignApi 批量把网站指派到某个分组，GroupCode 为空表示移出分组。
 // 返回实际生效的网站数。
-func (receiver *WafHostGroupService) AssignApi(req request.WafHostGroupAssignReq) (int64, error) {
+func (receiver *WafHostGroupService) AssignApi(ctx context.Context, req request.WafHostGroupAssignReq) (int64, error) {
 	codes := make([]string, 0, len(req.HostCodes))
 	seen := make(map[string]struct{}, len(req.HostCodes))
 	for _, c := range req.HostCodes {
@@ -225,9 +230,10 @@ func (receiver *WafHostGroupService) AssignApi(req request.WafHostGroupAssignReq
 	}
 
 	groupCode := strings.TrimSpace(req.GroupCode)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	if groupCode != "" {
 		var cnt int64
-		global.GWAF_LOCAL_DB.Model(&model.HostGroup{}).Where("group_code = ?", groupCode).Count(&cnt)
+		db.Model(&model.HostGroup{}).Where("group_code = ?", groupCode).Count(&cnt)
 		if cnt == 0 {
 			// 典型场景：前端页面停留期间别处把这个组删了
 			return 0, errors.New("分组不存在")
@@ -236,7 +242,7 @@ func (receiver *WafHostGroupService) AssignApi(req request.WafHostGroupAssignReq
 
 	// 全局网站不参与分组：即使前端全选把它带上来，也在这里剔除，
 	// 否则「该组 3 个站点」这句话会变成假的。剔除放在后端做，不依赖前端自觉。
-	ret := global.GWAF_LOCAL_DB.Model(&model.Hosts{}).
+	ret := db.Model(&model.Hosts{}).
 		Where("code in ?", codes).Where("global_host <> 1").
 		Updates(map[string]interface{}{"group_code": groupCode, "UPDATE_TIME": customtype.JsonTime(time.Now())})
 	if ret.Error != nil {
@@ -246,7 +252,7 @@ func (receiver *WafHostGroupService) AssignApi(req request.WafHostGroupAssignReq
 }
 
 // fillHostCounts 一次聚合查询填充所有分组的网站数，避免逐组查询的 N+1
-func (receiver *WafHostGroupService) fillHostCounts(list []model.HostGroup) {
+func (receiver *WafHostGroupService) fillHostCounts(ctx context.Context, list []model.HostGroup) {
 	if len(list) == 0 {
 		return
 	}
@@ -259,7 +265,7 @@ func (receiver *WafHostGroupService) fillHostCounts(list []model.HostGroup) {
 		Cnt       int
 	}
 	var rows []countRow
-	global.GWAF_LOCAL_DB.Model(&model.Hosts{}).
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Hosts{}).
 		Select("group_code, count(*) as cnt").
 		Where("group_code IN ?", codes).Where("global_host <> 1").
 		Group("group_code").Scan(&rows)
@@ -273,9 +279,9 @@ func (receiver *WafHostGroupService) fillHostCounts(list []model.HostGroup) {
 }
 
 // checkNameFree 分组名在租户内唯一。excludeId 非空时排除自身（编辑场景）。
-func (receiver *WafHostGroupService) checkNameFree(name, excludeId string) error {
+func (receiver *WafHostGroupService) checkNameFree(ctx context.Context, name, excludeId string) error {
 	var cnt int64
-	q := global.GWAF_LOCAL_DB.Model(&model.HostGroup{}).
+	q := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HostGroup{}).
 		Where("group_name = ? AND user_code = ? AND tenant_id = ?", name, global.GWAF_USER_CODE, global.GWAF_TENANT_ID)
 	if excludeId != "" {
 		q = q.Where("id <> ?", excludeId)
@@ -290,9 +296,9 @@ func (receiver *WafHostGroupService) checkNameFree(name, excludeId string) error
 }
 
 // nextSortNo 新组排在最后
-func (receiver *WafHostGroupService) nextSortNo() int {
+func (receiver *WafHostGroupService) nextSortNo(ctx context.Context) int {
 	var maxNo *int
-	global.GWAF_LOCAL_DB.Model(&model.HostGroup{}).
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HostGroup{}).
 		Where("user_code = ? AND tenant_id = ?", global.GWAF_USER_CODE, global.GWAF_TENANT_ID).
 		Select("max(sort_no)").Scan(&maxNo)
 	if maxNo == nil {

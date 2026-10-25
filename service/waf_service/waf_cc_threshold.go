@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -63,10 +64,10 @@ type ccThPlan struct {
 //   - 客户端 IP 取哪一列跟站点的 IPMode 走（代理→src_ip，网卡→net_src_ip）
 //   - 「排除静态资源」用规则自己那份后缀清单，且要处理日志里 url 带查询串的情况
 //   - 分桶用固定窗口（运行时是 10 桶近似滑动窗口，固定桶会略低估峰值，属已知偏差）
-func (receiver *WafCCThresholdService) RecommendApi(req request.WafCCThresholdRecommendReq) response2.CCThresholdRep {
+func (receiver *WafCCThresholdService) RecommendApi(ctx context.Context, req request.WafCCThresholdRecommendReq) response2.CCThresholdRep {
 	rep := response2.CCThresholdRep{Top: []response2.CCThresholdTopRep{}}
 
-	host := WafHostServiceApp.GetDetailByCodeApi(req.HostCode)
+	host := WafHostServiceApp.GetDetailByCodeApi(ctx, req.HostCode)
 	if host.Code == "" {
 		rep.Reason = "网站不存在"
 		return rep
@@ -116,7 +117,8 @@ func (receiver *WafCCThresholdService) RecommendApi(req request.WafCCThresholdRe
 		return rep
 	}
 
-	plan, err := ccThBuildPlan(req, host, window)
+	tenantID, userCode := rawSQLTenantScope(ctx)
+	plan, err := ccThBuildPlan(req, host, window, tenantID, userCode)
 	if err != nil {
 		rep.Reason = err.Error()
 		return rep
@@ -201,7 +203,7 @@ func (receiver *WafCCThresholdService) RecommendApi(req request.WafCCThresholdRe
 }
 
 // ccThBuildPlan 把规则口径翻成 SQL 片段。所有取值一律走占位符，列名走白名单。
-func ccThBuildPlan(req request.WafCCThresholdRecommendReq, host model.Hosts, window int) (*ccThPlan, error) {
+func ccThBuildPlan(req request.WafCCThresholdRecommendReq, host model.Hosts, window int, tenantID string, userCode string) (*ccThPlan, error) {
 	plan := &ccThPlan{bucketMs: int64(window) * 1000}
 
 	// 客户端 IP 列跟站点的 IPMode 走，与运行时同一口径
@@ -218,8 +220,8 @@ func ccThBuildPlan(req request.WafCCThresholdRecommendReq, host model.Hosts, win
 		plan.dimCols = []string{ipCol}
 	}
 
-	conds := []string{"host_code = ?"}
-	args := []interface{}{req.HostCode}
+	conds := []string{"tenant_id = ?", "user_code = ?", "host_code = ?"}
+	args := []interface{}{tenantID, userCode, req.HostCode}
 
 	// 统计口径：排除静态资源。日志的 url 列存的是 RequestURI（可能带查询串），
 	// 所以每个后缀要比两次：结尾命中、以及后面跟着 ? 的情况。

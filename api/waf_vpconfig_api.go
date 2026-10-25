@@ -215,7 +215,7 @@ func (w *WafVpConfigApi) GetCDNProviderRangesApi(c *gin.Context) {
 		response.FailWithMessage("缺少 provider 参数", c)
 		return
 	}
-	ips, err := waf_service.WafCDNIPServiceApp.GetProviderCIDRs(provider)
+	ips, err := waf_service.WafCDNIPServiceApp.GetProviderCIDRs(c.Request.Context(), provider)
 	if err != nil {
 		response.FailWithMessage("获取CDN回源段失败: "+err.Error(), c)
 		return
@@ -766,7 +766,7 @@ func (w *WafVpConfigApi) GetSslBindCertApi(c *gin.Context) {
 		SslConfigId: global.GWAF_SSL_BIND_CERT_ID,
 	}
 	if global.GWAF_SSL_BIND_CERT_ID != "" {
-		bean := wafSslConfigService.GetDetailInner(global.GWAF_SSL_BIND_CERT_ID)
+		bean := wafSslConfigService.GetDetailInner(c.Request.Context(), global.GWAF_SSL_BIND_CERT_ID)
 		if bean.Id != "" {
 			resp.Domains = bean.Domains
 			resp.ValidTo = time.Time(bean.ValidTo).Format("2006-01-02 15:04:05")
@@ -803,7 +803,7 @@ func (w *WafVpConfigApi) UpdateSslBindCertApi(c *gin.Context) {
 	}
 
 	// 绑定：校验证书夹内容可用
-	bean := wafSslConfigService.GetDetailInner(req.SslConfigId)
+	bean := wafSslConfigService.GetDetailInner(c.Request.Context(), req.SslConfigId)
 	if bean.Id == "" {
 		response.FailWithMessage("指定的证书夹不存在", c)
 		return

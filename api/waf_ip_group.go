@@ -27,14 +27,14 @@ func (w *WafIPGroupApi) AddApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	bean, err := wafIPGroupService.AddApi(req)
+	bean, err := wafIPGroupService.AddApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
 	// 新组还没有条目，但要先把空匹配集登记进快照，
 	// 否则规则里 RF.IPInGroup 引用它时会走「组不存在」分支，语义上不如「组为空」清晰
-	wafIPGroupService.RebuildGroupMatcher(bean.GroupCode)
+	wafIPGroupService.RebuildGroupMatcher(c.Request.Context(), bean.GroupCode)
 	response.OkWithDetailed(bean, "添加成功", c)
 }
 
@@ -54,7 +54,7 @@ func (w *WafIPGroupApi) GetListApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	list, total, _ := wafIPGroupService.GetListApi(req)
+	list, total, _ := wafIPGroupService.GetListApi(c.Request.Context(), req)
 	response.OkWithDetailed(response.PageResult{
 		List:      list,
 		Total:     total,
@@ -72,7 +72,7 @@ func (w *WafIPGroupApi) GetListApi(c *gin.Context) {
 // @Security     ApiKeyAuth
 // @Router       /wafhost/ipgroup/options [get]
 func (w *WafIPGroupApi) GetOptionsApi(c *gin.Context) {
-	response.OkWithDetailed(wafIPGroupService.GetOptionsApi(), "获取成功", c)
+	response.OkWithDetailed(wafIPGroupService.GetOptionsApi(c.Request.Context()), "获取成功", c)
 }
 
 // GetDetailApi 获取IP组详情
@@ -89,7 +89,7 @@ func (w *WafIPGroupApi) GetDetailApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	response.OkWithDetailed(wafIPGroupService.GetDetailApi(req), "获取成功", c)
+	response.OkWithDetailed(wafIPGroupService.GetDetailApi(c.Request.Context(), req), "获取成功", c)
 }
 
 // ModifyApi 编辑IP组
@@ -108,13 +108,13 @@ func (w *WafIPGroupApi) ModifyApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	bean, err := wafIPGroupService.ModifyApi(req)
+	bean, err := wafIPGroupService.ModifyApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
 	// 改名要刷新快照里的名称索引，否则规则里按新名字引用查不到、按旧名字还能查到
-	wafIPGroupService.RebuildGroupMatcher(bean.GroupCode)
+	wafIPGroupService.RebuildGroupMatcher(c.Request.Context(), bean.GroupCode)
 	response.OkWithMessage("编辑成功", c)
 }
 
@@ -133,7 +133,7 @@ func (w *WafIPGroupApi) GetRefsApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	response.OkWithDetailed(wafIPGroupService.GetRefsApi(req.GroupCode), "获取成功", c)
+	response.OkWithDetailed(wafIPGroupService.GetRefsApi(c.Request.Context(), req.GroupCode), "获取成功", c)
 }
 
 // DelApi 删除IP组
@@ -152,13 +152,13 @@ func (w *WafIPGroupApi) DelApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	affectedHosts, err := wafIPGroupService.DelApi(req)
+	affectedHosts, err := wafIPGroupService.DelApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return
 	}
 	// 引用行已被级联删除，逐站点刷新内存名单去脏
-	notifyIPListHosts(affectedHosts)
+	notifyIPListHosts(c.Request.Context(), affectedHosts)
 	response.OkWithMessage("删除成功", c)
 }
 

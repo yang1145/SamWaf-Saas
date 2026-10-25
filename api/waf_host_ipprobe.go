@@ -41,7 +41,7 @@ func (w *WafHostAPi) IPSourceProbeApi(c *gin.Context) {
 		response.FailWithMessage("参数错误", c)
 		return
 	}
-	host := wafHostService.GetDetailByCodeApi(code)
+	host := wafHostService.GetDetailByCodeApi(c.Request.Context(), code)
 	if host.Code == "" {
 		response.FailWithMessage("网站不存在", c)
 		return

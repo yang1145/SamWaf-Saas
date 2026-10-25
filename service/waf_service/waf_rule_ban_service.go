@@ -8,6 +8,7 @@ import (
 	"SamWaf/model/request"
 	response2 "SamWaf/model/response"
 	"SamWaf/utils"
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -34,7 +35,7 @@ func (s *WafRuleBanService) SetConfigApi(req request.WafRuleBanSetConfigReq) err
 
 func (s *WafRuleBanService) GetBanIpListApi() ([]response2.RuleBanIpResp, error) {
 	return ruleBanIPList(global.GCACHE_WAFCACHE, func(hostCode string) string {
-		return WafHostServiceApp.GetDetailByCodeApi(hostCode).Host
+		return WafHostServiceApp.GetDetailByCodeApi(context.Background(), hostCode).Host
 	})
 }
 

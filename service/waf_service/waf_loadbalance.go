@@ -7,6 +7,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"time"
 )
@@ -15,7 +16,7 @@ type WafLoadBalanceService struct{}
 
 var WafLoadBalanceServiceApp = new(WafLoadBalanceService)
 
-func (receiver *WafLoadBalanceService) AddApi(req request.WafLoadBalanceAddReq) error {
+func (receiver *WafLoadBalanceService) AddApi(ctx context.Context, req request.WafLoadBalanceAddReq) error {
 	var addBean = &model.LoadBalance{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -30,17 +31,18 @@ func (receiver *WafLoadBalanceService) AddApi(req request.WafLoadBalanceAddReq) 
 		Weight:      req.Weight,
 		Remarks:     req.Remarks,
 	}
-	global.GWAF_LOCAL_DB.Create(addBean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Create(addBean)
 	return nil
 }
 
-func (receiver *WafLoadBalanceService) CheckIsExistApi(req request.WafLoadBalanceAddReq) error {
-	return global.GWAF_LOCAL_DB.First(&model.LoadBalance{}, "host_code = ? and remote_ip= ? and remote_port= ?", req.HostCode,
+func (receiver *WafLoadBalanceService) CheckIsExistApi(ctx context.Context, req request.WafLoadBalanceAddReq) error {
+	return global.GWAF_LOCAL_DB.WithContext(ctx).First(&model.LoadBalance{}, "host_code = ? and remote_ip= ? and remote_port= ?", req.HostCode,
 		req.Remote_ip, req.Remote_port).Error
 }
-func (receiver *WafLoadBalanceService) ModifyApi(req request.WafLoadBalanceEditReq) error {
+func (receiver *WafLoadBalanceService) ModifyApi(ctx context.Context, req request.WafLoadBalanceEditReq) error {
 	var editBean model.LoadBalance
-	global.GWAF_LOCAL_DB.Where("host_code = ? and remote_ip= ? and remote_port= ?", req.HostCode,
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("host_code = ? and remote_ip= ? and remote_port= ?", req.HostCode,
 		req.Remote_ip, req.Remote_port).Find(&editBean)
 	if editBean.Id != "" && editBean.Remote_ip != editBean.Remote_ip && editBean.Remote_port != editBean.Remote_port {
 		return errors.New("当前网站和IP已经存在")
@@ -53,21 +55,21 @@ func (receiver *WafLoadBalanceService) ModifyApi(req request.WafLoadBalanceEditR
 		"Remarks":     req.Remarks,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	err := global.GWAF_LOCAL_DB.Model(model.LoadBalance{}).Where("id = ?", req.Id).Updates(editMap).Error
+	err := db.Model(model.LoadBalance{}).Where("id = ?", req.Id).Updates(editMap).Error
 
 	return err
 }
-func (receiver *WafLoadBalanceService) GetDetailApi(req request.WafLoadBalanceDetailReq) model.LoadBalance {
+func (receiver *WafLoadBalanceService) GetDetailApi(ctx context.Context, req request.WafLoadBalanceDetailReq) model.LoadBalance {
 	var bean model.LoadBalance
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
 	return bean
 }
-func (receiver *WafLoadBalanceService) GetDetailByIdApi(id string) model.LoadBalance {
+func (receiver *WafLoadBalanceService) GetDetailByIdApi(ctx context.Context, id string) model.LoadBalance {
 	var bean model.LoadBalance
-	global.GWAF_LOCAL_DB.Where("id=?", id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", id).Find(&bean)
 	return bean
 }
-func (receiver *WafLoadBalanceService) GetListApi(req request.WafLoadBalanceSearchReq) ([]model.LoadBalance, int64, error) {
+func (receiver *WafLoadBalanceService) GetListApi(ctx context.Context, req request.WafLoadBalanceSearchReq) ([]model.LoadBalance, int64, error) {
 	var list []model.LoadBalance
 	var total int64 = 0
 	/*where条件*/
@@ -104,24 +106,26 @@ func (receiver *WafLoadBalanceService) GetListApi(req request.WafLoadBalanceSear
 		whereValues = append(whereValues, req.Remote_port)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.LoadBalance{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.LoadBalance{}).Where(whereField, whereValues...).Count(&total)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.LoadBalance{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	db.Model(&model.LoadBalance{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
-func (receiver *WafLoadBalanceService) DelApi(req request.WafLoadBalanceDelReq) error {
+func (receiver *WafLoadBalanceService) DelApi(ctx context.Context, req request.WafLoadBalanceDelReq) error {
 	var bean model.LoadBalance
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	err := db.Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
-	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.LoadBalance{}).Error
+	err = db.Where("id = ?", req.Id).Delete(model.LoadBalance{}).Error
 	return err
 }
 
 // GetListByHostCodeApi 通过主机码获取负载信息
-func (receiver *WafLoadBalanceService) GetListByHostCodeApi(hostCode string) []model.LoadBalance {
+func (receiver *WafLoadBalanceService) GetListByHostCodeApi(ctx context.Context, hostCode string) []model.LoadBalance {
 	var list []model.LoadBalance
-	global.GWAF_LOCAL_DB.Where("host_code = ?", hostCode).Order("create_time asc").Find(&list)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ?", hostCode).Order("create_time asc").Find(&list)
 	return list
 }

@@ -9,6 +9,7 @@ import (
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
 	"SamWaf/wafenginecore/ipset"
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -34,7 +35,7 @@ type IPGroupRefs struct {
 	Hosts      []IPGroupRefHost `json:"hosts"`
 }
 
-func (receiver *WafIPGroupService) AddApi(req request.WafIPGroupAddReq) (model.IPGroup, error) {
+func (receiver *WafIPGroupService) AddApi(ctx context.Context, req request.WafIPGroupAddReq) (model.IPGroup, error) {
 	name := strings.TrimSpace(req.GroupName)
 	if name == "" {
 		return model.IPGroup{}, errors.New("组名称不能为空")
@@ -42,7 +43,7 @@ func (receiver *WafIPGroupService) AddApi(req request.WafIPGroupAddReq) (model.I
 	// 组短码固定由后端生成：它只是黑白名单与规则引用本组的内部键，
 	// 用户无需关心，也就不存在自定义带来的唯一性冲突。
 	code := uuid.GenUUID()
-	if err := receiver.checkNameCodeFree(name, code, ""); err != nil {
+	if err := receiver.checkNameCodeFree(ctx, name, code, ""); err != nil {
 		return model.IPGroup{}, err
 	}
 	var bean = &model.IPGroup{
@@ -57,7 +58,8 @@ func (receiver *WafIPGroupService) AddApi(req request.WafIPGroupAddReq) (model.I
 		GroupCode: code,
 		Remarks:   req.Remarks,
 	}
-	if err := global.GWAF_LOCAL_DB.Create(bean).Error; err != nil {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	if err := db.Create(bean).Error; err != nil {
 		return model.IPGroup{}, err
 	}
 	return *bean, nil
@@ -65,16 +67,17 @@ func (receiver *WafIPGroupService) AddApi(req request.WafIPGroupAddReq) (model.I
 
 // ModifyApi 只允许改名称与备注。组短码创建后不可变——黑/白名单条目与自定义规则都在引用它，
 // 改码等于让所有引用悄悄失效。
-func (receiver *WafIPGroupService) ModifyApi(req request.WafIPGroupEditReq) (model.IPGroup, error) {
+func (receiver *WafIPGroupService) ModifyApi(ctx context.Context, req request.WafIPGroupEditReq) (model.IPGroup, error) {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var bean model.IPGroup
-	if err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error; err != nil {
+	if err := db.Where("id = ?", req.Id).First(&bean).Error; err != nil {
 		return model.IPGroup{}, errors.New("IP组不存在")
 	}
 	name := strings.TrimSpace(req.GroupName)
 	if name == "" {
 		return model.IPGroup{}, errors.New("组名称不能为空")
 	}
-	if err := receiver.checkNameCodeFree(name, "", bean.Id); err != nil {
+	if err := receiver.checkNameCodeFree(ctx, name, "", bean.Id); err != nil {
 		return model.IPGroup{}, err
 	}
 	updateMap := map[string]interface{}{
@@ -82,7 +85,7 @@ func (receiver *WafIPGroupService) ModifyApi(req request.WafIPGroupEditReq) (mod
 		"remarks":     req.Remarks,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	if err := global.GWAF_LOCAL_DB.Model(model.IPGroup{}).Where("id = ?", req.Id).Updates(updateMap).Error; err != nil {
+	if err := db.Model(model.IPGroup{}).Where("id = ?", req.Id).Updates(updateMap).Error; err != nil {
 		return model.IPGroup{}, err
 	}
 	bean.GroupName = name
@@ -91,10 +94,11 @@ func (receiver *WafIPGroupService) ModifyApi(req request.WafIPGroupEditReq) (mod
 }
 
 // checkNameCodeFree 组名与组短码在租户内唯一。excludeId 非空时排除自身（编辑场景）。
-func (receiver *WafIPGroupService) checkNameCodeFree(name, code, excludeId string) error {
+func (receiver *WafIPGroupService) checkNameCodeFree(ctx context.Context, name, code, excludeId string) error {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	if name != "" {
 		var cnt int64
-		q := global.GWAF_LOCAL_DB.Model(&model.IPGroup{}).
+		q := db.Model(&model.IPGroup{}).
 			Where("group_name = ? AND user_code = ? AND tenant_id = ?", name, global.GWAF_USER_CODE, global.GWAF_TENANT_ID)
 		if excludeId != "" {
 			q = q.Where("id <> ?", excludeId)
@@ -108,7 +112,7 @@ func (receiver *WafIPGroupService) checkNameCodeFree(name, code, excludeId strin
 	}
 	if code != "" {
 		var cnt int64
-		q := global.GWAF_LOCAL_DB.Model(&model.IPGroup{}).
+		q := db.Model(&model.IPGroup{}).
 			Where("group_code = ? AND user_code = ? AND tenant_id = ?", code, global.GWAF_USER_CODE, global.GWAF_TENANT_ID)
 		if excludeId != "" {
 			q = q.Where("id <> ?", excludeId)
@@ -123,22 +127,24 @@ func (receiver *WafIPGroupService) checkNameCodeFree(name, code, excludeId strin
 	return nil
 }
 
-func (receiver *WafIPGroupService) GetDetailApi(req request.WafIPGroupDetailReq) model.IPGroup {
+func (receiver *WafIPGroupService) GetDetailApi(ctx context.Context, req request.WafIPGroupDetailReq) model.IPGroup {
 	var bean model.IPGroup
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("id=?", req.Id).Find(&bean)
 	if bean.GroupCode != "" {
-		bean.ItemCount = receiver.countItems(bean.GroupCode)
+		bean.ItemCount = receiver.countItems(ctx, bean.GroupCode)
 	}
 	return bean
 }
 
-func (receiver *WafIPGroupService) GetDetailByCodeApi(groupCode string) model.IPGroup {
+func (receiver *WafIPGroupService) GetDetailByCodeApi(ctx context.Context, groupCode string) model.IPGroup {
 	var bean model.IPGroup
-	global.GWAF_LOCAL_DB.Where("group_code=?", groupCode).Find(&bean)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("group_code=?", groupCode).Find(&bean)
 	return bean
 }
 
-func (receiver *WafIPGroupService) GetListApi(req request.WafIPGroupSearchReq) ([]model.IPGroup, int64, error) {
+func (receiver *WafIPGroupService) GetListApi(ctx context.Context, req request.WafIPGroupSearchReq) ([]model.IPGroup, int64, error) {
 	var list []model.IPGroup
 	var total int64 = 0
 
@@ -153,26 +159,28 @@ func (receiver *WafIPGroupService) GetListApi(req request.WafIPGroupSearchReq) (
 		whereValues = append(whereValues, req.GroupCode)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.IPGroup{}).Where(whereField, whereValues...).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.IPGroup{}).Where(whereField, whereValues...).
 		Order("CREATE_TIME desc").
 		Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.IPGroup{}).Where(whereField, whereValues...).Count(&total)
+	db.Model(&model.IPGroup{}).Where(whereField, whereValues...).Count(&total)
 
-	receiver.fillItemCounts(list)
+	receiver.fillItemCounts(ctx, list)
 	return list, total, nil
 }
 
 // GetOptionsApi 返回全部 IP 组（不分页），供黑/白名单表单的下拉选择使用
-func (receiver *WafIPGroupService) GetOptionsApi() []model.IPGroup {
+func (receiver *WafIPGroupService) GetOptionsApi(ctx context.Context) []model.IPGroup {
 	var list []model.IPGroup
-	global.GWAF_LOCAL_DB.Where("user_code = ? AND tenant_id = ?", global.GWAF_USER_CODE, global.GWAF_TENANT_ID).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("user_code = ? AND tenant_id = ?", global.GWAF_USER_CODE, global.GWAF_TENANT_ID).
 		Order("group_name asc").Find(&list)
-	receiver.fillItemCounts(list)
+	receiver.fillItemCounts(ctx, list)
 	return list
 }
 
 // fillItemCounts 一次聚合查询填充所有组的条目数，避免逐组查询的 N+1
-func (receiver *WafIPGroupService) fillItemCounts(list []model.IPGroup) {
+func (receiver *WafIPGroupService) fillItemCounts(ctx context.Context, list []model.IPGroup) {
 	if len(list) == 0 {
 		return
 	}
@@ -185,7 +193,8 @@ func (receiver *WafIPGroupService) fillItemCounts(list []model.IPGroup) {
 		Cnt       int
 	}
 	var rows []countRow
-	global.GWAF_LOCAL_DB.Model(&model.IPGroupItem{}).
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.IPGroupItem{}).
 		Select("group_code, count(*) as cnt").
 		Where("group_code IN ?", codes).
 		Group("group_code").Scan(&rows)
@@ -198,22 +207,24 @@ func (receiver *WafIPGroupService) fillItemCounts(list []model.IPGroup) {
 	}
 }
 
-func (receiver *WafIPGroupService) countItems(groupCode string) int {
+func (receiver *WafIPGroupService) countItems(ctx context.Context, groupCode string) int {
 	var cnt int64
-	global.GWAF_LOCAL_DB.Model(&model.IPGroupItem{}).Where("group_code = ?", groupCode).Count(&cnt)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Model(&model.IPGroupItem{}).Where("group_code = ?", groupCode).Count(&cnt)
 	return int(cnt)
 }
 
 // GetRefsApi 查询一个 IP 组被哪些黑/白名单条目引用、涉及哪些站点
-func (receiver *WafIPGroupService) GetRefsApi(groupCode string) IPGroupRefs {
+func (receiver *WafIPGroupService) GetRefsApi(ctx context.Context, groupCode string) IPGroupRefs {
 	refs := IPGroupRefs{GroupCode: groupCode, Hosts: []IPGroupRefHost{}}
 	if groupCode == "" {
 		return refs
 	}
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var blockRows []model.IPBlockList
-	global.GWAF_LOCAL_DB.Where("ip_type = ? AND group_code = ?", model.IPEntryTypeGroup, groupCode).Find(&blockRows)
+	db.Where("ip_type = ? AND group_code = ?", model.IPEntryTypeGroup, groupCode).Find(&blockRows)
 	var allowRows []model.IPAllowList
-	global.GWAF_LOCAL_DB.Where("ip_type = ? AND group_code = ?", model.IPEntryTypeGroup, groupCode).Find(&allowRows)
+	db.Where("ip_type = ? AND group_code = ?", model.IPEntryTypeGroup, groupCode).Find(&allowRows)
 
 	refs.BlockCount = len(blockRows)
 	refs.AllowCount = len(allowRows)
@@ -239,7 +250,7 @@ func (receiver *WafIPGroupService) GetRefsApi(groupCode string) IPGroupRefs {
 	for _, code := range order {
 		h := byHost[code]
 		var host model.Hosts
-		if err := global.GWAF_LOCAL_DB.Where("code = ?", code).First(&host).Error; err == nil {
+		if err := db.Where("code = ?", code).First(&host).Error; err == nil {
 			h.HostName = host.Host
 		} else {
 			h.HostName = code
@@ -264,12 +275,13 @@ func (receiver *WafIPGroupService) GetRefsApi(groupCode string) IPGroupRefs {
 //
 // 第 4 步不能提到第 2 步之前：那会出现「引用行还在、匹配集已空」的窗口，
 // 对白名单来说就是短暂失效导致误拦。反过来的中间态只是「按删除前的配置多生效几十毫秒」。
-func (receiver *WafIPGroupService) DelApi(req request.WafIPGroupDelReq) ([]string, error) {
+func (receiver *WafIPGroupService) DelApi(ctx context.Context, req request.WafIPGroupDelReq) ([]string, error) {
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var bean model.IPGroup
-	if err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error; err != nil {
+	if err := db.Where("id = ?", req.Id).First(&bean).Error; err != nil {
 		return nil, errors.New("IP组不存在")
 	}
-	refs := receiver.GetRefsApi(bean.GroupCode)
+	refs := receiver.GetRefsApi(ctx, bean.GroupCode)
 	if (refs.BlockCount > 0 || refs.AllowCount > 0) && req.Force != 1 {
 		return nil, errors.New("该IP组正被引用，无法直接删除")
 	}
@@ -280,21 +292,21 @@ func (receiver *WafIPGroupService) DelApi(req request.WafIPGroupDelReq) ([]strin
 	}
 
 	if refs.BlockCount > 0 {
-		if err := global.GWAF_LOCAL_DB.Where("ip_type = ? AND group_code = ?", model.IPEntryTypeGroup, bean.GroupCode).
+		if err := db.Where("ip_type = ? AND group_code = ?", model.IPEntryTypeGroup, bean.GroupCode).
 			Delete(&model.IPBlockList{}).Error; err != nil {
 			return nil, err
 		}
 	}
 	if refs.AllowCount > 0 {
-		if err := global.GWAF_LOCAL_DB.Where("ip_type = ? AND group_code = ?", model.IPEntryTypeGroup, bean.GroupCode).
+		if err := db.Where("ip_type = ? AND group_code = ?", model.IPEntryTypeGroup, bean.GroupCode).
 			Delete(&model.IPAllowList{}).Error; err != nil {
 			return nil, err
 		}
 	}
-	if err := global.GWAF_LOCAL_DB.Where("group_code = ?", bean.GroupCode).Delete(&model.IPGroupItem{}).Error; err != nil {
+	if err := db.Where("group_code = ?", bean.GroupCode).Delete(&model.IPGroupItem{}).Error; err != nil {
 		return nil, err
 	}
-	if err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(&model.IPGroup{}).Error; err != nil {
+	if err := db.Where("id = ?", req.Id).Delete(&model.IPGroup{}).Error; err != nil {
 		return nil, err
 	}
 	ipset.RemoveGroupMatcher(bean.GroupCode)
@@ -308,17 +320,18 @@ func (receiver *WafIPGroupService) DelApi(req request.WafIPGroupDelReq) ([]strin
 // 这是 IP 组「改一次、所有引用站点立即同步」的落点：无论多少站点引用该组，
 // 这里只做一次原子指针替换，不给任何站点下发通道消息、不重建路由表。
 // 组内条目增删改、组改名之后调用它即可。
-func (receiver *WafIPGroupService) RebuildGroupMatcher(groupCode string) {
+func (receiver *WafIPGroupService) RebuildGroupMatcher(ctx context.Context, groupCode string) {
 	if groupCode == "" {
 		return
 	}
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var group model.IPGroup
-	if err := global.GWAF_LOCAL_DB.Where("group_code = ?", groupCode).First(&group).Error; err != nil {
+	if err := db.Where("group_code = ?", groupCode).First(&group).Error; err != nil {
 		// 组已不存在（可能刚被删），摘掉快照即可
 		ipset.RemoveGroupMatcher(groupCode)
 		return
 	}
-	matcher, dropped := receiver.buildMatcher(groupCode)
+	matcher, dropped := receiver.buildMatcher(ctx, groupCode)
 	ipset.UpsertGroupMatcher(groupCode, group.GroupName, matcher)
 	if dropped > 0 {
 		zlog.Warn("IP组存在无法解析的条目已跳过", "group", group.GroupName, "code", groupCode, "dropped", dropped)
@@ -327,10 +340,11 @@ func (receiver *WafIPGroupService) RebuildGroupMatcher(groupCode string) {
 
 // RebuildAllGroupMatchers 全量重建所有组的匹配集并整体发布。
 // 启动时调用一次；单组重建失败或需要兜底时也可调用。
-func (receiver *WafIPGroupService) RebuildAllGroupMatchers() {
+func (receiver *WafIPGroupService) RebuildAllGroupMatchers(ctx context.Context) {
 	start := time.Now()
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var groups []model.IPGroup
-	global.GWAF_LOCAL_DB.Find(&groups)
+	db.Find(&groups)
 
 	snapshot := &ipset.GroupSnapshot{
 		ByCode: make(map[string]*ipset.MatchSet, len(groups)),
@@ -342,7 +356,7 @@ func (receiver *WafIPGroupService) RebuildAllGroupMatchers() {
 		if g.GroupCode == "" {
 			continue
 		}
-		matcher, dropped := receiver.buildMatcher(g.GroupCode)
+		matcher, dropped := receiver.buildMatcher(ctx, g.GroupCode)
 		snapshot.ByCode[g.GroupCode] = matcher
 		if g.GroupName != "" {
 			// 名称重复时以先建的为准（Find 默认按插入顺序），并告警提示用户改名
@@ -361,9 +375,10 @@ func (receiver *WafIPGroupService) RebuildAllGroupMatchers() {
 }
 
 // buildMatcher 读取组内全部条目并编译成匹配集，返回 (匹配集, 被丢弃的非法条目数)。
-func (receiver *WafIPGroupService) buildMatcher(groupCode string) (*ipset.MatchSet, int) {
+func (receiver *WafIPGroupService) buildMatcher(ctx context.Context, groupCode string) (*ipset.MatchSet, int) {
 	var items []model.IPGroupItem
-	global.GWAF_LOCAL_DB.Where("group_code = ?", groupCode).Find(&items)
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	db.Where("group_code = ?", groupCode).Find(&items)
 	ips := make([]string, 0, len(items))
 	for i := range items {
 		ips = append(ips, items[i].Ip)
@@ -377,7 +392,7 @@ func (receiver *WafIPGroupService) buildMatcher(groupCode string) (*ipset.MatchS
 }
 
 // GetHostCodesByGroup 返回引用了该组的所有站点编码（黑白名单合并去重），用于变更后刷新内存名单
-func (receiver *WafIPGroupService) GetHostCodesByGroup(groupCode string) []string {
+func (receiver *WafIPGroupService) GetHostCodesByGroup(ctx context.Context, groupCode string) []string {
 	if groupCode == "" {
 		return nil
 	}
@@ -395,14 +410,15 @@ func (receiver *WafIPGroupService) GetHostCodesByGroup(groupCode string) []strin
 			out = append(out, c)
 		}
 	}
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var blockHosts []string
-	global.GWAF_LOCAL_DB.Model(&model.IPBlockList{}).
+	db.Model(&model.IPBlockList{}).
 		Where("ip_type = ? AND group_code = ?", model.IPEntryTypeGroup, groupCode).
 		Distinct("host_code").Pluck("host_code", &blockHosts)
 	collect(blockHosts)
 
 	var allowHosts []string
-	global.GWAF_LOCAL_DB.Model(&model.IPAllowList{}).
+	db.Model(&model.IPAllowList{}).
 		Where("ip_type = ? AND group_code = ?", model.IPEntryTypeGroup, groupCode).
 		Distinct("host_code").Pluck("host_code", &allowHosts)
 	collect(allowHosts)
