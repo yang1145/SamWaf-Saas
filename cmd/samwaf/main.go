@@ -40,7 +40,6 @@ import (
 	"SamWaf/wafsnowflake"
 	"SamWaf/waftask"
 	"SamWaf/waftunnelengine"
-	"SamWaf/wafupdate"
 	"context"
 	"crypto/tls"
 	"embed"
@@ -50,7 +49,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -267,7 +265,7 @@ func (m *wafSystenService) run() {
 	// 所以升级源、SSRF 安全客户端、通知回调都从这里传进去。
 	iplocation.ConfigureUpgrader(iplocation.UpgradeConfig{
 		UpdateVersionURL: global.GUPDATE_VERSION_URL,
-		ClientQuery:      wafupdate.ClientQuery,
+		ClientQuery:      utils.ClientQuery,
 		NewClient:        utils.SafeHTTPClient,
 		ValidateURL:      utils.IsSafeOutboundURL,
 		NotifyFunc: func(success bool, msg string) {
@@ -295,7 +293,7 @@ func (m *wafSystenService) run() {
 	// 注入升级上下文：避免 wafowasp → global 的循环依赖
 	wafowasp.ConfigureUpgrader(wafowasp.UpgradeConfig{
 		UpdateVersionURL: global.GUPDATE_VERSION_URL,
-		ClientQuery:      wafupdate.ClientQuery,
+		ClientQuery:      utils.ClientQuery,
 		NotifyFunc: func(success bool, msg string) {
 			if global.GQEQUE_MESSAGE_DB == nil {
 				return
@@ -351,10 +349,6 @@ func (m *wafSystenService) run() {
 	rversion = rversion + " plat:" + runtime.GOOS + "-" + runtime.GOARCH
 	zlog.Info(rversion)
 	zlog.Info("OutIp", global.GWAF_RUNTIME_IP)
-
-	if global.GWAF_RELEASE == "false" {
-		global.GUPDATE_VERSION_URL = "http://127.0.0.1:8111/"
-	}
 
 	//初始化每实例静态数据加密密钥(DEK)：首启生成 data/.keys/data_key(0600)，或用
 	//config.yml 的 security.data_key_file 指定自管路径。须在数据库初始化之前就绪，
@@ -892,50 +886,6 @@ func (m *wafSystenService) run() {
 			})
 			zlog.Debug("规则", zap.Any("主机", host))
 			break
-		case update := <-global.GWAF_CHAN_UPDATE:
-			if update == 1 {
-				// 优雅升级：二进制已被 selfupdate 替换到磁盘。
-				// 在 Supervisor 模式下，请求 Supervisor 编排滚动升级（起新 Worker→就绪→本 Worker 排空退出），
-				// 本进程不自行退出，等待 Supervisor 下发 DRAIN，从而实现业务零中断。
-				if gWorkerCtrl != nil {
-					zlog.Info("[Worker] 二进制已就绪，请求 Supervisor 发起滚动升级（业务不中断）")
-					gWorkerCtrl.RequestUpgrade()
-					break
-				}
-				// 兜底：非 Supervisor 托管的独立运行模式，沿用原“停止→拉起新进程→退出”的硬重启。
-				global.GWAF_RUNTIME_SERVER_TYPE = !service.Interactive()
-				//需要重新启动
-				if global.GWAF_RUNTIME_SERVER_TYPE == true {
-					zlog.Info("服务形式重启")
-					m.stopSamWaf()
-
-					// 只启动一次新进程
-					cmd := exec.Command(global.GWAF_RUNTIME_CURRENT_EXEPATH, "restart")
-					cmd.Stdout = os.Stdout
-					cmd.Stderr = os.Stderr
-					wafexec.FixStdin(cmd)
-					if err := cmd.Start(); err != nil {
-						zlog.Error("启动新进程失败:", err)
-						os.Exit(0)
-					}
-					time.Sleep(2 * time.Second)
-					os.Exit(0)
-				} else {
-					m.stopSamWaf()
-					cmd := exec.Command(global.GWAF_RUNTIME_CURRENT_EXEPATH)
-					cmd.Stdout = os.Stdout
-					cmd.Stderr = os.Stderr
-					wafexec.FixStdin(cmd)
-					if err := cmd.Start(); err != nil {
-						zlog.Error("启动新进程失败:", err)
-						os.Exit(0)
-					}
-					time.Sleep(2 * time.Second)
-					os.Exit(0)
-				}
-			}
-			break
-
 		case sensitive := <-global.GWAF_CHAN_SENSITIVE:
 			zlog.Debug("远程配置", sensitive)
 			globalobj.GWAF_RUNTIME_OBJ_WAF_ENGINE.ReLoadSensitive()
@@ -1304,74 +1254,6 @@ func main() {
 				fmt.Println("迁移失败:", err)
 				os.Exit(1)
 			}
-		case "rollback": //版本回退
-			fmt.Println("================================================")
-			fmt.Println("         SamWaf 版本回退工具")
-			fmt.Println("================================================")
-			fmt.Printf("当前运行版本: %s\n\n", global.GWAF_RELEASE_VERSION)
-
-			list, err := wafupdate.ListBackups()
-			if err != nil {
-				fmt.Println("获取备份列表失败:", err)
-				return
-			}
-			if len(list) == 0 {
-				fmt.Println("没有可用的备份版本，无法回退")
-				return
-			}
-
-			fmt.Printf("%-4s %-15s %-22s %-10s %s\n", "序号", "版本", "备份时间", "大小(MB)", "备注")
-			fmt.Println("------------------------------------------------------------------------")
-			for i, b := range list {
-				note := ""
-				if b.Version == global.GWAF_RELEASE_VERSION {
-					note = "[当前版本]"
-				}
-				fmt.Printf("%-4d %-15s %-22s %-10.2f %s\n",
-					i+1,
-					b.Version,
-					b.BackupTime.Format("2006-01-02 15:04:05"),
-					float64(b.FileSize)/(1024*1024),
-					note)
-			}
-			fmt.Println("------------------------------------------------------------------------")
-
-			fmt.Print("\n请输入要回退的序号，或输入 'q' 退出: ")
-			var input string
-			fmt.Scanln(&input)
-			if input == "q" || input == "Q" {
-				fmt.Println("已退出版本回退工具")
-				return
-			}
-
-			idx := 0
-			_, parseErr := fmt.Sscanf(input, "%d", &idx)
-			if parseErr != nil || idx < 1 || idx > len(list) {
-				fmt.Printf("无效的序号: %s\n", input)
-				return
-			}
-
-			target := list[idx-1]
-			if target.Version == global.GWAF_RELEASE_VERSION {
-				fmt.Printf("所选版本 %s 与当前运行版本相同，无需回退\n", target.Version)
-				return
-			}
-
-			fmt.Printf("\n即将回退到: %s（%s）\n", target.Version, target.BackupTime.Format("2006-01-02 15:04:05"))
-			fmt.Print("确认回退？回退后需要手动重启服务 (y/n): ")
-			var confirm string
-			fmt.Scanln(&confirm)
-			if confirm != "y" && confirm != "Y" {
-				fmt.Println("已取消")
-				return
-			}
-
-			fmt.Printf("正在回退到版本 %s...\n", target.Version)
-			if rollbackErr := wafupdate.RollbackExecutable(target.Version); rollbackErr != nil {
-				fmt.Println("回退失败:", rollbackErr)
-				return
-			}
-			fmt.Println("回退成功，请重启服务 (samwaf start 或 samwaf restart)")
 		default:
 			fmt.Printf("Command '%s' is not recognized.\n", command)
 			fmt.Println("\n可用命令:")
@@ -1391,7 +1273,6 @@ func main() {
 			fmt.Println("              --to=mysql|postgres     迁移目标（缺省则交互式选择）")
 			fmt.Println("              --dry-run  只做预估，不写入数据")
 			fmt.Println("              --force    目标表已有数据时强制覆盖")
-			fmt.Println("  rollback  - 回退到历史版本 (--list 列出, --version=v1.x.x 指定版本)")
 			fmt.Println("")
 		}
 		return
@@ -1618,11 +1499,6 @@ func (wc *workerCtrl) gracefulExit() {
 	wc.send(wafipc.Message{Type: wafipc.MsgGone, PID: os.Getpid()})
 	time.Sleep(200 * time.Millisecond)
 	os.Exit(0)
-}
-
-// RequestUpgrade 通知 Supervisor 发起滚动升级（二进制已被 selfupdate 替换到磁盘）。
-func (wc *workerCtrl) RequestUpgrade() {
-	wc.send(wafipc.Message{Type: wafipc.MsgRequestUpgrade, PID: os.Getpid()})
 }
 
 func (wc *workerCtrl) send(m wafipc.Message) {

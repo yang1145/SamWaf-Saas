@@ -39,8 +39,6 @@ var (
 	GWAF_DEBUG_WORKER_HEADER bool   = false
 	GWAF_WORKER_TAG          string = "" //当前进程标识(pid+启动时间)
 
-	GWAF_RUNTIME_NEW_VERSION      string = ""      //最新版本号
-	GWAF_RUNTIME_NEW_VERSION_DESC string = ""      //最新版本描述
 	GWAF_RUNTIME_WIN7_VERSION     string = "false" //是否是win7内部版本
 	GWAF_RUNTIME_QPS              uint64 = 0       //当前qps (累积值)
 	GWAF_RUNTIME_LOG_PROCESS      uint64 = 0       //log 处理速度 (累积值)
@@ -57,7 +55,6 @@ var (
 
 	GWAF_RUNTIME_RECORD_LOG_TYPE string = "all" // 记录日志形式： 全部(all),非正常(abnormal)
 	GCONFIG_EXCLUDE_IP_LOG       string = ""    // 全局排除记录日志的IP清单(所有站点生效)，语法同站点级 exclude_ip_log
-	GWAF_RUNTIME_IS_UPDATETING   bool   = false //是否正在升级中
 
 	GWAF_RUNTIME_CURRENT_EXEPATH                 string = "" //当前程序运行路径
 	GWAF_RUNTIME_CURRENT_WEBPORT                 string = "" //当前程序所占用端口
@@ -122,7 +119,6 @@ var (
 	GWAF_CHAN_ENGINE                                = make(chan int, 10)                 //引擎链
 	GWAF_CHAN_MSG                                   = make(chan spec.ChanCommonHost, 10) //全局通讯包
 	GWAF_CHAN_COMMON_MSG                            = make(chan spec.ChanCommon, 10)     //全局共用通讯包
-	GWAF_CHAN_UPDATE                                = make(chan int, 10)                 //升级后处理链
 	GWAF_CHAN_SENSITIVE                             = make(chan int, 10)                 //敏感词处理链
 	GWAF_CHAN_SSL                                   = make(chan string, 10)              //证书处理链
 	GWAF_CHAN_SSLOrder                              = make(chan spec.ChanSslOrder, 10)   //SSL证书申请
@@ -224,13 +220,9 @@ var (
 	/******WebSocket*********/
 	GWebSocket *gwebsocket.WebSocketOnline
 
-	//升级相关
-	GUPDATE_VERSION_URL        string = "https://update.samwaf.com/"                                       // 官方下载
-	GUPDATE_GITHUB_VERSION_URL string = "https://update.samwaf.com/samwaf_beta_update/latest_release.json" //从gitHub自动下载镜像
-	//GUPDATE_GITHUB_VERSION_URL string = "http://10.0.2.2:8111/beta_update_linux/latest_release.json"
-	// http://127.0.0.1:8111/beta_update/latest_release.json
-	// http://10.0.2.2:8111/beta_update_linux/latest_release.json
-	GWAF_SNOWFLAKE_GEN *wafsnowflake.Snowflake //雪花算法
+	//数据文件升级源（IP库/OWASP规则集在线下载用；程序在线更新已移除，本项目为源码编译分发）
+	GUPDATE_VERSION_URL string = "https://update.samwaf.com/" // 官方下载
+	GWAF_SNOWFLAKE_GEN  *wafsnowflake.Snowflake               //雪花算法
 
 	//任务开关信息
 	GWAF_SWITCH_TASK_COUNTER bool

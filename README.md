@@ -63,7 +63,7 @@
 
 ### 运维管理
 - 账号 RBAC + OTP 双因素、登录/操作日志、安全审计
-- 数据保留策略与日志分片归档、在线升级、定时/批量任务
+- 数据保留策略与日志分片归档、定时/批量任务
 - 通知告警：邮件、钉钉、飞书、企业微信、Server酱、Webhook、Kafka、RabbitMQ
 
 ---
@@ -284,7 +284,6 @@ SamWaf64.exe stop && SamWaf64.exe uninstall    # 停止并卸载
 | `repairdb` | 修复损坏的数据库 |
 | `execsql` | 在指定数据库上执行 SQL |
 | `migratedb` | 离线迁移 SQLite → MySQL / PostgreSQL |
-| `rollback` | 回退到历史备份版本 |
 
 ---
 

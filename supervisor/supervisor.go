@@ -3,8 +3,8 @@
 // 它被服务管理器(kardianos/SCM/systemd)托管、永不为升级而退出，负责：
 //   - 拉起并监护 Worker 子进程（业务引擎），崩溃自愈；
 //   - 通过控制通道(wafipc)与 Worker 通信；
-//   - 编排滚动升级：起新 Worker(takeover/REUSEPORT 同端口并存) → 新就绪 → 老 Worker 优雅排空退出；
-//   - 升级失败时保留老 Worker、回滚，保证业务零中断。
+//   - 编排滚动重启：起新 Worker(takeover/REUSEPORT 同端口并存) → 新就绪 → 老 Worker 优雅排空退出；
+//   - 切换失败时保留老 Worker，保证业务零中断。
 //
 // 端口由 Worker 自持(REUSEPORT)，Supervisor 不持有任何业务/管理端口。
 package supervisor
@@ -14,7 +14,6 @@ import (
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/wafipc"
-	"SamWaf/wafupdate"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -74,7 +73,6 @@ type Supervisor struct {
 	upgrading     bool
 	shuttingDown  bool
 	crashTimes    []time.Time
-	lastUpgradeAt time.Time // 上次升级切换到新版本的时刻；仅在此后"观察期"内连续崩溃才判坏版本回滚
 
 	readyMu sync.Mutex
 	readyCh map[int]chan struct{} // 按 pid 的 READY 通知
@@ -137,12 +135,6 @@ func (s *Supervisor) Run() error {
 	s.ctrlAddr = ln.Addr().String()
 	zlog.Info("[Supervisor] 控制通道监听于 " + s.ctrlAddr)
 	s.writeState()
-
-	// 清扫上一轮升级/回退遗留的临时二进制(.<exe>.old* / .new / .rollback)。
-	// 只在这里扫、不在 Worker 里扫：Supervisor 常驻不为升级退出，升级后它自身的
-	// 映像文件就是某个 .old、在它活着时(Windows)删不掉；只有"服务重启后、新 Supervisor
-	// 刚起来"这一刻上一代 Supervisor 已退出，旧映像才真正可删。
-	wafupdate.CleanupLegacyLeftovers()
 
 	go s.acceptLoop()
 
@@ -433,11 +425,7 @@ func (s *Supervisor) monitorAdopted(w *workerState) {
 	}
 }
 
-// upgradeProbationWindow 升级观察期：升级切到新版本后，仅在此时间窗内的连续崩溃才判为坏版本并回滚二进制；
-// 超出该窗口的崩溃视为环境/配置问题，只重拉、不回滚，避免把运行已久的好版本误降级。
-const upgradeProbationWindow = 5 * time.Minute
-
-// handleCrashRespawn 活跃 Worker 异常退出后的自愈：指数退避重拉；升级观察期内多次崩溃判为坏版本并回滚。
+// handleCrashRespawn 活跃 Worker 异常退出后的自愈：指数退避重拉。
 func (s *Supervisor) handleCrashRespawn() {
 	s.mu.Lock()
 	now := time.Now()
@@ -451,9 +439,6 @@ func (s *Supervisor) handleCrashRespawn() {
 	s.crashTimes = append(kept, now)
 	crashes := len(s.crashTimes)
 	down := s.shuttingDown
-	// 仅当处于"升级观察期"内（刚切到新版本不久）才把连续崩溃判为坏版本并回滚二进制。
-	// 否则（日常环境/配置问题导致的崩溃、或已是回滚后的好版本）只重拉、不动二进制，避免把好版本误降级。
-	inProbation := !s.lastUpgradeAt.IsZero() && now.Sub(s.lastUpgradeAt) < upgradeProbationWindow
 	s.activePID = 0
 	s.mu.Unlock()
 
@@ -461,17 +446,7 @@ func (s *Supervisor) handleCrashRespawn() {
 		return
 	}
 	if crashes >= 3 {
-		if inProbation {
-			zlog.Error("[Supervisor] Worker 在 60s 内崩溃 " + strconv.Itoa(crashes) + " 次，且处于升级观察期，判为坏版本，触发二进制回滚")
-			s.rollbackBinary()
-			// 回滚后清空崩溃计数与观察期：给回滚后的好版本机会，且其自身崩溃不再触发二次回滚
-			s.mu.Lock()
-			s.crashTimes = nil
-			s.lastUpgradeAt = time.Time{}
-			s.mu.Unlock()
-		} else {
-			zlog.Error("[Supervisor] Worker 在 60s 内崩溃 " + strconv.Itoa(crashes) + " 次，但不在升级观察期，按环境/配置问题处理：仅重拉、不回滚二进制（请人工排查崩溃原因）")
-		}
+		zlog.Error("[Supervisor] Worker 在 60s 内崩溃 " + strconv.Itoa(crashes) + " 次，按环境/配置问题处理：仅重拉（请人工排查崩溃原因）")
 	}
 	// 指数退避（最多 ~5s）
 	backoff := time.Duration(crashes) * time.Second
@@ -519,17 +494,14 @@ func (s *Supervisor) doUpgrade() {
 	}
 
 	if !s.waitReady(newPID, time.Duration(s.opts.ReadyTimeout)*time.Second) {
-		zlog.Error("[Supervisor] 升级：新 Worker pid=" + strconv.Itoa(newPID) + " 未在超时内就绪，回滚（保留旧 Worker）")
+		zlog.Error("[Supervisor] 升级：新 Worker pid=" + strconv.Itoa(newPID) + " 未在超时内就绪，放弃切换（保留旧 Worker）")
 		s.killWorker(newPID)
-		s.rollbackBinary()
 		return
 	}
 
 	// 新 Worker 就绪 → 切为 active，令旧 Worker 排空退出
 	s.mu.Lock()
 	s.activePID = newPID
-	// 记录本次升级切换时刻：从此进入"升级观察期"，期内新版本若连续崩溃才判坏版本并回滚二进制。
-	s.lastUpgradeAt = time.Now()
 	if nw := s.workers[newPID]; nw != nil {
 		nw.state = "active"
 	}
@@ -567,8 +539,7 @@ func (s *Supervisor) doUpgrade() {
 // 不做这件事的后果有两层：
 //  1. supervisor / wafipc / main.go 角色分流之前的代码改了不生效，要等人工重启服务；
 //  2. Windows 上 Supervisor 的映像文件就是被换下来的那个 .old，永远删不掉、永远钉住
-//     —— 这正是"第二次升级 Access is denied"的根因（现已由 wafupdate 的唯一 .old 命名兜住，
-//     但残留仍会一直堆着）。
+//     —— 这正是"第二次升级 Access is denied"的根因（残留的 .old 文件请手工清理）。
 //
 // 端口在 Worker 手里，Supervisor 不持有任何业务/管理端口，所以它可以随时换人而不动业务。
 func (s *Supervisor) selfHandoff(newPID int) {
@@ -698,7 +669,6 @@ func (s *Supervisor) adoptOrphans(prev *stateFile) bool {
 	// 新 Worker 就绪 → 切为 active
 	s.mu.Lock()
 	s.activePID = newPID
-	s.lastUpgradeAt = time.Now()
 	if nw := s.workers[newPID]; nw != nil {
 		nw.state = "active"
 	}
@@ -871,26 +841,6 @@ func (s *Supervisor) signalReady(pid int) {
 	case ch <- struct{}{}:
 	default:
 	}
-}
-
-// rollbackBinary 升级失败/坏版本时回滚二进制：将磁盘上的可执行文件还原为上一个备份版本。
-//
-// 调用方约定（本函数只负责"换二进制"，不负责"拉 Worker"）：
-//   - 升级就绪失败路径（doUpgrade）：旧 Worker 仍在服务，回滚后无需重拉，下次升级/重启即用还原后的版本；
-//   - 崩溃自愈路径（handleCrashRespawn）：回滚后由其末尾的 spawn(false) 以还原后的好版本拉起干净 Worker。
-//
-// 备份由正常升级流程在覆盖前自动生成（wafupdate.BackupFile → data/backups_bin，按时间倒序，最新在前），
-// 故 RollbackExecutable("") 还原的即"被坏版本覆盖掉的那个好版本"。回滚失败不影响业务：旧 Worker 仍在服务。
-func (s *Supervisor) rollbackBinary() {
-	target := ""
-	if list, err := wafupdate.ListBackups(); err == nil && len(list) > 0 {
-		target = list[0].Version
-	}
-	if err := wafupdate.RollbackExecutable(""); err != nil {
-		zlog.Error("[Supervisor] 二进制回滚失败: " + err.Error() + "（旧 Worker 仍在服务，业务未中断；请人工检查升级包/备份）")
-		return
-	}
-	zlog.Warn("[Supervisor] 二进制已回滚到上一个备份版本 " + target + "，后续将以该版本拉起 Worker（业务全程未中断）")
 }
 
 // stateFile 持久化的监护状态（供 Supervisor 自升级后重连认领，Phase 3.5）。

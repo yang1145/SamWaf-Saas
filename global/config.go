@@ -51,12 +51,6 @@ var (
 	GCONFIG_ENABLE_STRICT_IP_BINDING  int64 = 0 // 是否启用严格IP绑定 1启用 0禁用(默认关：启用后令牌绑定登录时真实IP，IP变化需重登；反代后需先配可信代理网段。避免动态IP/多出口LB场景反复掉线)
 	GCONFIG_ENABLE_REPLAY_PROTECT     int64 = 1 // 防重放攻击开关 1启用 0禁用
 
-	// 容器环境是否允许应用内升级。默认 0=拦截：容器里的可执行文件在镜像可写层，
-	// 升级只在本次容器生命周期内有效，容器一重建就回退成镜像里的旧版本，
-	// 而数据库已被新版本迁移且回不去，会形成"旧程序 + 新库"的静默不一致状态。
-	// 确实把二进制挂到卷里的高级用户可置 1 自行放行。
-	GCONFIG_ALLOW_CONTAINER_SELFUPDATE int64 = 0
-
 	GCONFIG_RECORD_ENABLE_OWASP int64  = 0               //启动OWASP数据检测
 	GCONFIG_OWASP_MODE          string = "DetectionOnly" //OWASP 检测引擎工作模式: On(拦截) / DetectionOnly(观察/仅记录) / Off(关闭)
 
@@ -93,9 +87,6 @@ var (
 	GCONFIG_RECORD_CONNECT_TIME_OUT   int64  = 30        // 连接超时 默认30s
 	GCONFIG_RECORD_KEEPALIVE_TIME_OUT int64  = 30        // 保持活动超时 默认30s
 	GCONFIG_RECORD_DRAIN_TIMEOUT      int64  = 30        // 升级/停止时连接优雅排空超时(秒) 默认30s，超时仍未排空的连接将被强制关闭
-	// 应用内升级替换二进制后，界面等待服务重新就绪的上限(秒)。容器与低配机器重启更慢，
-	// 故放开为可配；由升级进度接口下发给前端，前端不写死。
-	GCONFIG_UPDATE_RESTART_TIMEOUT int64 = 90
 	// 版本/清单检查请求是否附带运行环境标识(os/arch/rt)。默认开：升级源据此判断存量版本
 	// 与运行环境分布。关闭后只保留一直都有的 v(版本)与 u(实例码)，即回到旧版本的携带内容。
 	GCONFIG_UPDATE_ENV_REPORT bool = true
@@ -111,8 +102,7 @@ var (
 	// 表现为"页面开着不动 5 分钟必掉线"（issue #930）。30 分钟落在 OWASP 低风险区间与 NIST 800-63B AAL2 内。
 	// 配置值填 0 或负数表示"不管控有效期"，由 waftask.normalizeTokenExpireMinutes 归一化为 1 年封顶，
 	// 因此本变量在运行期恒为正数，取用方无需再做防御。
-	GCONFIG_RECORD_TOKEN_EXPIRE_MINTUTES     int64 = 30 //令牌有效期 单位分钟
-	GCONFIG_RECORD_ANNOUNCEMENT_EXPIRE_HOURS int64 = 24 //公告有效期 单位小时
+	GCONFIG_RECORD_TOKEN_EXPIRE_MINTUTES int64 = 30 //令牌有效期 单位分钟
 
 	// 口令复杂度策略（国标 GB/T 32917 §7 自身安全：身份鉴别/口令复杂度）
 	GCONFIG_PWD_MIN_LENGTH           int64 = 8 //密码最小长度
@@ -145,8 +135,6 @@ var (
 
 	// 规则封禁相关配置（自定义规则 RF.Ban(分钟) 命中后临时封禁客户端IP）
 	GCONFIG_RULE_BAN_MODE int64 = 0 //规则封禁执行动作 0返回拦截页 1直接断开连接
-
-	GCONFIG_CHECK_BETA_VERSION int64 = 1 //是否检测beta版本更新 1启用 0禁用（默认检测最新版本）
 
 	// ZeroSSL 相关配置
 	GCONFIG_ZEROSSL_ACCESS_KEY   string = "" // zerossl访问key

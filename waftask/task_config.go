@@ -212,9 +212,6 @@ func setConfigIntValue(name string, value int64, change int) {
 		}
 		global.GCONFIG_IPPROBE_ENABLE = value
 		break
-	case "allow_container_selfupdate":
-		global.GCONFIG_ALLOW_CONTAINER_SELFUPDATE = value
-		break
 	case "enable_device_fingerprint":
 		global.GCONFIG_ENABLE_DEVICE_FINGERPRINT = value
 		break
@@ -305,9 +302,6 @@ func setConfigIntValue(name string, value int64, change int) {
 		break
 	case "host_conn_cache_sec":
 		global.GCONFIG_HOST_CONN_CACHE_SEC = value
-		break
-	case "check_beta_version":
-		global.GCONFIG_CHECK_BETA_VERSION = value
 		break
 	case "http3":
 		global.GCONFIG_ENABLE_HTTP3 = value
@@ -847,7 +841,6 @@ func TaskLoadSetting(initLoad bool) {
 	updateConfigIntItem(initLoad, "system", "enable_system_stats_push", global.GCONFIG_ENABLE_SYSTEM_STATS_PUSH, "是否启用系统统计数据推送（1启用 0禁用）", "options", "0|禁用,1|启用", configMap)
 
 	// 指纹认证相关配置
-	updateConfigIntItem(initLoad, "system", "allow_container_selfupdate", global.GCONFIG_ALLOW_CONTAINER_SELFUPDATE, "容器(Docker等)环境是否允许应用内升级（0拦截 1允许，默认拦截）。容器里的程序文件在镜像可写层，应用内升级只在本次容器生命周期有效，容器重建后会回退成镜像自带的旧版本，而数据库已被新版本迁移且无法回退，会造成\"旧程序+新库\"的不一致。容器环境请改用更新镜像的方式升级；确实把程序文件挂到卷里的用户可置1自行放行", "options", "0|拦截,1|允许", configMap)
 	updateConfigIntItem(initLoad, "security", "enable_device_fingerprint", global.GCONFIG_ENABLE_DEVICE_FINGERPRINT, "是否启用设备指纹认证（1启用 0禁用，默认禁用）。指纹由浏览器 UA、Accept-Language、Accept-Encoding 计算；若管理端处于反向代理/CDN 之后，这些请求头可能被改写，开启后会被判为设备不匹配而频繁掉线，请确认链路稳定后再启用", "options", "0|禁用,1|启用", configMap)
 	updateConfigIntItem(initLoad, "security", "enable_strict_ip_binding", global.GCONFIG_ENABLE_STRICT_IP_BINDING, "是否启用严格IP绑定（1启用 0禁用；启用后令牌绑定登录时的真实IP，IP变化需重新登录；反向代理后请先配置可信代理网段，否则按代理IP判定）", "options", "0|禁用,1|启用", configMap)
 	//数据库相关
@@ -889,9 +882,6 @@ func TaskLoadSetting(initLoad bool) {
 	// 远程连接看板
 	updateConfigIntItem(initLoad, "hostguard", "host_conn_enabled", global.GCONFIG_HOST_CONN_ENABLED, "远程连接看板开关（展示当前连接到本机的所有TCP连接）", "options", "0|禁用,1|启用", configMap)
 	updateConfigIntItem(initLoad, "hostguard", "host_conn_cache_sec", global.GCONFIG_HOST_CONN_CACHE_SEC, "连接快照缓存秒数（默认3秒）。Linux下采集需要遍历/proc建立inode到进程的映射，连接数上万时开销明显，建议不低于3秒", "int", "", configMap)
-
-	// 版本更新相关配置
-	updateConfigIntItem(initLoad, "system", "check_beta_version", global.GCONFIG_CHECK_BETA_VERSION, "是否检测beta版本更新（1启用 0禁用）", "options", "0|禁用,1|启用", configMap)
 
 	// ZeroSSL 相关配置
 	updateConfigStringItem(initLoad, "ssl", "zerossl_access_key", global.GCONFIG_ZEROSSL_ACCESS_KEY, "zerossl访问key", "string", "", configMap)

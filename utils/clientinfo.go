@@ -1,16 +1,15 @@
-package wafupdate
+package utils
 
 import (
 	"SamWaf/global"
-	"SamWaf/utils"
 	"net/url"
 	"runtime"
 	"strings"
 	"sync"
 )
 
-// ClientQuery 版本/清单检查类请求统一携带的客户端标识
-// conf/config.yml 的 update_env_report
+// ClientQuery IP库/OWASP规则集等数据文件清单请求统一携带的客户端标识。
+// 原 wafupdate（程序在线更新）包已移除，本函数随数据文件升级链路迁入 utils。
 func ClientQuery() string {
 	return buildClientQuery()
 }
@@ -37,7 +36,7 @@ func buildClientQuery() string {
 // 探测要读多个文件，而进程存活期内结果不会变，因此只算一次。
 func runtimeTag() string {
 	runtimeTagOnce.Do(func() {
-		if container := utils.DetectContainerRuntime(); container != "" {
+		if container := DetectContainerRuntime(); container != "" {
 			runtimeTagCache = container
 			return
 		}
