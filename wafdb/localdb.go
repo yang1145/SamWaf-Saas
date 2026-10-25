@@ -93,18 +93,9 @@ func InitCoreDb(currentDir string) (bool, error) {
 		if err != nil {
 			panic("failed to connect database")
 		}
+		db = applyGormLogger(db)
 		// 核心库保持 synchronous=FULL 保证可靠性，其余性能 pragma 统一设置
 		applyPerfPragmas(db, false)
-
-		// 创建自定义日志记录器
-		gormLogger := NewGormZLogger()
-		if global.GWAF_LOG_DEBUG_DB_ENABLE == true {
-			gormLogger = gormLogger.LogMode(logger.Info).(*GormZLogger)
-			// 启用调试模式
-			db = db.Session(&gorm.Session{
-				Logger: gormLogger,
-			})
-		}
 		global.GWAF_LOCAL_DB = db
 		s, err := db.DB()
 		s.Ping()
@@ -179,17 +170,9 @@ func InitLogDb(currentDir string) (bool, error) {
 		if err != nil {
 			panic("failed to connect database")
 		}
+		db = applyGormLogger(db)
 		// 日志/统计库使用 synchronous=NORMAL 提升高频写入吞吐，其余性能 pragma 统一设置
 		applyPerfPragmas(db, true)
-		// 创建自定义日志记录器
-		gormLogger := NewGormZLogger()
-		if global.GWAF_LOG_DEBUG_DB_ENABLE == true {
-			gormLogger = gormLogger.LogMode(logger.Info).(*GormZLogger)
-			// 启用调试模式
-			db = db.Session(&gorm.Session{
-				Logger: logger.Default.LogMode(logger.Info), // 设置为Info表示启用调试模式
-			})
-		}
 		global.GWAF_LOCAL_LOG_DB = db
 		//logDB.Use(crypto.NewCryptoPlugin())
 		// 注册默认的AES加解密策略
@@ -248,6 +231,7 @@ func InitManaulLogDb(currentDir string, custFileName string) error {
 	if err != nil {
 		return fmt.Errorf("打开归档分片 %s 失败: %w", custFileName, err)
 	}
+	db = applyGormLogger(db)
 	if sqlDB, derr := db.DB(); derr == nil {
 		sqlDB.SetMaxOpenConns(archiveMaxOpenConns)
 		sqlDB.SetMaxIdleConns(archiveMaxOpenConns)
@@ -297,17 +281,9 @@ func InitStatsDb(currentDir string) (bool, error) {
 		if err != nil {
 			panic("failed to connect database")
 		}
+		db = applyGormLogger(db)
 		// 日志/统计库使用 synchronous=NORMAL 提升高频写入吞吐，其余性能 pragma 统一设置
 		applyPerfPragmas(db, true)
-		// 创建自定义日志记录器
-		gormLogger := NewGormZLogger()
-		if global.GWAF_LOG_DEBUG_DB_ENABLE == true {
-			gormLogger = gormLogger.LogMode(logger.Info).(*GormZLogger)
-			// 启用调试模式
-			db = db.Session(&gorm.Session{
-				Logger: logger.Default.LogMode(logger.Info), // 设置为Info表示启用调试模式
-			})
-		}
 		global.GWAF_LOCAL_STATS_DB = db
 		//db.Use(crypto.NewCryptoPlugin())
 		// 注册默认的AES加解密策略

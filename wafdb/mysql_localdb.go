@@ -204,13 +204,16 @@ func openMySQLDBRaw(dbName string) (*gorm.DB, error) {
 }
 
 // applyGormLogger attaches the custom GormZLogger (and debug mode) to db.
+// 无条件挂载：GormZLogger 带 IgnoreRecordNotFound=true，会静默配置项等
+// 「首次查询未命中」的 record not found（GORM 默认日志器会当成错误刷屏）；
+// DEBUG 开关仅把级别升到 Info 展示全量 SQL。
 func applyGormLogger(db *gorm.DB) *gorm.DB {
 	gormLogger := NewGormZLogger()
 	if global.GWAF_LOG_DEBUG_DB_ENABLE {
 		gormLogger = gormLogger.LogMode(logger.Info).(*GormZLogger)
-		db = db.Session(&gorm.Session{Logger: gormLogger})
+		return db.Session(&gorm.Session{Logger: gormLogger})
 	}
-	return db
+	return db.Session(&gorm.Session{Logger: gormLogger})
 }
 
 // InitCoreDbMySQL initialises the MySQL core database.
