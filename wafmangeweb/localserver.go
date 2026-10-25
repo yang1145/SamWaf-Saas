@@ -193,17 +193,25 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 			router.ApiGroupApp.InitIPLookupRouter(logGroup)
 		}
 
-		// 系统配置与运维
+		// 系统运维（租户隔离资源：通知渠道/订阅/日志、数据保留策略、批量任务）
 		systemOpsGroup := RouterGroup.Group("")
 		systemOpsGroup.Use(middleware.RequirePermission(enums.PERM_SYSTEM_OPS, legacyAll...))
 		{
 			router.ApiGroupApp.InitBatchTaskRouter(systemOpsGroup)
-			router.ApiGroupApp.InitWafTaskRouter(systemOpsGroup)
 			router.ApiGroupApp.InitNotifyChannelRouter(systemOpsGroup)
 			router.ApiGroupApp.InitNotifySubscriptionRouter(systemOpsGroup)
 			router.ApiGroupApp.InitNotifyLogRouter(systemOpsGroup)
 			router.ApiGroupApp.InitWafDataRetentionRouter(systemOpsGroup)
-			router.ApiGroupApp.InitGPTRouter(systemOpsGroup)
+		}
+
+		// === 实例级配置域：GPT 模型配置、后台任务管理（从 system:ops 拆出）===
+		// 这些资源是实例全局的（GPT 无租户列、任务注册表随平台播种），租户侧不应持有；
+		// legacy=三角色保持拆分前 system:ops 的可达性，存量账号行为不变
+		systemConfigOpsGroup := RouterGroup.Group("")
+		systemConfigOpsGroup.Use(middleware.RequirePermission(enums.PERM_SYSTEM_CONFIG, legacyAll...))
+		{
+			router.ApiGroupApp.InitGPTRouter(systemConfigOpsGroup)
+			router.ApiGroupApp.InitWafTaskRouter(systemConfigOpsGroup)
 		}
 		// === 安全管理员域：WAF 防护策略/规则（三权分立强制点）===
 		// 从旧共享域并入防篡改/隐私信息(DLP)/防爆破/系统防火墙联动/威胁情报——
@@ -252,9 +260,10 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 			router.ApiGroupApp.InitAccessAuditRouter(auditAdminGroup)
 		}
 
-		// === 系统管理员域：系统配置 ===
+		// === 系统管理员域：系统配置（全局生效，随 SystemConfig 平台豁免跨租户共享，
+		//     权限码从 system:ops 拆为 system:config，legacy=systemAdmin 行为不变）===
 		systemConfigGroup := RouterGroup.Group("")
-		systemConfigGroup.Use(middleware.RequirePermission(enums.PERM_SYSTEM_OPS, enums.ROLE_SYSTEM_ADMIN))
+		systemConfigGroup.Use(middleware.RequirePermission(enums.PERM_SYSTEM_CONFIG, enums.ROLE_SYSTEM_ADMIN))
 		{
 			router.ApiGroupApp.InitSystemConfigRouter(systemConfigGroup)
 		}
@@ -300,6 +309,8 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 		router.ApiGroupApp.InitWafDiagnosticRouter(tokenPlatformGroup)
 		// 租户管理：开通/续期/停用（生命周期）
 		router.ApiGroupApp.InitTenantRouter(tokenPlatformGroup)
+		// 套餐管理：租户差异化的配置源（权限集/配额/宽限默认值）
+		router.ApiGroupApp.InitPlanRouter(tokenPlatformGroup)
 	}
 
 	// 保存 gin.Engine 引用供 API 文档生成使用

@@ -6,14 +6,15 @@ import (
 
 type Account struct {
 	baseorm.BaseOrm
-	LoginAccount       string `gorm:"size:100" json:"login_account"`  //登录账号
-	LoginPassword      string `gorm:"size:255" json:"login_password"` //密码md5加密
-	Role               string `gorm:"size:50" json:"role"`            //登录角色 superAdmin/systemAdmin/securityAdmin/auditAdmin
-	GroupId            string `gorm:"size:64" json:"group_id"`        //权限组ID（空=走旧角色判定；绑定后按组权限码判定）
-	Status             int    `json:"status"`                         //状态
-	NeedChangePassword int    `json:"need_change_password"`           //是否需要强制改密 1需要 0否（首次登录/被重置后置1）
-	PwdUpdateTime      string `gorm:"size:32" json:"pwd_update_time"` //上次改密时间(2006-01-02 15:04:05)，用于有效期判断
-	Remarks            string `gorm:"size:500" json:"remarks"`        //备注
+	// LoginPassword 不参与 JSON 序列化：口令哈希不随账号列表/详情接口外泄
+	LoginAccount       string `gorm:"size:100" json:"login_account"`   //登录账号
+	LoginPassword      string `gorm:"size:255" json:"-"`               //密码哈希（bcrypt）
+	Role               string `gorm:"size:50" json:"role"`             //登录角色 superAdmin/systemAdmin/securityAdmin/auditAdmin/tenantAdmin
+	GroupId            string `gorm:"size:64" json:"group_id"`         //权限组ID（空=走旧角色判定；绑定后按组权限码判定）
+	Status             int    `json:"status"`                          //状态
+	NeedChangePassword int    `json:"need_change_password"`            //是否需要强制改密 1需要 0否（首次登录/被重置后置1）
+	PwdUpdateTime      string `gorm:"size:32" json:"pwd_update_time"`  //上次改密时间(2006-01-02 15:04:05)，用于有效期判断
+	Remarks            string `gorm:"size:500" json:"remarks"`         //备注
 	// 上次登录信息：登录成功后提示「本次IP/归属地，与上次是否一致」。
 	// 存在 core 库而不是只靠日志库的 login_history，是因为日志库会被数据保留策略清理，
 	// 清完之后不能让老账号被当成「首次登录」。

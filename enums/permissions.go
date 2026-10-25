@@ -23,8 +23,12 @@ const (
 	PERM_SECURITY = "security:policy"
 	// PERM_AUDIT 审计：系统日志、账号操作日志、登录历史、访问认证审计
 	PERM_AUDIT = "audit:view"
-	// PERM_SYSTEM_OPS 系统运维：系统配置、数据保留策略、通知渠道/订阅、批量任务
+	// PERM_SYSTEM_OPS 系统运维：数据保留策略、通知渠道/订阅、批量任务（租户隔离资源）
 	PERM_SYSTEM_OPS = "system:ops"
+	// PERM_SYSTEM_CONFIG 实例级系统配置：系统配置、GPT 模型配置、后台任务管理。
+	// 这些资源是实例全局的（SystemConfig 平台豁免、GPT 无租户列），租户侧不应持有，
+	// 从 system:ops 拆出（legacy=systemAdmin，存量账号行为不变）
+	PERM_SYSTEM_CONFIG = "system:config"
 	// PERM_ACCOUNT_MANAGE 账号与OTP：账号管理（租户内）、OTP 双因素
 	PERM_ACCOUNT_MANAGE = "account:manage"
 	// PERM_PLATFORM_ADMIN 平台级管理：开放平台 Key、SQL 查询、应用管理、AI 模型、
@@ -47,10 +51,38 @@ var AllPermissionCodes = []PermissionCodeInfo{
 	{Code: PERM_LOG_VIEW, Name: "访问日志查看与导出"},
 	{Code: PERM_SECURITY, Name: "防护策略管理"},
 	{Code: PERM_AUDIT, Name: "审计日志查看"},
-	{Code: PERM_SYSTEM_OPS, Name: "系统配置与运维"},
+	{Code: PERM_SYSTEM_OPS, Name: "系统运维（通知/保留/批量任务）"},
+	{Code: PERM_SYSTEM_CONFIG, Name: "实例级系统配置（平台）"},
 	{Code: PERM_ACCOUNT_MANAGE, Name: "账号管理"},
 	{Code: PERM_PLATFORM_ADMIN, Name: "平台级管理"},
 	{Code: PERM_GROUP_MANAGE, Name: "权限组管理"},
+}
+
+// tenantForbiddenCodes 租户侧禁止持有的权限码：平台域/实例级配置/权限组管理本身。
+// 套餐（plans.permissions）与租户权限组的写入都以 AllPermissionCodes 减本集合为上限，
+// 防止租户经任何通道（含平台误操作）拿到实例级权限。
+var tenantForbiddenCodes = map[string]bool{
+	PERM_PLATFORM_ADMIN: true,
+	PERM_GROUP_MANAGE:   true,
+	PERM_SYSTEM_CONFIG:  true,
+}
+
+// TenantAssignableCodes 租户可分配的权限码集合（套餐授权集的上限）。
+// 每次调用现算：目录扩充时自动纳入（若新增码默认允许租户持有），
+// 明确要禁租户的码须同时加进 tenantForbiddenCodes。
+func TenantAssignableCodes() []string {
+	codes := make([]string, 0, len(AllPermissionCodes))
+	for _, info := range AllPermissionCodes {
+		if !tenantForbiddenCodes[info.Code] {
+			codes = append(codes, info.Code)
+		}
+	}
+	return codes
+}
+
+// IsTenantAssignableCode 校验权限码是否合法且租户可持有（套餐写入侧 fail-closed）。
+func IsTenantAssignableCode(code string) bool {
+	return !tenantForbiddenCodes[code] && IsValidPermissionCode(code)
 }
 
 // IsValidPermissionCode 校验权限码是否在目录内（权限组写入侧 fail-closed）。

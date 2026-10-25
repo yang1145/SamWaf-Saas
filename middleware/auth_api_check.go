@@ -226,6 +226,13 @@ func Auth() gin.HandlerFunc {
 						return
 					}
 				}
+
+				// 套餐权限天花板：租户绑定了套餐时，把套餐权限集快照写入 context，
+				// RequirePermission 据此强制——权限组被改大也越不出套餐边界。
+				// 平台自身/未绑套餐返回 nil（不设天花板，行为不变）；快照走 5 分钟缓存
+				if ceiling := wafTenantService.TenantPermissionCeiling(tokenInfo.Tenant_ID); ceiling != nil {
+					c.Set("tenantPermCeiling", ceiling)
+				}
 			}
 		}
 

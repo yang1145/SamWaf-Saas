@@ -54,9 +54,12 @@ func RequireRole(allowedRoles ...string) gin.HandlerFunc {
 // 判定顺序：
 //  1. OpenAPI Key 调用放行（与 RequireRole 同口径，见上）；
 //  2. superAdmin（含空角色兜底）恒通过；
-//  3. 账号绑定了权限组（Auth 写入的 userGroupId 非空）→ 按组的权限码判定，
+//  3. 套餐权限天花板（Auth 写入的 tenantPermCeiling）：租户绑定了套餐时，
+//     权限码必须同时在天花板内——即使租户的权限组被改大也无法越出套餐边界；
+//     平台自身/未绑套餐/OpenAPI Key 无天花板，行为不变；
+//  4. 账号绑定了权限组（Auth 写入的 userGroupId 非空）→ 按组的权限码判定，
 //     不再回落 legacy 角色——权限组的授权边界是完整替代，不是叠加；
-//  4. 未绑定权限组 → 走 legacyRoles（旧四角色），存量账号行为不变。
+//  5. 未绑定权限组 → 走 legacyRoles（旧四角色），存量账号行为不变。
 //
 // 组权限读取带缓存（权限组增改时由服务层失效缓存）；查询失败 fail-closed 返回 403。
 // 必须挂载在 Auth() 之后。
@@ -88,6 +91,18 @@ func RequirePermission(code string, legacyRoles ...string) gin.HandlerFunc {
 		if role == enums.ROLE_SUPER_ADMIN {
 			c.Next()
 			return
+		}
+
+		// 套餐天花板（防御纵深）：租户账号请求平台未授权的域时直接 403，
+		// 与权限组判定相互独立——先挡一层，组内容再挡一层
+		if ceilingVal, ok := c.Get("tenantPermCeiling"); ok {
+			if ceiling, ok2 := ceilingVal.(map[string]bool); ok2 {
+				if !ceiling[code] {
+					response.ForbiddenWithMessage("当前套餐未包含该功能，请联系平台管理员升级", c)
+					c.Abort()
+					return
+				}
+			}
 		}
 
 		groupId, _ := c.Get("userGroupId")

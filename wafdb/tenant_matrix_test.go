@@ -20,7 +20,7 @@ import (
 //
 // 明确排除（平台级豁免，见 localdb.go tenantExemptModels）：
 // Account、TokenInfo、Otp、AccountPwdHistory、LoginHistory、SecurityAuditLog、
-// SystemConfig、WafSysLog、HostLoginEvent。
+// SystemConfig、WafSysLog、HostLoginEvent、Tenant（租户注册表）、Plan（套餐注册表）。
 // 明确排除（日志/统计类）：WebLog/AccessLog/EventPayload（日志库报文）、NotifyLog、
 // OPlatformLog、WafPluginLog、ThreatIPExcludeAudit、Stats 系列（统计库）。
 // 明确排除（非独立业务表/平台治理/废弃）：

@@ -142,6 +142,57 @@ func (receiver *WafTenantService) RequestPolicy(tenantID string) (deny bool, rea
 	return evaluateTenantPolicy(snap.Status, snap.ExpireTime, snap.GraceDays)
 }
 
+// tenantPermCeilingSnapshot 租户权限天花板的缓存快照。
+// Found=false 表示「无天花板」（无租户行/未绑套餐/套餐行缺失）——同样缓存，
+// 避免平台自身与存量租户的每个请求都打一次库。
+type tenantPermCeilingSnapshot struct {
+	Found bool            `json:"found"`
+	Perms map[string]bool `json:"perms"`
+}
+
+// TenantPermissionCeiling 租户权限天花板：该租户任何账号（含权限组授权）可持有的
+// 权限码上限 = 所绑套餐的权限集。返回 nil 表示无天花板（平台自身/未绑套餐/无租户行，
+// 行为与套餐机制引入前一致）。RequirePermission 据此强制——即使租户的权限组被
+// 手工改大，也无法越出套餐边界。
+//
+// 快照走 5 分钟缓存（与租户策略缓存同口径），套餐/租户编辑时由服务层主动失效。
+// 数据库故障按无天花板处理（fail-open）：天花板是差异化控制与纵深防御，
+// 不是租户数据隔离的边界（那由 GORM 租户回调保证），故障时放行保可用。
+func (receiver *WafTenantService) TenantPermissionCeiling(tenantID string) map[string]bool {
+	if tenantID == "" {
+		return nil
+	}
+	key := enums.CACHE_TENANT_PERM_CEILING + tenantID
+	var snap tenantPermCeilingSnapshot
+	if err := global.GCACHE_WAFCACHE.GetAsEx(key, &snap, tenantPolicyCacheTTL); err != nil {
+		pctx := wafctx.PlatformScope(context.Background())
+		var tenant model.Tenant
+		dbErr := global.GWAF_LOCAL_DB.WithContext(pctx).
+			Where("tenant_id = ?", tenantID).First(&tenant).Error
+		switch {
+		case dbErr == nil && strings.TrimSpace(tenant.PlanCode) != "":
+			plan := WafPlanServiceApp.GetByCodeApi(pctx, tenant.PlanCode)
+			if plan.Id == "" {
+				// 套餐被引用期间不可删（DelApi 校验），这里是异常数据的兜底：不设天花板
+				snap = tenantPermCeilingSnapshot{Found: false}
+			} else {
+				snap = tenantPermCeilingSnapshot{Found: true, Perms: enums.ParsePermissionSet(plan.Permissions)}
+			}
+			global.GCACHE_WAFCACHE.SetWithTTl(key, snap, tenantPolicyCacheTTL)
+		case dbErr == nil, errors.Is(dbErr, gorm.ErrRecordNotFound):
+			snap = tenantPermCeilingSnapshot{Found: false}
+			global.GCACHE_WAFCACHE.SetWithTTl(key, snap, tenantPolicyCacheTTL)
+		default:
+			zlog.Warn("租户权限天花板查询失败，本次按无天花板处理", "tenant", tenantID, "error", dbErr.Error())
+			return nil
+		}
+	}
+	if !snap.Found {
+		return nil
+	}
+	return snap.Perms
+}
+
 // CheckTenantQuota 租户配额校验（AddApi 挂钩，host/account 两个维度，0=不限）。
 // 租户码取请求 ctx，未声明时回退全局（=平台自身名下的行数，平台自身通常无租户行 → 不受限）。
 func (receiver *WafTenantService) CheckTenantQuota(ctx context.Context, kind string) error {
@@ -238,8 +289,11 @@ func (receiver *WafTenantService) GetDetailByIdApi(ctx context.Context, id strin
 // AddTenantApi 开通租户（provisioning）。用 PlatformScope(ctx) 依次落库：
 //  1. 租户行（BaseOrm 三要素手工设置：Tenant_ID=新租户码）
 //  2. 复制平台自身的 BuiltIn 预置组到新租户（组名/权限相同，新 Id、新租户码）
-//  3. 「租户管理员」组（日常运营权限码，不含平台域/权限组管理）
+//  3. 「租户管理员」组（授权集取套餐 permissions；未指定套餐回落默认全集）
 //  4. 租户管理员账号（不复用 createAccount——它盖全局租户戳；这里手工设置 BaseOrm 三要素）
+//
+// 套餐（plan_code 非空时）：必须存在且启用；管理员组授权集=套餐权限集，
+// 配额/宽限期未显式传值（nil）时取套餐默认值，显式传值（含 0=不限）优先。
 func (receiver *WafTenantService) AddTenantApi(ctx context.Context, req request.WafTenantAddReq) (model.Tenant, error) {
 	tenantID := strings.TrimSpace(req.TenantID)
 	if !tenantIDPattern.MatchString(tenantID) {
@@ -249,15 +303,13 @@ func (receiver *WafTenantService) AddTenantApi(ctx context.Context, req request.
 	if tenantName == "" {
 		return model.Tenant{}, errors.New("租户名称不能为空")
 	}
-	if req.MaxHosts < 0 || req.MaxAccounts < 0 {
-		return model.Tenant{}, errors.New("配额不能为负数")
-	}
-	if req.GraceDays < 0 {
-		return model.Tenant{}, errors.New("宽限天数不能为负数")
+	maxHosts, maxAccounts, graceDays, err := resolveTenantQuotas(ctx, req.MaxHosts, req.MaxAccounts, req.GraceDays, req.PlanCode)
+	if err != nil {
+		return model.Tenant{}, err
 	}
 	expireTime := strings.TrimSpace(req.ExpireTime)
 	if expireTime != "" {
-		if _, err := time.ParseInLocation(tenantExpireTimeLayout, expireTime, time.Local); err != nil {
+		if _, err = time.ParseInLocation(tenantExpireTimeLayout, expireTime, time.Local); err != nil {
 			return model.Tenant{}, errors.New("到期时间格式应为 2006-01-02 15:04:05")
 		}
 	}
@@ -274,14 +326,14 @@ func (receiver *WafTenantService) AddTenantApi(ctx context.Context, req request.
 	db := global.GWAF_LOCAL_DB.WithContext(pctx)
 
 	var cnt int64
-	if err := db.Model(&model.Tenant{}).Where("tenant_id = ?", tenantID).Count(&cnt).Error; err != nil {
+	if err = db.Model(&model.Tenant{}).Where("tenant_id = ?", tenantID).Count(&cnt).Error; err != nil {
 		return model.Tenant{}, err
 	}
 	if cnt > 0 {
 		return model.Tenant{}, errors.New("租户码已存在: " + tenantID)
 	}
 	var accCnt int64
-	if err := db.Model(&model.Account{}).Where("login_account = ?", adminAccount).Count(&accCnt).Error; err != nil {
+	if err = db.Model(&model.Account{}).Where("login_account = ?", adminAccount).Count(&accCnt).Error; err != nil {
 		return model.Tenant{}, err
 	}
 	if accCnt > 0 {
@@ -307,10 +359,10 @@ func (receiver *WafTenantService) AddTenantApi(ctx context.Context, req request.
 		TenantName:  tenantName,
 		Status:      enums.TenantStatusActive,
 		PlanCode:    strings.TrimSpace(req.PlanCode),
-		MaxHosts:    req.MaxHosts,
-		MaxAccounts: req.MaxAccounts,
+		MaxHosts:    maxHosts,
+		MaxAccounts: maxAccounts,
 		ExpireTime:  expireTime,
-		GraceDays:   req.GraceDays,
+		GraceDays:   graceDays,
 		Remarks:     strings.TrimSpace(req.Remarks),
 	}
 	if err = db.Create(bean).Error; err != nil {
@@ -346,7 +398,11 @@ func (receiver *WafTenantService) AddTenantApi(ctx context.Context, req request.
 		}
 	}
 
-	// 3. 租户管理员组
+	// 3. 租户管理员组：授权集取套餐（有套餐时），否则默认全集
+	adminPerms := strings.Join(tenantAdminPermissionCodes, ",")
+	if plan := WafPlanServiceApp.GetByCodeApi(pctx, strings.TrimSpace(req.PlanCode)); plan.Id != "" {
+		adminPerms = plan.Permissions
+	}
 	adminGroup := &model.PermissionGroup{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -357,7 +413,7 @@ func (receiver *WafTenantService) AddTenantApi(ctx context.Context, req request.
 		},
 		GroupName:   tenantAdminGroupName,
 		Remarks:     "租户开通自动创建：租户管理员",
-		Permissions: strings.Join(tenantAdminPermissionCodes, ","),
+		Permissions: adminPerms,
 		Status:      1,
 		BuiltIn:     1,
 	}
@@ -392,6 +448,73 @@ func (receiver *WafTenantService) AddTenantApi(ctx context.Context, req request.
 	// 新租户码此前若被当成「不存在的租户」缓存过负结果，开通后立即清掉
 	receiver.invalidateTenantPolicyCache(tenantID)
 	return *bean, nil
+}
+
+// resolveTenantQuota 开通租户的配额/宽限期取值：显式传值（含 0=不限）优先，
+// 未传（nil）回落套餐默认值。负数整单拒绝。
+func resolveTenantQuotas(ctx context.Context, maxHosts, maxAccounts, graceDays *int, planCode string) (int, int, int, error) {
+	resolve := func(v *int, planVal int, negMsg string) (int, error) {
+		if v != nil {
+			if *v < 0 {
+				return 0, errors.New(negMsg)
+			}
+			return *v, nil
+		}
+		return planVal, nil
+	}
+	var plan model.Plan
+	code := strings.TrimSpace(planCode)
+	if code != "" {
+		plan = WafPlanServiceApp.GetByCodeApi(wafctx.PlatformScope(ctx), code)
+		if plan.Id == "" {
+			return 0, 0, 0, errors.New("套餐不存在: " + code)
+		}
+		if plan.Status != 1 {
+			return 0, 0, 0, errors.New("套餐已停用: " + code)
+		}
+	}
+	h, err := resolve(maxHosts, plan.MaxHosts, "站点配额不能为负数")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	a, err := resolve(maxAccounts, plan.MaxAccounts, "账号配额不能为负数")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	g, err := resolve(graceDays, plan.GraceDays, "宽限天数不能为负数")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return h, a, g, nil
+}
+
+// syncTenantAdminGroupPermissions 重写指定租户「租户管理员」BuiltIn 组的授权集并
+// 失效组缓存（RBAC 立即按新权限判定；组 ID 不变，令牌无需重签）。
+// db 必须是平台作用域（跨租户写），供开通/换套餐/套餐编辑传播共用。
+func syncTenantAdminGroupPermissions(db *gorm.DB, tenantID, permissions string) error {
+	var group model.PermissionGroup
+	if err := db.Model(&model.PermissionGroup{}).
+		Where("tenant_id = ? and user_code = ? and group_name = ? and built_in = 1",
+			tenantID, global.GWAF_USER_CODE, tenantAdminGroupName).
+		First(&group).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 租户行存在但管理员组缺失（异常数据）：跳过同步不阻断，天花板仍会兜底
+			zlog.Warn("租户管理员组缺失，跳过权限同步", "tenant", tenantID)
+			return nil
+		}
+		return err
+	}
+	if group.Permissions == permissions {
+		return nil
+	}
+	if err := db.Model(&model.PermissionGroup{}).Where("id = ?", group.Id).Updates(map[string]interface{}{
+		"permissions": permissions,
+		"UPDATE_TIME": customtype.JsonTime(time.Now()),
+	}).Error; err != nil {
+		return err
+	}
+	global.GCACHE_WAFCACHE.Remove(enums.CACHE_PERMISSION_GROUP + group.Id)
+	return nil
 }
 
 // RenewTenantApi 续期：ExpireTime（绝对时间）与 AddDays（顺延天数）二选一，都给了用绝对时间。
@@ -440,6 +563,10 @@ func (receiver *WafTenantService) RenewTenantApi(ctx context.Context, req reques
 
 // EditTenantApi 编辑租户：租户名/套餐/配额/宽限期/状态/到期时间可改，失效策略缓存。
 // Status/ExpireTime 的 nil 表示不修改；ExpireTime 指向空串 = 永不过期。
+//
+// 换套餐（plan_code 变化）时：新套餐必须存在且启用；租户管理员组授权集重写为新套餐
+// 权限集（清除套餐则回落默认全集）；配额/宽限期未显式传值（nil）时重置为新套餐
+// 默认值（清除套餐重置为 0=不限），显式传值（含 0）优先；天花板缓存失效立即生效。
 func (receiver *WafTenantService) EditTenantApi(ctx context.Context, req request.WafTenantEditReq) (model.Tenant, error) {
 	tenantID := strings.TrimSpace(req.TenantID)
 	if tenantID == "" {
@@ -464,20 +591,39 @@ func (receiver *WafTenantService) EditTenantApi(ctx context.Context, req request
 		return model.Tenant{}, errors.New("租户不存在")
 	}
 
+	newPlanCode := strings.TrimSpace(req.PlanCode)
+	planChanged := newPlanCode != bean.PlanCode
+	var newPlan model.Plan
+	if planChanged && newPlanCode != "" {
+		newPlan = WafPlanServiceApp.GetByCodeApi(wafctx.PlatformScope(ctx), newPlanCode)
+		if newPlan.Id == "" {
+			return model.Tenant{}, errors.New("套餐不存在: " + newPlanCode)
+		}
+		if newPlan.Status != 1 {
+			return model.Tenant{}, errors.New("套餐已停用: " + newPlanCode)
+		}
+	}
+
 	updates := map[string]interface{}{
 		"tenant_name": tenantName,
-		"plan_code":   strings.TrimSpace(req.PlanCode),
+		"plan_code":   newPlanCode,
 		"remarks":     strings.TrimSpace(req.Remarks),
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
 	if req.MaxHosts != nil {
 		updates["max_hosts"] = *req.MaxHosts
+	} else if planChanged {
+		updates["max_hosts"] = newPlan.MaxHosts
 	}
 	if req.MaxAccounts != nil {
 		updates["max_accounts"] = *req.MaxAccounts
+	} else if planChanged {
+		updates["max_accounts"] = newPlan.MaxAccounts
 	}
 	if req.GraceDays != nil {
 		updates["grace_days"] = *req.GraceDays
+	} else if planChanged {
+		updates["grace_days"] = newPlan.GraceDays
 	}
 	if req.Status != nil {
 		switch *req.Status {
@@ -500,6 +646,18 @@ func (receiver *WafTenantService) EditTenantApi(ctx context.Context, req request
 		return model.Tenant{}, err
 	}
 	receiver.invalidateTenantPolicyCache(tenantID)
+
+	// 换套餐：同步租户管理员组授权集（新套餐集；清除套餐回落默认全集）+ 天花板失效
+	if planChanged {
+		adminPerms := strings.Join(tenantAdminPermissionCodes, ",")
+		if newPlanCode != "" {
+			adminPerms = newPlan.Permissions
+		}
+		if err := syncTenantAdminGroupPermissions(db, tenantID, adminPerms); err != nil {
+			return model.Tenant{}, errors.New("套餐已切换，但同步租户管理员权限组失败: " + err.Error())
+		}
+		global.GCACHE_WAFCACHE.Remove(enums.CACHE_TENANT_PERM_CEILING + tenantID)
+	}
 
 	var fresh model.Tenant
 	db.Where("id = ?", bean.Id).First(&fresh)

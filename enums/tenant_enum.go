@@ -17,3 +17,8 @@ const (
 // CACHE_TENANT_STATUS 请求期租户策略的缓存键前缀（键=租户码，值=RequestPolicy 快照）。
 // 登录走实时校验；请求期用缓存，策略变化最迟 5 分钟生效。
 const CACHE_TENANT_STATUS = "tenant_status:"
+
+// CACHE_TENANT_PERM_CEILING 租户权限天花板的缓存键前缀（键=租户码，值=套餐权限集
+// 的 map[string]bool 快照，nil 值经 Found 语义区分）。套餐/租户编辑时主动失效；
+// RequirePermission 热路径读取。
+const CACHE_TENANT_PERM_CEILING = "tenant_perm_ceiling:"

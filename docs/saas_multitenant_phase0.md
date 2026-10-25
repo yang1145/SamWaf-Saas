@@ -2,6 +2,7 @@
 
 > 状态：阶段0 机制已落地；阶段2 试点（主机管理 + IP/URL 白名单两条链路的请求级
 > 上下文传播）已落地并通过端到端隔离测试。本文记录设计决策、当前边界与后续任务。
+> 租户差异化轮次（套餐体系 + 权限降权 + 账号域收敛）已落地，见「套餐与租户权限差异化」章。
 
 ## 背景与目标
 
@@ -60,9 +61,10 @@ SamWaf 由「单租户单实例」演进为「共享库多租户」（方案B，
 
 ### 模型与判定
 
-- **权限码**（`enums/permissions.go`，域级粒度，8 个）：`dashboard:view`、
+- **权限码**（`enums/permissions.go`，域级粒度，10 个）：`dashboard:view`、
   `host:manage`、`log:view`、`security:policy`、`audit:view`、`system:ops`、
-  `account:manage`、`permission:manage`——一个码对应 localserver.go 里的一组路由。
+  `system:config`、`account:manage`、`platform:admin`、`permission:manage`——
+  一个码对应 localserver.go 里的一组路由。
 - **PermissionGroup**（`permission_groups` 表，BaseOrm 租户隔离）：组名（租户内唯一）、
   权限码列表（逗号分隔）、状态、BuiltIn 预置标记。
 - **Account.GroupId**：空 = 走旧四角色判定（存量账号行为不变）；绑定后**完全按
@@ -80,7 +82,9 @@ SamWaf 由「单租户单实例」演进为「共享库多租户」（方案B，
 | 仪表盘与总览（stat/analysis/sysinfo/monitor/license/common） | dashboard:view | 全部四角色 |
 | 站点与转发（hosts/group/pathrule/lb/ssl 全套/ca/cdn/tunnel/cacherule/blockingpage/httpauth/onekeymod/vpconfig/hostconn/file） | host:manage | 全部四角色 |
 | 访问日志（log/logfilewrite/iplocation/iplookup） | log:view | 全部四角色 |
-| 系统运维（batchtask/task/notify*/dataretention/gpt/systemconfig） | system:ops | SYSTEM_ADMIN |
+| 系统运维（batchtask/notify*/dataretention） | system:ops | 全部四角色 |
+| 实例级配置（gpt/task） | system:config | 全部四角色 |
+| 系统配置（systemconfig） | system:config | SYSTEM_ADMIN |
 | 防护策略（原安全域 + 防篡改/隐私DLP/防爆破/防火墙联动/威胁情报） | security:policy | SECURITY_ADMIN |
 | 审计（syslog/accountlog/login_history/access_audit） | audit:view | AUDIT_ADMIN |
 | 账号与开放平台（TokenOnly 组） | account:manage | SYSTEM_ADMIN |
@@ -137,6 +141,89 @@ max_hosts/max_accounts。注意：Account 在平台豁免清单内，配额统�
   已预留，`attachTrafficMeter` 为流量计量挂钩点。
 - 引擎数据面对到期租户的站点**继续转发**（商业默认）；如需"到期即停代理"，
   在引擎配置装载处按租户状态过滤即可（hook 点：GetAllHostApi 的 PlatformScope 读）。
+
+## 套餐与租户权限差异化（已落地）
+
+解决"租户权限过高且差异化不明显"：此前每个租户开通即得 7/9 权限码、
+`plan_code` 不驱动任何行为、账号域还存在跨租户越权面。本轮引入三条主线：
+**套餐（差异化引擎）+ 权限码再划分（降权）+ 套餐天花板（集中强制点）**。
+
+### 套餐（plans 表，平台注册表）
+
+- `model.Plan`（迁移 202610260002，平台豁免清单成员，`plan_code` 实例级全局唯一）：
+  权限集（逗号分隔，须 ⊆ 租户可分配集）、max_hosts/max_accounts/grace_days 默认值、状态。
+- 平台域 API `/api/v1/plan/{list,detail,add,edit,del}`（tokenPlatformGroup，platform:admin）；
+  被租户引用的套餐禁删；权限集写入 fail-closed（平台码/非法码整单拒绝）。
+- 启动幂等播种 4 个预置套餐（`InitDefaultPlans`，按套餐码查重）：体验版 free
+  （dashboard/host/log，3 站 2 号）、基础版 basic（+security/audit，10 站 5 号）、
+  专业版 pro（+system:ops/account:manage，50 站 20 号）、旗舰版 enterprise
+  （租户可分配全集，不限）。播种只补缺，平台后续编辑不被覆盖。
+- **开通集成**（AddTenantApi）：带 plan_code 时管理员组授权集=套餐权限集，
+  配额/宽限期未传（nil）取套餐默认，显式传值（含 0=不限）优先——为此
+  `WafTenantAddReq` 配额字段改为指针。套餐不存在/停用则整单拒绝。
+- **换套餐**（EditTenantApi）：plan_code 变化时重写「租户管理员」BuiltIn 组授权集
+  （清除套餐回落默认全集）+ 失效组缓存与天花板缓存；配额未显式传值时重置为新套餐默认。
+- **套餐编辑传播**（propagatePlanPermissions）：套餐权限集变化同步到引用该套餐的
+  全部租户的管理员组并失效缓存。配额/宽限期变化**不**回写存量租户（快照语义，
+  经租户编辑单独调整）。
+- 同步原语：`syncTenantAdminGroupPermissions(db, tenantID, perms)`——组 ID 不变，
+  令牌无需重签（RBAC 按组 ID 现查缓存/库）。
+
+### 权限码再划分与租户可分配集
+
+- 新增 `system:config`（实例级系统配置/GPT/任务管理，从 system:ops 拆出）：
+  SystemConfig 平台豁免=全局生效、GPT 无租户列，租户不应触达。legacy 可达性逐路由
+  保持（系统配置仅 systemAdmin，GPT/任务三角色），存量账号行为不变。
+- `enums.TenantAssignableCodes()` / `IsTenantAssignableCode`：全目录减
+  `platform:admin`、`permission:manage`、`system:config`——套餐与一切租户侧
+  权限集写入以此为上限。
+- 未绑套餐的存量租户：管理员组维持原 7 码不动、无天花板，行为与旧版一致。
+
+### 账号域租户收敛（修越权 + 自助管理）
+
+Account 在平台豁免清单里，租户回调不给它追加过滤，账号读写必须**手工限定归属**
+（`accountTenantScope(ctx)`：请求租户非平台时返回租户码，否则空=平台视角不限定）：
+
+- 列表/详情/编辑/删除全部带 `tenant_id = ?`，跨租户目标按"账号不存在"处理
+  （不泄露存在性）；`ResetPwdApi` 补 ctx 同样收敛。
+- 租户管理员自助建号/删号（原 superAdmin-only 收窄为场景化）：
+  建号角色**强制 tenantAdmin**（防提权）、归属按请求 ctx 落列、配额生效、
+  只能绑本租户可见的权限组；删号限本租户普通账号、不可删自己、租户内至少保留一号；
+  删号后强制清理该账号全部会话。平台 superAdmin 行为不变。
+- `Account.LoginPassword` 加 `json:"-"`：口令哈希不再随列表/详情接口外泄。
+- OTP 重置维持仅超管（Otp 按用户名全局删除，租户侧开放前需先租户化 Otp 表）。
+
+### 套餐天花板（防御纵深）
+
+- `WafTenantService.TenantPermissionCeiling(tenantID)`：租户→套餐权限集快照，
+  5 分钟缓存（与策略缓存同口径），套餐/租户编辑时主动失效；无租户行/未绑套餐
+  返回 nil（无天花板）。数据库故障 fail-open（差异化控制不是隔离边界，
+  隔离由 GORM 回调保证）。
+- `Auth()` 把快照写入 `c.Set("tenantPermCeiling")`（OpenAPI Key/平台自身不设）；
+  `RequirePermission` 在 superAdmin 判定后强制：权限码不在天花板 → 403
+  （提示"当前套餐未包含该功能"）。**即使租户权限组被手工改大也越不出套餐边界**。
+- 判定顺序：OpenAPI Key（按 Key 授权范围）→ superAdmin → 套餐天花板 →
+  权限组 → legacy 角色。
+
+### 测试锚定
+
+- `service/waf_service/waf_tenant_plan_test.go`：套餐 CRUD 校验/开通按套餐下发/
+  换套餐同步/套餐编辑传播/禁删/天花板矩阵/播种幂等。
+- `service/waf_service/waf_account_tenant_scope_test.go`：账号列表/详情/编辑/删除
+  租户限定、建号盖章与配额、哈希不外泄。
+- `router/tenant_authz_e2e_test.go` 追加 5 个子测试：账号域收敛（HTTP 级）、
+  自助建号角色强制、天花板授权集内可访问、组被改大仍 403、换受限套餐立即 403。
+- `wafdb/tenant_matrix_test.go` 排除清单登记 Plan（平台注册表）。
+
+### 待办（后续扩展点）
+
+- 更多配额维度（规则数/日志保留天数/流量上限）——CheckTenantQuota 扩展 kind 即可。
+- `permission:manage` 下放租户（专业版自助管理子账号权限组）：需先实现
+  "租户侧组写入与套餐权限集取交集"，防止组内塞平台码。
+- OpenAPI Key 绑定租户（oplatform_key 加租户列后切换注入点）。
+- 计费聚合/按租户账单输出（ZJMF 对接形态见「业务系统对接」章）。
+- 前端（SamWafWeb-Saas 仓库）：套餐管理页面、租户表单选套餐、账号管理页适配。
+
 
 ## 阶段0 的边界说明（历史）
 
@@ -225,7 +312,10 @@ service→service 透传同一 ctx。`NotifyWaf` 中 3 处无 DB 查询的保持
 **平台表豁免清单（任务3）**：`wafdb/localdb.go` 的 `tenantExemptModels` 按模型
 类型（`schema.ModelType`，不受表名命名策略影响）豁免租户过滤/盖章，当前包含：
 `Account`（管理员）、`TokenInfo`（会话）、`Otp`（2FA）、`AccountPwdHistory`、
-`LoginHistory`、`SecurityAuditLog`、`SystemConfig`、`WafSysLog`、`HostLoginEvent`。
+`LoginHistory`、`SecurityAuditLog`、`SystemConfig`、`WafSysLog`、`HostLoginEvent`、
+`Tenant`（租户注册表）、`Plan`（套餐注册表）。
+注意：Account 虽豁免，但账号域的租户读写限定由服务层手工完成
+（`accountTenantScope`，见「套餐与租户权限差异化」章）。
 通知渠道、任务、开放平台 Key 等**不在豁免清单**——它们在未来多租户下应按租户隔离
 （租户 A 只看到自己的渠道/任务），保持过滤是正确行为。
 

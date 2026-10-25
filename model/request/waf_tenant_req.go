@@ -17,14 +17,15 @@ type WafTenantDetailReq struct {
 }
 
 // WafTenantAddReq 开通租户（provisioning）：建租户行 + 复制预置权限组 + 建租户管理员账号。
+// plan_code 非空时：管理员组授权集=套餐权限集，配额/宽限期未传（nil）取套餐默认值。
 type WafTenantAddReq struct {
 	TenantID    string `json:"tenant_id" binding:"required"`   //租户码，^[a-z0-9_-]{3,32}$，全局唯一
 	TenantName  string `json:"tenant_name" binding:"required"` //租户名称
-	PlanCode    string `json:"plan_code"`                      //套餐码（预留）
-	MaxHosts    int    `json:"max_hosts"`                      //站点数配额，0=不限
-	MaxAccounts int    `json:"max_accounts"`                   //账号数配额，0=不限
+	PlanCode    string `json:"plan_code"`                      //套餐码（须存在且启用）
+	MaxHosts    *int   `json:"max_hosts"`                      //站点数配额，nil=取套餐默认（无套餐则0=不限），显式0=不限
+	MaxAccounts *int   `json:"max_accounts"`                   //账号数配额，nil=取套餐默认（无套餐则0=不限），显式0=不限
 	ExpireTime  string `json:"expire_time"`                    //到期时间 2006-01-02 15:04:05，空=永久
-	GraceDays   int    `json:"grace_days"`                     //到期后宽限天数
+	GraceDays   *int   `json:"grace_days"`                     //到期后宽限天数，nil=取套餐默认
 	Remarks     string `json:"remarks"`                        //备注
 	// 租户管理员初始账号（开通时自动创建，Role=tenantAdmin，绑定"租户管理员"权限组）
 	AdminAccount  string `json:"admin_account" binding:"required"`

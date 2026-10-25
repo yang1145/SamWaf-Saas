@@ -26,14 +26,21 @@ func currentRole(c *gin.Context) string {
 	return enums.ROLE_SUPER_ADMIN
 }
 
-// AddApi 新增账号
+// AddApi 新增账号。
+// 创建权限：超级管理员可建任意角色账号（原 N7 语义）；租户管理员可为本租户建号，
+// 角色强制 tenantAdmin（防提权）、配额/权限组校验在 service 层（随请求租户生效）。
 func (w *WafAccountApi) AddApi(c *gin.Context) {
 	var req request.WafAccountAddReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		// N7 防提权：账号创建集中到超级管理员，杜绝 systemAdmin 横向新建 security/audit/其它 system 管理员自我提权。
-		if currentRole(c) != enums.ROLE_SUPER_ADMIN {
-			response.ForbiddenWithMessage("仅超级管理员可创建管理账号", c)
+		switch currentRole(c) {
+		case enums.ROLE_SUPER_ADMIN:
+			// 平台超管：原路径，角色按请求
+		case enums.ROLE_TENANT_ADMIN:
+			// 租户管理员：仅可建本租户的普通账号，角色强制 tenantAdmin
+			req.Role = enums.ROLE_TENANT_ADMIN
+		default:
+			response.ForbiddenWithMessage("仅超级管理员或租户管理员可创建账号", c)
 			return
 		}
 		err = wafAccountService.CheckIsExistApi(req)
@@ -84,21 +91,27 @@ func (w *WafAccountApi) GetListApi(c *gin.Context) {
 	}
 }
 
-// DelAccountApi 删除账号
+// DelAccountApi 删除账号。
+// 删除权限：超级管理员可删任意账号（原 N7 语义）；租户管理员可删本租户普通账号
+// （不能删自己，service 层校验归属/角色/数量兜底）。
 func (w *WafAccountApi) DelAccountApi(c *gin.Context) {
 	var req request.WafAccountDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		// N7 防提权：账号删除集中到超级管理员，防止 systemAdmin 删除超管/他域账号（原先无任何角色/目标校验）。
-		if currentRole(c) != enums.ROLE_SUPER_ADMIN {
-			response.ForbiddenWithMessage("仅超级管理员可删除管理账号", c)
+		role := currentRole(c)
+		if role != enums.ROLE_SUPER_ADMIN && role != enums.ROLE_TENANT_ADMIN {
+			response.ForbiddenWithMessage("仅超级管理员或租户管理员可删除账号", c)
 			return
 		}
-		err = wafAccountService.DelApi(req)
+		loginAccount := ""
+		if v, ok := c.Get("loginAccount"); ok {
+			loginAccount, _ = v.(string)
+		}
+		err = wafAccountService.DelApi(c.Request.Context(), req, role, loginAccount)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
-			response.FailWithMessage("发生错误", c)
+			response.FailWithMessage(err.Error(), c)
 		} else {
 			response.OkWithMessage("删除成功", c)
 		}
@@ -192,7 +205,7 @@ func (w *WafAccountApi) ResetAccountPwdApi(c *gin.Context) {
 			response.OkWithMessage("两次输入的密码不同", c)
 			return
 		}
-		err = wafAccountService.ResetPwdApi(req)
+		err = wafAccountService.ResetPwdApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage(err.Error(), c)
 		} else {

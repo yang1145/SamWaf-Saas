@@ -2,6 +2,7 @@ package waf_service
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/customtype"
 	"SamWaf/enums"
@@ -24,6 +25,23 @@ const pwdTimeLayout = "2006-01-02 15:04:05"
 type WafAccountService struct{}
 
 var WafAccountServiceApp = new(WafAccountService)
+
+// accountTenantScope 账号域的租户归属限定。
+// model.Account 在 tenantExemptModels 平台豁免清单里，租户回调不会给它的查询追加
+// 过滤条件——账号的列表/详情/编辑/删除必须在这里手工限定归属，否则租户管理员
+// 可以看到并操作全平台任意账号。
+// 返回空串表示平台视角（无租户上下文/平台作用域/平台自身租户），不限定、
+// 行为与改造前一致；返回非空租户码时所有账号读写都必须带 tenant_id = 该值。
+func accountTenantScope(ctx context.Context) string {
+	if ctx == nil || wafctx.PlatformScoped(ctx) {
+		return ""
+	}
+	tenantID, _, hasCtx := wafctx.TenantFrom(ctx)
+	if !hasCtx || tenantID == "" || tenantID == global.GWAF_TENANT_ID {
+		return ""
+	}
+	return tenantID
+}
 
 // pwdHash 计算口令哈希（bcrypt，内含随机 per-password 盐）
 func (receiver *WafAccountService) pwdHash(plain string) (string, error) {
@@ -93,8 +111,10 @@ func (receiver *WafAccountService) recordPwdHistory(loginAccount, hash string) {
 	}
 }
 
-// AddApi 管理员新建账号：租户账号数配额 + 强制角色合法 + 口令复杂度校验，新建账号默认需首登改密。
+// AddApi 新建账号：租户账号数配额 + 强制角色合法 + 口令复杂度校验，新建账号默认需首登改密。
 // 绑定了权限组（GroupId 非空）时校验组存在，权限组查询随请求 ctx 走租户回调。
+// 租户管理员建号：角色由 API 层强制为 tenantAdmin（防提权），归属按请求 ctx 盖章，
+// 只能绑定本租户可见的权限组（checkGroupExists 随 ctx 租户过滤）。
 func (receiver *WafAccountService) AddApi(ctx context.Context, req request.WafAccountAddReq) error {
 	// 租户账号数配额（tenants.max_accounts，0=不限；平台/无租户上下文不受限）
 	if err := WafTenantServiceApp.CheckTenantQuota(ctx, enums.TenantQuotaKindAccount); err != nil {
@@ -109,7 +129,7 @@ func (receiver *WafAccountService) AddApi(ctx context.Context, req request.WafAc
 	if err := receiver.checkGroupExists(ctx, req.GroupId); err != nil {
 		return err
 	}
-	return receiver.createAccount(req.LoginAccount, req.Role, req.LoginPassword, req.Status, req.Remarks, global.GCONFIG_PWD_FORCE_CHANGE_DEFAULT == 1, req.GroupId)
+	return receiver.createAccount(ctx, req.LoginAccount, req.Role, req.LoginPassword, req.Status, req.Remarks, global.GCONFIG_PWD_FORCE_CHANGE_DEFAULT == 1, req.GroupId)
 }
 
 // InitDefaultAccount 系统引导创建默认管理员（全新安装）。
@@ -121,7 +141,7 @@ func (receiver *WafAccountService) InitDefaultAccount() error {
 		plainPwd = global.GWAF_DEFAULT_ACCOUNT_PWD
 	}
 	// 强制首登改密（needChange=true），不做复杂度校验避免严格策略下引导被锁死
-	if e := receiver.createAccount(global.GWAF_DEFAULT_ACCOUNT, enums.ROLE_SUPER_ADMIN, plainPwd, 0, "系统初始化生成", true, ""); e != nil {
+	if e := receiver.createAccount(context.Background(), global.GWAF_DEFAULT_ACCOUNT, enums.ROLE_SUPER_ADMIN, plainPwd, 0, "系统初始化生成", true, ""); e != nil {
 		return e
 	}
 	receiver.writeInitialPasswordFile(global.GWAF_DEFAULT_ACCOUNT, plainPwd)
@@ -146,8 +166,11 @@ func (receiver *WafAccountService) writeInitialPasswordFile(account, plainPwd st
 		account, plainPwd, fp))
 }
 
-// createAccount 内部统一建账逻辑（groupId 为空表示不绑定权限组，走旧四角色判定）
-func (receiver *WafAccountService) createAccount(loginAccount, role, plainPwd string, status int, remarks string, needChange bool, groupId string) error {
+// createAccount 内部统一建账逻辑（groupId 为空表示不绑定权限组，走旧四角色判定）。
+// Account 在平台豁免清单里，before_create 不会给它盖章，归属必须在这里按
+// accountTenantScope 显式落列：租户上下文建本租户的号，平台/无上下文保持
+// 全局标识（与改造前一致）。
+func (receiver *WafAccountService) createAccount(ctx context.Context, loginAccount, role, plainPwd string, status int, remarks string, needChange bool, groupId string) error {
 	hash, err := receiver.pwdHash(plainPwd)
 	if err != nil {
 		return err
@@ -156,11 +179,15 @@ func (receiver *WafAccountService) createAccount(loginAccount, role, plainPwd st
 	if needChange {
 		needChangeFlag = 1
 	}
+	tenantID := global.GWAF_TENANT_ID
+	if scope := accountTenantScope(ctx); scope != "" {
+		tenantID = scope
+	}
 	var bean = &model.Account{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
 			USER_CODE:   global.GWAF_USER_CODE,
-			Tenant_ID:   global.GWAF_TENANT_ID,
+			Tenant_ID:   tenantID,
 			CREATE_TIME: customtype.JsonTime(time.Now()),
 			UPDATE_TIME: customtype.JsonTime(time.Now()),
 		},
@@ -173,7 +200,9 @@ func (receiver *WafAccountService) createAccount(loginAccount, role, plainPwd st
 		PwdUpdateTime:      time.Now().Format(pwdTimeLayout),
 		Remarks:            remarks,
 	}
-	global.GWAF_LOCAL_DB.Create(bean)
+	if err = global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean).Error; err != nil {
+		return err
+	}
 	receiver.recordPwdHistory(loginAccount, hash)
 	return nil
 }
@@ -184,7 +213,12 @@ func (receiver *WafAccountService) CheckIsExistApi(req request.WafAccountAddReq)
 func (receiver *WafAccountService) ModifyApi(ctx context.Context, req request.WafAccountEditReq, operatorRole string) error {
 
 	var target model.Account
-	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", req.Id).First(&target)
+	targetQuery := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", req.Id)
+	// 租户上下文：目标账号必须归属本租户（Account 平台豁免，须手工限定）
+	if scope := accountTenantScope(ctx); scope != "" {
+		targetQuery = targetQuery.Where("tenant_id = ?", scope)
+	}
+	targetQuery.First(&target)
 	if target.Id == "" {
 		return errors.New("账号不存在")
 	}
@@ -301,7 +335,7 @@ func (receiver *WafAccountService) ChangeMyPasswordApi(loginAccount, oldPlain, n
 	receiver.recordPwdHistory(loginAccount, newHash)
 	return nil
 }
-func (receiver *WafAccountService) ResetPwdApi(req request.WafAccountResetPwdReq) error {
+func (receiver *WafAccountService) ResetPwdApi(ctx context.Context, req request.WafAccountResetPwdReq) error {
 
 	var superAccount model.Account
 	global.GWAF_LOCAL_DB.Where(dialect.Q("role")+" = ?", enums.ROLE_SUPER_ADMIN).First(&superAccount)
@@ -310,7 +344,12 @@ func (receiver *WafAccountService) ResetPwdApi(req request.WafAccountResetPwdReq
 	}
 
 	var bean model.Account
-	global.GWAF_LOCAL_DB.Where("login_account = ?", req.LoginAccount).Find(&bean)
+	targetQuery := global.GWAF_LOCAL_DB.WithContext(ctx).Where("login_account = ?", req.LoginAccount)
+	// 租户上下文：只能重置本租户账号（Account 平台豁免，须手工限定）
+	if scope := accountTenantScope(ctx); scope != "" {
+		targetQuery = targetQuery.Where("tenant_id = ?", scope)
+	}
+	targetQuery.Find(&bean)
 	if bean.Id == "" {
 		return errors.New("帐号信息不存在")
 	}
@@ -350,7 +389,12 @@ type AccountView struct {
 
 func (receiver *WafAccountService) GetDetailApi(ctx context.Context, req request.WafAccountDetailReq) AccountView {
 	var bean model.Account
-	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
+	query := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id)
+	// 租户上下文：只能看本租户账号（Account 平台豁免，须手工限定）
+	if scope := accountTenantScope(ctx); scope != "" {
+		query = query.Where("tenant_id = ?", scope)
+	}
+	query.Find(&bean)
 	views := []AccountView{{Account: bean}}
 	receiver.fillGroupNames(ctx, views)
 	return views[0]
@@ -431,9 +475,23 @@ func (receiver *WafAccountService) GetListApi(ctx context.Context, req request.W
 	if len(req.LoginAccount) > 0 {
 		whereValues = append(whereValues, req.LoginAccount)
 	}
+	// 租户上下文：列表只含本租户账号（Account 平台豁免，须手工限定，
+	// 否则租户管理员能看到全平台所有账号）
+	if scope := accountTenantScope(ctx); scope != "" {
+		if len(whereField) > 0 {
+			whereField = whereField + " and "
+		}
+		whereField = whereField + " tenant_id=? "
+		whereValues = append(whereValues, scope)
+	}
 
-	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Account{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Account{}).Where(whereField, whereValues...).Count(&total)
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Account{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	if err = global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Account{}).Where(whereField, whereValues...).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 
 	views := make([]AccountView, 0, len(list))
 	for _, a := range list {
@@ -475,11 +533,44 @@ func (receiver *WafAccountService) fillGroupNames(ctx context.Context, views []A
 		views[i].GroupName = nameById[views[i].GroupId]
 	}
 }
-func (receiver *WafAccountService) DelApi(req request.WafAccountDelReq) error {
+// DelApi 删除账号。
+// 删除权限：超级管理员可删任意账号（原 N7 语义）；租户管理员可删本租户的
+// tenantAdmin 账号，但不可删自己（防止把租户锁死，恢复需平台介入）；
+// 其他角色一律拒绝。租户上下文下目标账号必须归属本租户（Account 平台豁免，
+// 须手工限定，跨租户目标按"账号不存在"处理，不泄露存在性）。
+func (receiver *WafAccountService) DelApi(ctx context.Context, req request.WafAccountDelReq, operatorRole, operatorLoginAccount string) error {
 	var bean model.Account
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	query := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", req.Id)
+	if scope := accountTenantScope(ctx); scope != "" {
+		query = query.Where("tenant_id = ?", scope)
+	}
+	err := query.First(&bean).Error
 	if err != nil {
 		return err
+	}
+	switch enums.NormalizeRole(operatorRole) {
+	case enums.ROLE_SUPER_ADMIN:
+		// 平台超管：不限
+	case enums.ROLE_TENANT_ADMIN:
+		if enums.NormalizeRole(bean.Role) != enums.ROLE_TENANT_ADMIN {
+			return errors.New("租户管理员仅可删除本租户的普通账号")
+		}
+		if bean.LoginAccount == operatorLoginAccount {
+			return errors.New("不能删除当前登录账号自身")
+		}
+	default:
+		return errors.New("仅超级管理员或租户管理员可删除账号")
+	}
+	// 租户内至少保留一个账号（租户管理员自身），全局兜底保持原语义
+	if scope := accountTenantScope(ctx); scope != "" {
+		var cnt int64
+		if err = global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Account{}).
+			Where("tenant_id = ?", scope).Count(&cnt).Error; err != nil {
+			return err
+		}
+		if cnt <= 1 {
+			return errors.New("该租户只剩一个账号，不能删除")
+		}
 	} else {
 		var total int64
 		global.GWAF_LOCAL_DB.Model(&model.Account{}).Count(&total)
@@ -487,6 +578,8 @@ func (receiver *WafAccountService) DelApi(req request.WafAccountDelReq) error {
 			return errors.New("系统中只剩一个账号，不能删除")
 		}
 	}
+	// 账号删除后其会话必须一并清理，否则已删除账号的令牌在缓存有效期内仍然可用
+	receiver.forceLogoutAccount(bean.LoginAccount)
 	err = global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(model.Account{}).Error
 	return err
 }

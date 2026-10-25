@@ -2571,6 +2571,40 @@ func RunCoreDBMigrations(db *gorm.DB) error {
 				return nil
 			},
 		},
+		// 迁移: 套餐注册表（plans，租户差异化：权限集/配额/宽限期默认值）。
+		// 表本身是平台豁免模型（wafdb.tenantExemptModels），行归属平台、不参与租户过滤。
+		// plan_code 为实例级平台资源，全局唯一（与 waf_apps.code 同口径）。
+		// 种子不在迁移里做：预置套餐由启动流程（WafPlanServiceApp.InitDefaultPlans）
+		// 幂等播种，与 202610250001 预置组/202610250002 平台租户行的约定一致。
+		{
+			ID: "202610260002_add_plans",
+			Migrate: func(tx *gorm.DB) error {
+				zlog.Info("迁移 202610260002: 创建套餐表")
+				if err := tx.AutoMigrate(&model.Plan{}); err != nil {
+					return fmt.Errorf("创建 plans 表失败: %w", err)
+				}
+				if !tx.Migrator().HasIndex(&model.Plan{}, "uni_plan_code") {
+					if err := tx.Exec("CREATE UNIQUE INDEX uni_plan_code ON plans (plan_code)").Error; err != nil {
+						return fmt.Errorf("创建套餐码唯一索引失败: %w", err)
+					}
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				zlog.Info("回滚 202610260002: 删除套餐表")
+				if tx.Migrator().HasIndex(&model.Plan{}, "uni_plan_code") {
+					if err := tx.Migrator().DropIndex(&model.Plan{}, "uni_plan_code"); err != nil {
+						return err
+					}
+				}
+				if tx.Migrator().HasTable(&model.Plan{}) {
+					if err := tx.Migrator().DropTable(&model.Plan{}); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
 	})
 
 	// 执行迁移

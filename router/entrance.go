@@ -81,6 +81,7 @@ type ApiGroup struct {
 	UpgradeNoticeRouter
 	PermissionGroupRouter
 	TenantRouter
+	PlanRouter
 }
 type PublicApiGroup struct {
 	LoginRouter

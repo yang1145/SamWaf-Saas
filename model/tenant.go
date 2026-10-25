@@ -15,7 +15,7 @@ type Tenant struct {
 	TenantID    string `gorm:"size:64" json:"tenant_id"`     //租户码，全局唯一（登录/数据行 tenant_id 的归属依据）
 	TenantName  string `gorm:"size:128" json:"tenant_name"`  //名称
 	Status      int    `json:"status"`                       //1正常 0停用 2已过期 -1已注销（enums.TenantStatus*）
-	PlanCode    string `gorm:"size:64" json:"plan_code"`     //套餐码（预留字段，当前不驱动行为）
+	PlanCode    string `gorm:"size:64" json:"plan_code"`     //套餐码：驱动管理员组授权集、配额/宽限默认值与权限天花板（空=不绑套餐，行为同旧版）
 	MaxHosts    int    `json:"max_hosts"`                    //站点数配额，0=不限
 	MaxAccounts int    `json:"max_accounts"`                 //账号数配额，0=不限
 	ExpireTime  string `gorm:"size:32" json:"expire_time"`   //到期时间 2006-01-02 15:04:05，空=永不过期

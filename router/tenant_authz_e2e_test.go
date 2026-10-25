@@ -10,6 +10,9 @@ package router
 // 场景：平台开通 tenantA / tenantB 两个租户（各自管理员 admin_a / admin_b），
 // 各自通过 HTTP 建站；断言 A 的令牌无法通过管理端 HTTP 端点读取/写入/删除 B 的数据
 // （含对称方向），另覆盖权限组 RBAC（只读组 403）与 legacy 角色兼容（无组 securityAdmin 200）。
+// 租户差异化轮次追加：账号域租户收敛（列表/详情/编辑/删除限定本租户、自助建号角色
+// 强制 tenantAdmin、不可删自己、口令哈希不外泄）与套餐权限天花板（授权集内可访问、
+// 权限组被手工改大也越不出套餐、换受限套餐立即 403）。
 //
 // 管理端响应 data 走 legacy AES 加密通道（model/common/response.Result），
 // 断言前先用已知密钥解包——与 router/waf_app_router_test.go 同一套做法。
@@ -199,7 +202,7 @@ func setupTenantAuthzE2E(t *testing.T) *e2eEnv {
 
 	// ---------- 临时库（core + stats） ----------
 	coreDB := openE2ESQLite(t, "core.db",
-		&model.Tenant{}, &model.PermissionGroup{}, &model.Account{}, &model.TokenInfo{}, &model.Otp{},
+		&model.Tenant{}, &model.Plan{}, &model.PermissionGroup{}, &model.Account{}, &model.TokenInfo{}, &model.Otp{},
 		&model.Hosts{}, &model.AntiCCRule{})
 	{
 		old := global.GWAF_LOCAL_DB
@@ -279,6 +282,12 @@ func setupTenantAuthzE2E(t *testing.T) *e2eEnv {
 	pgGroup := authGroup.Group("")
 	pgGroup.Use(middleware.RequirePermission(enums.PERM_GROUP_MANAGE, enums.ROLE_SYSTEM_ADMIN))
 	ApiGroupApp.InitPermissionGroupRouter(pgGroup)
+
+	// 账号域（生产挂 TokenOnly 组 + account:manage 权限门，此处同款权限门挂载；
+	// 生产还挂 TokenOnlyAuth 拒 Key，本测试无 Key 通道，不重复挂）
+	accountGroup := authGroup.Group("")
+	accountGroup.Use(middleware.RequirePermission(enums.PERM_ACCOUNT_MANAGE, enums.ROLE_SYSTEM_ADMIN))
+	ApiGroupApp.InitAccountRouter(accountGroup)
 
 	env := &e2eEnv{g: g}
 
@@ -783,7 +792,7 @@ func TestTenantAuthzE2E(t *testing.T) {
 		status, reply := getE2E(t, env.g, e2eHostDel+"?code="+env.hostACode, legToken)
 		drainE2EChans()
 		if bean := dbHostByCode(t, env.hostACode); bean.Code != env.hostACode {
-			t.Errorf("越权删除(反向)：B侧(租户B) legacy 账号删除了租户A 的站点(del http=%d code=%d msg=%s)",
+			t.Errorf("越权删除(反向)：B侧(租户B) legacy 账号删除了租户A 站点(del http=%d code=%d msg=%s)",
 				status, reply.Code, reply.Msg)
 		}
 
@@ -800,4 +809,232 @@ func TestTenantAuthzE2E(t *testing.T) {
 			t.Errorf("越权读取(反向)：B侧(租户B) legacy 账号拿到了租户A 站点 %s 的详情", env.hostACode)
 		}
 	})
+
+	// ===========================================================================
+	// 账号域租户收敛（本轮新增）：租户管理员的账号列表/详情/编辑/删除必须限定本租户，
+	// 且可自助管理本租户账号（角色强制 tenantAdmin、配额生效、不可删自己）。
+	// ===========================================================================
+	t.Run("账号域租户收敛：A管理员列表只见本租户账号且不外泄口令哈希", func(t *testing.T) {
+		if env.defectMsg != "" {
+			t.Skipf("%s（本次观测：%s）", skipE2ETenantDefectMsg, env.defectMsg)
+		}
+		status, reply := postE2EJSON(t, env.g, "/api/v1/account/list", env.tokenA, `{"pageIndex":1,"pageSize":100}`)
+		if status != http.StatusOK || reply.Code != 0 {
+			t.Fatalf("账号列表请求失败: http=%d code=%d msg=%s", status, reply.Code, reply.Msg)
+		}
+		var page struct {
+			List []struct {
+				LoginAccount string `json:"login_account"`
+			} `json:"list"`
+		}
+		if err := json.Unmarshal(reply.Data, &page); err != nil {
+			t.Fatalf("解析账号列表失败: %v data=%s", err, string(reply.Data))
+		}
+		seen := map[string]bool{}
+		for _, it := range page.List {
+			seen[it.LoginAccount] = true
+		}
+		if !seen[e2eAdminA] || !seen["leg_a"] {
+			t.Errorf("正向对照失效：A 应看到本租户账号(%s/leg_a)，实际 %v", e2eAdminA, seen)
+		}
+		if seen[e2eAdminB] || seen["leg_b"] {
+			t.Errorf("越权读取：租户A 的账号列表出现了租户B 的账号，实际 %v", seen)
+		}
+		if strings.Contains(string(reply.Data), "login_password") {
+			t.Errorf("口令哈希外泄：账号列表响应包含 login_password 字段")
+		}
+	})
+
+	t.Run("账号域租户收敛：A查改删B的账号必须无效", func(t *testing.T) {
+		if env.defectMsg != "" {
+			t.Skipf("%s（本次观测：%s）", skipE2ETenantDefectMsg, env.defectMsg)
+		}
+		adminBID := e2eAccountID(t, e2eAdminB)
+
+		// 详情：拿不到 B 管理员账号
+		status, reply := getE2E(t, env.g, "/api/v1/account/detail?id="+adminBID, env.tokenA)
+		var detail struct {
+			LoginAccount string `json:"login_account"`
+		}
+		if status == http.StatusOK && reply.Code == 0 {
+			if err := json.Unmarshal(reply.Data, &detail); err != nil {
+				t.Fatalf("解析账号详情失败: %v", err)
+			}
+		}
+		if detail.LoginAccount == e2eAdminB {
+			t.Errorf("越权读取：租户A 拿到了租户B 管理员账号详情")
+		}
+
+		// 编辑：改 B 管理员账号必须失败，且数据未变
+		body := fmt.Sprintf(`{"id":%q,"login_account":%q,"status":1,"remarks":"hacked"}`, adminBID, e2eAdminB)
+		status, reply = postE2EJSON(t, env.g, "/api/v1/account/edit", env.tokenA, body)
+		if reply.Code == 0 {
+			t.Errorf("越权写入：租户A 编辑租户B 管理员账号成功(http=%d msg=%s)", status, reply.Msg)
+		}
+		if acc := e2eAccountRow(t, e2eAdminB); acc.Status != 0 || acc.Remarks == "hacked" {
+			t.Errorf("越权写入生效：B 管理员账号被篡改 status=%d remarks=%s", acc.Status, acc.Remarks)
+		}
+
+		// 删除：删 B 管理员账号必须失败
+		status, reply = getE2E(t, env.g, "/api/v1/account/del?id="+adminBID, env.tokenA)
+		if reply.Code == 0 {
+			t.Errorf("越权删除：租户A 删除租户B 管理员账号成功(http=%d msg=%s)", status, reply.Msg)
+		}
+		if acc := e2eAccountRow(t, e2eAdminB); acc.LoginAccount != e2eAdminB {
+			t.Errorf("越权删除生效：B 管理员账号已不存在")
+		}
+	})
+
+	t.Run("账号域自助管理：A管理员可建本租户账号(角色强制tenantAdmin)且不可删自己", func(t *testing.T) {
+		if env.defectMsg != "" {
+			t.Skipf("%s（本次观测：%s）", skipE2ETenantDefectMsg, env.defectMsg)
+		}
+		// 请求里塞 superAdmin 角色也必须被强制为 tenantAdmin（防提权）
+		body := fmt.Sprintf(`{"login_account":"sub_a","login_password":%q,"role":"superAdmin","status":0,"remarks":"e2e子账号"}`, e2eNewPwd)
+		status, reply := postE2EJSON(t, env.g, "/api/v1/account/add", env.tokenA, body)
+		if status != http.StatusOK || reply.Code != 0 {
+			t.Fatalf("租户管理员建本租户账号应成功: http=%d code=%d msg=%s", status, reply.Code, reply.Msg)
+		}
+		acc := e2eAccountRow(t, "sub_a")
+		if acc.LoginAccount != "sub_a" || acc.Role != enums.ROLE_TENANT_ADMIN {
+			t.Fatalf("新建账号角色应被强制为 tenantAdmin，实际 role=%s", acc.Role)
+		}
+		if acc.Tenant_ID != e2eTenantA {
+			t.Fatalf("新建账号应归属租户A，实际 tenant_id=%s", acc.Tenant_ID)
+		}
+
+		// 删自己必须失败
+		adminAID := e2eAccountID(t, e2eAdminA)
+		status, reply = getE2E(t, env.g, "/api/v1/account/del?id="+adminAID, env.tokenA)
+		if reply.Code == 0 {
+			t.Errorf("租户管理员删除自己应被拒绝(http=%d msg=%s)", status, reply.Msg)
+		}
+
+		// 删除刚建的本租户普通账号应成功
+		subID := e2eAccountID(t, "sub_a")
+		status, reply = getE2E(t, env.g, "/api/v1/account/del?id="+subID, env.tokenA)
+		if status != http.StatusOK || reply.Code != 0 {
+			t.Fatalf("删除本租户普通账号应成功: http=%d code=%d msg=%s", status, reply.Code, reply.Msg)
+		}
+		// 删除后行应不存在（直查不 Fatal：不存在正是期望）
+		var after model.Account
+		global.GWAF_LOCAL_DB.WithContext(wafctx.PlatformScope(context.Background())).
+			Where("login_account = ?", "sub_a").First(&after)
+		if after.LoginAccount != "" {
+			t.Errorf("账号应已删除")
+		}
+	})
+
+	// ===========================================================================
+	// 套餐与权限天花板（本轮新增）：套餐驱动租户差异化——授权集内的域可访问；
+	// 权限组被手工改大也越不出套餐边界（防御纵深）；换套餐立即生效。
+	// 注意顺序：放在最后执行，避免套餐收紧影响前面的用例。
+	// ===========================================================================
+	t.Run("套餐天花板：授权集内可访问、组被改大也越不出套餐", func(t *testing.T) {
+		if env.defectMsg != "" {
+			t.Skipf("%s（本次观测：%s）", skipE2ETenantDefectMsg, env.defectMsg)
+		}
+		pctx := wafctx.PlatformScope(context.Background())
+		// 基线：无套餐租户可访问权限组管理之外的账号域（组含 account:manage）
+		if status, reply := postE2EJSON(t, env.g, "/api/v1/account/list", env.tokenA, `{"pageIndex":1,"pageSize":10}`); status != http.StatusOK || reply.Code != 0 {
+			t.Fatalf("基线失效：无套餐时账号域应可访问(存量行为不变) http=%d code=%d msg=%s", status, reply.Code, reply.Msg)
+		}
+
+		// 给租户A 绑套餐（含账号域与站点域，不含权限组管理）
+		if _, err := waf_service.WafPlanServiceApp.AddApi(pctx, request.WafPlanAddReq{
+			PlanCode:    "e2e-pro",
+			PlanName:    "E2E专业版",
+			Permissions: enums.PERM_DASHBOARD + "," + enums.PERM_HOST_MANAGE + "," + enums.PERM_LOG_VIEW + "," + enums.PERM_ACCOUNT_MANAGE,
+			MaxHosts:    10, MaxAccounts: 10,
+		}); err != nil {
+			t.Fatalf("创建套餐失败: %v", err)
+		}
+		if _, err := waf_service.WafTenantServiceApp.EditTenantApi(pctx, request.WafTenantEditReq{
+			TenantID: e2eTenantA, TenantName: "租户A", PlanCode: "e2e-pro",
+		}); err != nil {
+			t.Fatalf("绑定套餐失败: %v", err)
+		}
+
+		// 授权集内：站点/账号域仍可访问
+		if status, reply := postE2EJSON(t, env.g, e2eHostList, env.tokenA, `{"pageIndex":1,"pageSize":10}`); status != http.StatusOK || reply.Code != 0 {
+			t.Errorf("套餐授权集内的站点域应可访问 http=%d code=%d msg=%s", status, reply.Code, reply.Msg)
+		}
+		if status, reply := postE2EJSON(t, env.g, "/api/v1/account/list", env.tokenA, `{"pageIndex":1,"pageSize":10}`); status != http.StatusOK || reply.Code != 0 {
+			t.Errorf("套餐授权集内的账号域应可访问 http=%d code=%d msg=%s", status, reply.Code, reply.Msg)
+		}
+
+		// 越出套餐：租户A 的权限组本来就不含 permission:manage → 403（组判定）
+		if _, reply := postE2EJSON(t, env.g, "/api/v1/permission/group/list", env.tokenA, `{"pageIndex":1,"pageSize":10}`); reply.Code == 0 {
+			t.Errorf("租户A 不应能访问权限组管理")
+		}
+
+		// 防御纵深：把租户A 管理员组手工改大到含 permission:manage（模拟提权），
+		// 天花板必须仍然拦截——套餐是硬边界，组内容只是第一道门
+		escalateE2EAdminGroup(t, e2eTenantA, enums.PERM_GROUP_MANAGE)
+		if _, reply := postE2EJSON(t, env.g, "/api/v1/permission/group/list", env.tokenA, `{"pageIndex":1,"pageSize":10}`); reply.Code == 0 {
+			t.Errorf("天花板失效：权限组被改大后租户A 越出了套餐边界访问权限组管理")
+		}
+	})
+
+	t.Run("套餐天花板：换受限套餐后站点管理立即403", func(t *testing.T) {
+		if env.defectMsg != "" {
+			t.Skipf("%s（本次观测：%s）", skipE2ETenantDefectMsg, env.defectMsg)
+		}
+		pctx := wafctx.PlatformScope(context.Background())
+		// 租户B 换成只含仪表盘的套餐 → 站点管理 403（差异化生效）
+		if _, err := waf_service.WafPlanServiceApp.AddApi(pctx, request.WafPlanAddReq{
+			PlanCode: "e2e-free", PlanName: "E2E体验版",
+			Permissions: enums.PERM_DASHBOARD, MaxHosts: 1, MaxAccounts: 2,
+		}); err != nil {
+			t.Fatalf("创建套餐失败: %v", err)
+		}
+		if _, err := waf_service.WafTenantServiceApp.EditTenantApi(pctx, request.WafTenantEditReq{
+			TenantID: e2eTenantB, TenantName: "租户B", PlanCode: "e2e-free",
+		}); err != nil {
+			t.Fatalf("换套餐失败: %v", err)
+		}
+		if _, reply := postE2EJSON(t, env.g, e2eHostList, env.tokenB, `{"pageIndex":1,"pageSize":10}`); reply.Code == 0 {
+			t.Errorf("受限套餐租户B 不应能访问站点管理（应提示套餐未包含该功能）")
+		}
+		// 租户A 不受影响（套餐隔离）
+		if status, reply := postE2EJSON(t, env.g, e2eHostList, env.tokenA, `{"pageIndex":1,"pageSize":10}`); status != http.StatusOK || reply.Code != 0 {
+			t.Errorf("租户A 的访问不应受租户B 换套餐影响 http=%d code=%d msg=%s", status, reply.Code, reply.Msg)
+		}
+	})
+}
+
+// e2eAccountID 按登录名取账号记录ID（平台视角直查）。
+func e2eAccountID(t *testing.T, loginAccount string) string {
+	t.Helper()
+	return e2eAccountRow(t, loginAccount).Id
+}
+
+// e2eAccountRow 按登录名直读账号行（平台视角 ground truth）。
+func e2eAccountRow(t *testing.T, loginAccount string) model.Account {
+	t.Helper()
+	var bean model.Account
+	pctx := wafctx.PlatformScope(context.Background())
+	if err := global.GWAF_LOCAL_DB.WithContext(pctx).Where("login_account = ?", loginAccount).First(&bean).Error; err != nil {
+		t.Fatalf("直读账号 %s 失败: %v", loginAccount, err)
+	}
+	return bean
+}
+
+// escalateE2EAdminGroup 模拟提权：把租户管理员组的权限集改大到包含指定权限码，
+// 并失效组缓存让 RBAC 立即按新组内容判定（用于验证天花板是独立于组的第二道门）。
+func escalateE2EAdminGroup(t *testing.T, tenantID, code string) {
+	t.Helper()
+	pctx := wafctx.PlatformScope(context.Background())
+	var group model.PermissionGroup
+	if err := global.GWAF_LOCAL_DB.WithContext(pctx).
+		Where("tenant_id = ? and group_name = ?", tenantID, "租户管理员").
+		First(&group).Error; err != nil {
+		t.Fatalf("查 %s 的租户管理员组失败: %v", tenantID, err)
+	}
+	if err := global.GWAF_LOCAL_DB.WithContext(pctx).Model(&model.PermissionGroup{}).
+		Where("id = ?", group.Id).
+		Update("permissions", group.Permissions+","+code).Error; err != nil {
+		t.Fatalf("提权模拟失败: %v", err)
+	}
+	global.GCACHE_WAFCACHE.Remove(enums.CACHE_PERMISSION_GROUP + group.Id)
 }

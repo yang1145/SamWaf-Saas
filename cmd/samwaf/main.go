@@ -401,6 +401,11 @@ func (m *wafSystenService) run() {
 	if err := waf_service.WafTenantServiceApp.InitDefaultTenant(); err != nil {
 		zlog.Error("初始化平台租户记录失败", "error", err)
 	}
+	// 预置套餐幂等播种（体验版/基础版/专业版/旗舰版；按套餐码查重跳过，
+	// 平台管理员的后续编辑不被覆盖；失败只记日志不阻断启动）
+	if err := waf_service.WafPlanServiceApp.InitDefaultPlans(); err != nil {
+		zlog.Error("初始化预置套餐失败", "error", err)
+	}
 
 	//初始化插件系统（从配置文件加载）
 	if err := plugin.InitPluginSystem(); err != nil {

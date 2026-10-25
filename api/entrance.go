@@ -85,6 +85,7 @@ type APIGroup struct {
 	WafUpgradeNoticeApi
 	WafPermissionGroupApi
 	WafTenantApi
+	WafPlanApi
 }
 
 var APIGroupAPP = new(APIGroup)
@@ -189,4 +190,5 @@ var (
 	wafUpgradeNoticeService = waf_service.WafUpgradeNoticeServiceApp
 
 	wafPermissionGroupService = waf_service.WafPermissionGroupServiceApp
+	wafPlanService            = waf_service.WafPlanServiceApp
 )

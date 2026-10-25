@@ -26,6 +26,9 @@ import (
 
 const tenantTestTimeLayout = "2006-01-02 15:04:05"
 
+// intPtr 测试辅助：配额指针字段取值
+func intPtr(v int) *int { return &v }
+
 // openTenantTestDB 独立临时库 + 生产同款租户回调，替换全局 core 库与缓存。
 // 全局租户指向测试数据中不存在的 tenantZ：任何命中都只能来自请求上下文/显式租户码。
 func openTenantTestDB(t *testing.T) *gorm.DB {
@@ -36,7 +39,7 @@ func openTenantTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("打开测试库失败: %v", err)
 	}
 	wafdb.RegisterTenantScopeCallbacks(db)
-	if err := db.AutoMigrate(&model.Tenant{}, &model.PermissionGroup{}, &model.Account{}, &model.Hosts{}); err != nil {
+	if err := db.AutoMigrate(&model.Tenant{}, &model.Plan{}, &model.PermissionGroup{}, &model.Account{}, &model.Hosts{}); err != nil {
 		t.Fatalf("建表失败: %v", err)
 	}
 
@@ -87,9 +90,9 @@ func TestTenantProvisioning(t *testing.T) {
 	bean, err := WafTenantServiceApp.AddTenantApi(pctx, request.WafTenantAddReq{
 		TenantID:      "tenant-x",
 		TenantName:    "X公司",
-		MaxHosts:      5,
-		MaxAccounts:   3,
-		GraceDays:     3,
+		MaxHosts:      intPtr(5),
+		MaxAccounts:   intPtr(3),
+		GraceDays:     intPtr(3),
 		Remarks:       "测试租户",
 		AdminAccount:  "xadmin",
 		AdminPassword: "xAdmin@2026",
@@ -383,6 +386,15 @@ func TestRenewTenant(t *testing.T) {
 func TestTenantEditAndDel(t *testing.T) {
 	db := openTenantTestDB(t)
 	pctx := wafctx.PlatformScope(context.Background())
+
+	// 编辑里指定 plan_code=pro：套餐须真实存在（不存在则整单拒绝）
+	if _, err := WafPlanServiceApp.AddApi(pctx, request.WafPlanAddReq{
+		PlanCode: "pro", PlanName: "专业版",
+		Permissions: enums.PERM_DASHBOARD + "," + enums.PERM_HOST_MANAGE,
+		MaxHosts: 50, MaxAccounts: 20,
+	}); err != nil {
+		t.Fatalf("播种套餐 pro 失败: %v", err)
+	}
 
 	seedTenantRow(t, db, "t-edit", enums.TenantStatusActive, "", 0, 1, 2)
 
