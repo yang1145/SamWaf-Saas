@@ -3,6 +3,7 @@ package middleware
 import (
 	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
+	"SamWaf/enums"
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/model/common/response"
@@ -147,6 +148,10 @@ func ValidateOpenApiKey(c *gin.Context, apiKey string) (model.OPlatformKey, bool
 	//    此处改为注入 Key 归属租户（oplatform_key 增加租户列）。
 	c.Request = c.Request.WithContext(wafctx.WithTenant(c.Request.Context(), global.GWAF_TENANT_ID, global.GWAF_USER_CODE))
 	c.Set("tenantId", global.GWAF_TENANT_ID)
+
+	// 9. 授权范围（审计 M4 收口）：Key 的权限码集合写入上下文，
+	//    RequirePermission 据此判定；空集合=全部权限（存量 Key 向后兼容）
+	c.Set("openapi_perms", enums.ParsePermissionSet(keyBean.Permissions))
 
 	return keyBean, true
 }

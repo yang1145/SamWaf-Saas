@@ -3,6 +3,7 @@ package waf_service
 import (
 	"SamWaf/common/uuid"
 	"SamWaf/customtype"
+	"SamWaf/enums"
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
@@ -10,6 +11,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -52,14 +56,24 @@ func (receiver *WafOPlatformKeyService) AddApi(req request.WafOPlatformKeyAddReq
 		ExpireTime:  req.ExpireTime,
 		CallCount:   0,
 	}
-	err := global.GWAF_LOCAL_DB.Create(bean).Error
+	perms, err := normalizeKeyPermissions(req.Permissions)
+	if err != nil {
+		return "", "", err
+	}
+	bean.Permissions = perms
+	err = global.GWAF_LOCAL_DB.Create(bean).Error
 	return id, apiKey, err
 }
 
 func (receiver *WafOPlatformKeyService) ModifyApi(req request.WafOPlatformKeyEditReq) error {
+	perms, err := normalizeKeyPermissions(req.Permissions)
+	if err != nil {
+		return err
+	}
 	editMap := map[string]interface{}{
 		"KeyName":     req.KeyName,
 		"Status":      req.Status,
+		"Permissions": perms,
 		"Remark":      req.Remark,
 		"RateLimit":   req.RateLimit,
 		"IPWhitelist": req.IPWhitelist,
@@ -67,6 +81,25 @@ func (receiver *WafOPlatformKeyService) ModifyApi(req request.WafOPlatformKeyEdi
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
 	return global.GWAF_LOCAL_DB.Model(model.OPlatformKey{}).Where("id = ?", req.Id).Updates(editMap).Error
+}
+
+// normalizeKeyPermissions 规范化 Key 的授权范围：逐码校验（fail-closed，非法码报错）、
+// 去空去重排序；空串原样返回（=全部权限，存量 Key 兼容）。
+func normalizeKeyPermissions(perms string) (string, error) {
+	perms = strings.TrimSpace(perms)
+	if perms == "" {
+		return "", nil
+	}
+	set := enums.ParsePermissionSet(perms)
+	codes := make([]string, 0, len(set))
+	for code := range set {
+		if !enums.IsValidPermissionCode(code) {
+			return "", fmt.Errorf("非法权限码: %s", code)
+		}
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	return strings.Join(codes, ","), nil
 }
 
 func (receiver *WafOPlatformKeyService) DelApi(req request.WafOPlatformKeyDelReq) error {

@@ -13,6 +13,7 @@ type OPlatformKey struct {
 	KeyName     string `gorm:"size:255" json:"key_name"`      //Key 名称
 	ApiKey      string `gorm:"size:255" json:"api_key"`       //API Key（自动生成，用于 X-API-Key 请求头鉴权）
 	Status      int    `json:"status"`                        //状态 1启用 0禁用
+	Permissions string `gorm:"type:text" json:"permissions"`  //授权范围：权限码逗号分隔（空=全部权限，向后兼容存量 Key）
 	Remark      string `gorm:"size:500" json:"remark"`        //备注
 	RateLimit   int64  `json:"rate_limit"`                    //每分钟限流次数，0不限
 	IPWhitelist string `gorm:"type:text" json:"ip_whitelist"` //IP白名单，逗号分隔，空不限

@@ -2518,6 +2518,59 @@ func RunCoreDBMigrations(db *gorm.DB) error {
 				return nil
 			},
 		},
+		// 迁移: OpenAPI Key 授权范围列 + IP 观察名单租户级唯一索引（P0 安全收口）
+		{
+			ID: "202610260001_key_perms_watchlist_tenant_unique",
+			Migrate: func(tx *gorm.DB) error {
+				zlog.Info("迁移 202610260001: oplatform_keys 增加授权范围列；ip_watchlists 唯一索引重建为租户级")
+
+				// 1. oplatform_keys.permissions（空=全部权限，存量 Key 向后兼容）
+				if !tx.Migrator().HasColumn(&model.OPlatformKey{}, "permissions") {
+					if err := tx.Migrator().AddColumn(&model.OPlatformKey{}, "permissions"); err != nil {
+						return fmt.Errorf("oplatform_keys 添加 permissions 失败: %w", err)
+					}
+				}
+
+				// 2. ip_watchlists：单列全局唯一 → (tenant_id, user_code, ip) 复合唯一。
+				//    多租户下不同租户可观察同一 IP；模型层已改为普通索引防 AutoMigrate 复原
+				if tx.Migrator().HasTable(&model.IPWatchlist{}) {
+					if tx.Migrator().HasIndex(&model.IPWatchlist{}, "uni_watch_ip") {
+						if err := tx.Migrator().DropIndex(&model.IPWatchlist{}, "uni_watch_ip"); err != nil {
+							return fmt.Errorf("删除旧唯一索引 uni_watch_ip 失败: %w", err)
+						}
+					}
+					if !tx.Migrator().HasIndex(&model.IPWatchlist{}, "uni_watch_ip_tenant") {
+						if err := tx.Exec("CREATE UNIQUE INDEX uni_watch_ip_tenant ON ip_watchlists (tenant_id, user_code, ip)").Error; err != nil {
+							return fmt.Errorf("创建租户级唯一索引失败: %w", err)
+						}
+					}
+				}
+
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				zlog.Info("回滚 202610260001: 还原 oplatform_keys 列与 ip_watchlists 索引")
+				if tx.Migrator().HasColumn(&model.OPlatformKey{}, "permissions") {
+					if err := tx.Migrator().DropColumn(&model.OPlatformKey{}, "permissions"); err != nil {
+						return err
+					}
+				}
+				if tx.Migrator().HasIndex(&model.IPWatchlist{}, "uni_watch_ip_tenant") {
+					if err := tx.Migrator().DropIndex(&model.IPWatchlist{}, "uni_watch_ip_tenant"); err != nil {
+						return err
+					}
+				}
+				// 注意：若多租户下已产生同 IP 数据，重建单列全局唯一索引会因重复失败——
+				// 回滚前需先人工去重
+				if !tx.Migrator().HasIndex(&model.IPWatchlist{}, "uni_watch_ip") {
+					if err := tx.Exec("CREATE UNIQUE INDEX uni_watch_ip ON ip_watchlists (ip)").Error; err != nil {
+						zlog.Warn("回滚：重建全局唯一索引失败（可能存在跨租户重复 IP，需先去重）", "error", err.Error())
+						return err
+					}
+				}
+				return nil
+			},
+		},
 	})
 
 	// 执行迁移

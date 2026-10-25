@@ -1,5 +1,7 @@
 package enums
 
+import "strings"
+
 // 管理端权限码目录（权限组的原子授权单位，域级粒度）。
 //
 // 设计约定：
@@ -59,4 +61,17 @@ func IsValidPermissionCode(code string) bool {
 		}
 	}
 	return false
+}
+
+// ParsePermissionSet 把逗号分隔的权限码串解析成集合（去空格、去空项）。
+// 供权限组与 OpenAPI Key 的授权范围解析共用；返回空集合表示"未声明=全部权限"。
+func ParsePermissionSet(perms string) map[string]bool {
+	set := map[string]bool{}
+	for _, p := range strings.Split(perms, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			set[p] = true
+		}
+	}
+	return set
 }

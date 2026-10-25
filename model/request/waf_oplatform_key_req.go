@@ -6,6 +6,7 @@ type WafOPlatformKeyAddReq struct {
 	KeyName     string `json:"key_name"`     //Key 名称
 	Remark      string `json:"remark"`       //备注
 	RateLimit   int64  `json:"rate_limit"`   //每分钟限流次数，0不限
+	Permissions string `json:"permissions"` //授权范围：权限码逗号分隔，空=全部权限
 	IPWhitelist string `json:"ip_whitelist"` //IP白名单，逗号分隔，空不限
 	ExpireTime  string `json:"expire_time"`  //过期时间，空不过期
 }
@@ -24,6 +25,7 @@ type WafOPlatformKeyEditReq struct {
 	Status      int    `json:"status"`       //状态 1启用 0禁用
 	Remark      string `json:"remark"`       //备注
 	RateLimit   int64  `json:"rate_limit"`   //每分钟限流次数，0不限
+	Permissions string `json:"permissions"` //授权范围：权限码逗号分隔，空=全部权限
 	IPWhitelist string `json:"ip_whitelist"` //IP白名单，逗号分隔，空不限
 	ExpireTime  string `json:"expire_time"`  //过期时间，空不过期
 }

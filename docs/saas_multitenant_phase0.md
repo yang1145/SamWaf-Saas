@@ -280,11 +280,24 @@ service→service 透传同一 ctx。`NotifyWaf` 中 3 处无 DB 查询的保持
 
 **遗留（记录待办，不阻塞）：**
 
-- M4：OpenAPI Key 被 RequireRole 整体放行（is_openapi 旁路）——需要按 Key 授权
-  范围做路由白名单，属产品决策；
-- **跨租户唯一索引**（矩阵测试发现）：`ip_watchlists.ip`、`waf_apps.code`、
-  `waf_plugin_configs.plugin_id` 的唯一索引不含租户列，多租户下不同租户无法写入
-  同名值——与"租户级表"语义冲突，需单独评估（改索引或改"全局唯一"语义）。
+- ~~M4：OpenAPI Key 被 RequireRole 整体放行~~ **已收口**：Key 增加 `Permissions`
+  授权范围（权限码逗号分隔，**空=全部权限，存量 Key 向后兼容**），
+  `RequirePermission` 对 Key 按码判定，非法码写入侧报错（fail-closed）；
+  Key 管理接口/模型已支持（迁移 202610260001）。
+- ~~**跨租户唯一索引**~~ **已决策并落地**：`ip_watchlists` 的 IP 唯一性是租户内的，
+  迁移 202610260001 重建为 (tenant_id, user_code, ip) 复合唯一；`waf_apps.code`、
+  `waf_plugin_configs.plugin_id/key` 为**实例级平台资源**（本地二进制路径、平台域管理），
+  全局唯一是正确语义，保持并在矩阵测试中标注排除。
+- **跨租户越权 HTTP 级回归**：`router/tenant_authz_e2e_test.go`（真实 Auth 中间件 +
+  真实路由 + 双租户令牌的端到端断言）。真正的黑盒渗透测试仍建议在预发环境做一次。
+
+## 业务系统对接（ZJMF-CBAP 智简魔方计费）——预留，最后做
+
+支付/套餐/订单全在业务系统侧；对接形态为 ZJMF 模块调用 SamWaf 管理端 API：
+开通 = `POST /api/v1/tenant/add`（含租户管理员初始凭据），续费 = `POST /api/v1/tenant/renew`，
+停用/退款 = `POST /api/v1/tenant/edit`（状态）。对接时需为 ZJMF 签发限定
+`platform:admin` 范围的 OpenAPI Key（Key 授权范围机制已就绪），并补充
+"按租户用量账单"的输出接口（计费聚合未实现，见租户生命周期章节）。
 
 ## 全表隔离测试矩阵（任务7 已完成）
 
