@@ -2494,6 +2494,30 @@ func RunCoreDBMigrations(db *gorm.DB) error {
 				return nil
 			},
 		},
+		// 迁移: 租户注册表（tenants，租户生命周期：开通/续期/停用/配额/到期）
+		// 表本身是平台豁免模型（wafdb.tenantExemptModels），行归属平台、不参与租户过滤。
+		// 种子不在迁移里做：平台自身租户行由启动流程（WafTenantServiceApp.InitDefaultTenant，
+		// 在 InitDefaultPermissionGroups 之后）在全局标识就绪后幂等播种，
+		// 与 202610250001 预置组的约定一致，同时覆盖全新安装与存量升级。
+		{
+			ID: "202610250002_add_tenants",
+			Migrate: func(tx *gorm.DB) error {
+				zlog.Info("迁移 202610250002: 创建租户表")
+				if err := tx.AutoMigrate(&model.Tenant{}); err != nil {
+					return fmt.Errorf("创建 tenants 表失败: %w", err)
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				zlog.Info("回滚 202610250002: 删除租户表")
+				if tx.Migrator().HasTable(&model.Tenant{}) {
+					if err := tx.Migrator().DropTable(&model.Tenant{}); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
 	})
 
 	// 执行迁移

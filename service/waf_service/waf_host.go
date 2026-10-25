@@ -4,6 +4,7 @@ import (
 	"SamWaf/common/uuid"
 	"SamWaf/common/validfield"
 	"SamWaf/customtype"
+	"SamWaf/enums"
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
@@ -34,6 +35,10 @@ func normalizeIsEnableResponseBuffering(v int) int {
 }
 
 func (receiver *WafHostService) AddApi(ctx context.Context, wafHostAddReq request.WafHostAddReq) (string, error) {
+	// 租户站点数配额（tenants.max_hosts，0=不限；平台/无租户上下文不受限）
+	if err := WafTenantServiceApp.CheckTenantQuota(ctx, enums.TenantQuotaKindHost); err != nil {
+		return "", err
+	}
 	uniCode := ""
 	if wafHostAddReq.Code == "" {
 		uniCode = uuid.GenUUID()

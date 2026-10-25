@@ -23,9 +23,11 @@ const (
 	PERM_AUDIT = "audit:view"
 	// PERM_SYSTEM_OPS 系统运维：系统配置、数据保留策略、通知渠道/订阅、批量任务
 	PERM_SYSTEM_OPS = "system:ops"
-	// PERM_ACCOUNT_MANAGE 账号与开放平台：账号管理、OTP、开放平台 Key、
-	// SQL 查询、应用管理、AI 模型、运行诊断
+	// PERM_ACCOUNT_MANAGE 账号与OTP：账号管理（租户内）、OTP 双因素
 	PERM_ACCOUNT_MANAGE = "account:manage"
+	// PERM_PLATFORM_ADMIN 平台级管理：开放平台 Key、SQL 查询、应用管理、AI 模型、
+	// 运行诊断——仅平台侧角色（租户管理员不应持有）
+	PERM_PLATFORM_ADMIN = "platform:admin"
 	// PERM_GROUP_MANAGE 权限组管理本身：创建/修改/删除权限组
 	PERM_GROUP_MANAGE = "permission:manage"
 )
@@ -44,7 +46,8 @@ var AllPermissionCodes = []PermissionCodeInfo{
 	{Code: PERM_SECURITY, Name: "防护策略管理"},
 	{Code: PERM_AUDIT, Name: "审计日志查看"},
 	{Code: PERM_SYSTEM_OPS, Name: "系统配置与运维"},
-	{Code: PERM_ACCOUNT_MANAGE, Name: "账号与开放平台管理"},
+	{Code: PERM_ACCOUNT_MANAGE, Name: "账号管理"},
+	{Code: PERM_PLATFORM_ADMIN, Name: "平台级管理"},
 	{Code: PERM_GROUP_MANAGE, Name: "权限组管理"},
 }
 

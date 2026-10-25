@@ -84,6 +84,7 @@ type APIGroup struct {
 	WafUIPreferenceApi
 	WafUpgradeNoticeApi
 	WafPermissionGroupApi
+	WafTenantApi
 }
 
 var APIGroupAPP = new(APIGroup)
@@ -117,6 +118,7 @@ var (
 	wafAccountLogService   = waf_service.WafAccountLogServiceApp
 	wafLoginHistoryService = waf_service.WafLoginHistoryServiceApp
 	wafTokenInfoService    = waf_service.WafTokenInfoServiceApp
+	wafTenantService       = waf_service.WafTenantServiceApp
 
 	wafSysLogService       = waf_service.WafSysLogServiceApp
 	wafSystemConfigService = waf_service.WafSystemConfigServiceApp

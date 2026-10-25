@@ -93,9 +93,13 @@ func (receiver *WafAccountService) recordPwdHistory(loginAccount, hash string) {
 	}
 }
 
-// AddApi 管理员新建账号：强制角色合法 + 口令复杂度校验，新建账号默认需首登改密。
+// AddApi 管理员新建账号：租户账号数配额 + 强制角色合法 + 口令复杂度校验，新建账号默认需首登改密。
 // 绑定了权限组（GroupId 非空）时校验组存在，权限组查询随请求 ctx 走租户回调。
 func (receiver *WafAccountService) AddApi(ctx context.Context, req request.WafAccountAddReq) error {
+	// 租户账号数配额（tenants.max_accounts，0=不限；平台/无租户上下文不受限）
+	if err := WafTenantServiceApp.CheckTenantQuota(ctx, enums.TenantQuotaKindAccount); err != nil {
+		return err
+	}
 	if !enums.IsValidRole(req.Role) {
 		return errors.New("请指定合法的账号角色")
 	}

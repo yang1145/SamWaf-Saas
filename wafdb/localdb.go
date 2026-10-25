@@ -359,6 +359,7 @@ var tenantExemptModels = map[string]bool{
 	"model.SystemConfig":      true, // 系统配置
 	"model.WafSysLog":         true, // 系统日志
 	"model.HostLoginEvent":    true, // 主机登录失败事件（防爆破基础设施）
+	"model.Tenant":            true, // 租户注册表（平台管理，登录/请求期校验都要跨租户可读）
 }
 
 // tenantScopeSkip 判断当前语句是否应跳过租户过滤/盖章：

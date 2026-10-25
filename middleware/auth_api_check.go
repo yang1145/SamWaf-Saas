@@ -13,6 +13,7 @@ import (
 	"SamWaf/wafhostguard"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 var (
 	wafTokenInfoService = waf_service.WafTokenInfoServiceApp
 	wafOtpService       = waf_service.WafOtpServiceApp
+	wafTenantService    = waf_service.WafTenantServiceApp
 )
 
 // TokenOnlyAuth 仅允许后台 Token 登录访问，拒绝 OpenAPI Key 方式
@@ -212,6 +214,18 @@ func Auth() gin.HandlerFunc {
 			if tokenInfo.Tenant_ID != "" {
 				c.Request = c.Request.WithContext(wafctx.WithTenant(c.Request.Context(), tokenInfo.Tenant_ID, tokenInfo.USER_CODE))
 				c.Set("tenantId", tokenInfo.Tenant_ID)
+
+				// 租户生命周期执行点：策略读缓存（5 分钟生效）——
+				// 停用/注销/超期(超出宽限)拒绝一切请求；宽限期内仅放行只读(GET/HEAD)
+				if deny, readOnly := wafTenantService.RequestPolicy(tokenInfo.Tenant_ID); deny || readOnly {
+					m := c.Request.Method
+					if deny || (m != http.MethodGet && m != http.MethodHead) {
+						zlog.Debug("租户策略拦截请求", "tenant", tokenInfo.Tenant_ID, "deny", deny, "readOnly", readOnly, "method", m)
+						response.ForbiddenWithMessage("租户已被停用或已超出宽限期，请联系平台管理员续期", c)
+						c.Abort()
+						return
+					}
+				}
 			}
 		}
 

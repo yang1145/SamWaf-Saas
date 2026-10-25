@@ -11,17 +11,18 @@ const (
 	ROLE_SYSTEM_ADMIN   = "systemAdmin"   // 系统管理员
 	ROLE_SECURITY_ADMIN = "securityAdmin" // 安全管理员
 	ROLE_AUDIT_ADMIN    = "auditAdmin"    // 审计管理员
+	ROLE_TENANT_ADMIN   = "tenantAdmin"   // 租户管理员（权限在绑定权限组内，见 permissions.go；不参与三权分立）
 )
 
 // AllRoles 返回全部合法角色
 func AllRoles() []string {
-	return []string{ROLE_SUPER_ADMIN, ROLE_SYSTEM_ADMIN, ROLE_SECURITY_ADMIN, ROLE_AUDIT_ADMIN}
+	return []string{ROLE_SUPER_ADMIN, ROLE_SYSTEM_ADMIN, ROLE_SECURITY_ADMIN, ROLE_AUDIT_ADMIN, ROLE_TENANT_ADMIN}
 }
 
 // IsValidRole 判断角色字符串是否合法
 func IsValidRole(role string) bool {
 	switch role {
-	case ROLE_SUPER_ADMIN, ROLE_SYSTEM_ADMIN, ROLE_SECURITY_ADMIN, ROLE_AUDIT_ADMIN:
+	case ROLE_SUPER_ADMIN, ROLE_SYSTEM_ADMIN, ROLE_SECURITY_ADMIN, ROLE_AUDIT_ADMIN, ROLE_TENANT_ADMIN:
 		return true
 	default:
 		return false

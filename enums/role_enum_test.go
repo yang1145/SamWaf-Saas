@@ -11,6 +11,7 @@ func TestIsValidRole(t *testing.T) {
 		{ROLE_SYSTEM_ADMIN, true},
 		{ROLE_SECURITY_ADMIN, true},
 		{ROLE_AUDIT_ADMIN, true},
+		{ROLE_TENANT_ADMIN, true},
 		{"", false},
 		{"admin", false},
 		{"unknownRole", false},
@@ -52,7 +53,7 @@ func TestIsSuperAdmin(t *testing.T) {
 			t.Errorf("IsSuperAdmin(%q) = false, want true (empty/invalid should fall back to super)", role)
 		}
 	}
-	for _, role := range []string{ROLE_SYSTEM_ADMIN, ROLE_SECURITY_ADMIN, ROLE_AUDIT_ADMIN} {
+	for _, role := range []string{ROLE_SYSTEM_ADMIN, ROLE_SECURITY_ADMIN, ROLE_AUDIT_ADMIN, ROLE_TENANT_ADMIN} {
 		if IsSuperAdmin(role) {
 			t.Errorf("IsSuperAdmin(%q) = true, want false", role)
 		}
@@ -61,12 +62,20 @@ func TestIsSuperAdmin(t *testing.T) {
 
 func TestAllRoles(t *testing.T) {
 	roles := AllRoles()
-	if len(roles) != 4 {
-		t.Fatalf("AllRoles() len = %d, want 4", len(roles))
+	if len(roles) != 5 {
+		t.Fatalf("AllRoles() len = %d, want 5", len(roles))
 	}
 	for _, r := range roles {
 		if !IsValidRole(r) {
 			t.Errorf("AllRoles() contains invalid role %q", r)
 		}
+	}
+	// tenantAdmin 必须是合法角色且不兜底成 superAdmin——
+	// 否则租户管理员会被中间件当成超管放行
+	if !IsValidRole(ROLE_TENANT_ADMIN) {
+		t.Errorf("ROLE_TENANT_ADMIN 应为合法角色")
+	}
+	if IsSuperAdmin(ROLE_TENANT_ADMIN) {
+		t.Errorf("tenantAdmin 不应被 IsSuperAdmin 视为超管")
 	}
 }

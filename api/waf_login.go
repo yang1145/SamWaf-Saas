@@ -122,6 +122,13 @@ func (w *WafLoginApi) LoginApi(c *gin.Context) {
 			// 密码正确，清除错误计数
 			global.GCACHE_WAFCACHE.Remove(cacheKey)
 
+			// 租户生命周期校验：停用/注销/超期(超出宽限期)拒绝登录；
+			// 宽限期内放行登录，但请求期由 Auth 中间件按缓存策略限为只读
+			if tenantErr := wafTenantService.CheckTenantLoginable(bean.Tenant_ID); tenantErr != nil {
+				response.FailWithMessage(tenantErr.Error(), c)
+				return
+			}
+
 			// 透明升级：命中旧 MD5 的口令，登录成功后重算为 bcrypt 落库
 			if !utils.IsBcryptHash(bean.LoginPassword) {
 				wafAccountService.UpgradePasswordHash(bean.LoginAccount, req.LoginPassword)

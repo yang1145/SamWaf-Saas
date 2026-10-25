@@ -268,27 +268,38 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 	}
 
 	// 仅允许后台 Token 登录访问，拒绝 API Key 访问（安全敏感接口）
-	// 整组归属「系统管理员域」：账户管理/OTP/开放平台Key/SQL查询/应用管理/AI模型均为系统级敏感操作
+	// 按权限码拆两组：账号域（账号/OTP，租户管理员可持有）与平台域
+	// （开放平台/SQL查询/应用/AI/诊断，仅平台侧角色）。
 	// superAdmin 兜底放行；空角色(历史账号)经 NormalizeRole 视为 superAdmin，向后兼容
 	TokenOnlyRouterGroup := r.Group("")
-	TokenOnlyRouterGroup.Use(middleware.TokenOnlyAuth(), middleware.RequirePermission(enums.PERM_ACCOUNT_MANAGE, enums.ROLE_SYSTEM_ADMIN), middleware.ReplayProtect(), middleware.IPWhitelist(), middleware.DomainWhitelist(), middleware.SecApi(), middleware.GinGlobalExceptionMiddleWare())
+	TokenOnlyRouterGroup.Use(middleware.TokenOnlyAuth(), middleware.ReplayProtect(), middleware.IPWhitelist(), middleware.DomainWhitelist(), middleware.SecApi(), middleware.GinGlobalExceptionMiddleWare())
+	// 账号域
+	tokenAccountGroup := TokenOnlyRouterGroup.Group("")
+	tokenAccountGroup.Use(middleware.RequirePermission(enums.PERM_ACCOUNT_MANAGE, enums.ROLE_SYSTEM_ADMIN))
+	{
+		// 账号管理：防止通过 API Key 删除/修改管理员账号
+		router.ApiGroupApp.InitAccountRouter(tokenAccountGroup)
+		// OTP 双因素认证管理：安全配置类接口
+		router.ApiGroupApp.InitWafOtpRouter(tokenAccountGroup)
+	}
+	// 平台域（租户管理员的权限组不应包含 platform:admin）
+	tokenPlatformGroup := TokenOnlyRouterGroup.Group("")
+	tokenPlatformGroup.Use(middleware.RequirePermission(enums.PERM_PLATFORM_ADMIN, enums.ROLE_SYSTEM_ADMIN))
 	{
 		// 开放平台管理接口
-		router.ApiGroupApp.InitOPlatformKeyRouter(TokenOnlyRouterGroup)
-		router.ApiGroupApp.InitOPlatformLogRouter(TokenOnlyRouterGroup)
-		router.ApiGroupApp.InitOPlatformDocRouter(TokenOnlyRouterGroup)
-		// 账号管理：防止通过 API Key 删除/修改管理员账号
-		router.ApiGroupApp.InitAccountRouter(TokenOnlyRouterGroup)
-		// OTP 双因素认证管理：安全配置类接口
-		router.ApiGroupApp.InitWafOtpRouter(TokenOnlyRouterGroup)
+		router.ApiGroupApp.InitOPlatformKeyRouter(tokenPlatformGroup)
+		router.ApiGroupApp.InitOPlatformLogRouter(tokenPlatformGroup)
+		router.ApiGroupApp.InitOPlatformDocRouter(tokenPlatformGroup)
 		// SQL 查询：直接执行数据库查询，极度敏感
-		router.ApiGroupApp.InitSqlQueryRouter(TokenOnlyRouterGroup)
+		router.ApiGroupApp.InitSqlQueryRouter(tokenPlatformGroup)
 		// 应用管理：可执行任意命令，拒绝 API Key，功能默认关闭
-		router.ApiGroupApp.InitWafAppRouter(TokenOnlyRouterGroup)
+		router.ApiGroupApp.InitWafAppRouter(tokenPlatformGroup)
 		// AI模型管理与训练数据导出：模型会被引擎加载、数据出库，拒绝 API Key
-		router.ApiGroupApp.InitWafAIRouter(TokenOnlyRouterGroup)
+		router.ApiGroupApp.InitWafAIRouter(tokenPlatformGroup)
 		// 运行诊断：进程内部状态与性能采样数据导出，拒绝 API Key
-		router.ApiGroupApp.InitWafDiagnosticRouter(TokenOnlyRouterGroup)
+		router.ApiGroupApp.InitWafDiagnosticRouter(tokenPlatformGroup)
+		// 租户管理：开通/续期/停用（生命周期）
+		router.ApiGroupApp.InitTenantRouter(tokenPlatformGroup)
 	}
 
 	// 保存 gin.Engine 引用供 API 文档生成使用

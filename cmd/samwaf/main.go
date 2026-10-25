@@ -403,6 +403,10 @@ func (m *wafSystenService) run() {
 	if err := waf_service.WafPermissionGroupServiceApp.InitDefaultPermissionGroups(); err != nil {
 		zlog.Error("初始化预置权限组失败", "error", err)
 	}
+	// 平台自身租户行幂等播种（全局标识就绪后执行；失败只记日志不阻断启动）
+	if err := waf_service.WafTenantServiceApp.InitDefaultTenant(); err != nil {
+		zlog.Error("初始化平台租户记录失败", "error", err)
+	}
 
 	//初始化插件系统（从配置文件加载）
 	if err := plugin.InitPluginSystem(); err != nil {

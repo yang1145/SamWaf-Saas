@@ -19,12 +19,22 @@ type TaskRegistry struct {
 	mutexes map[string]*sync.Mutex // 每个任务分配一个独立的锁
 }
 
+// extraTaskFuncs waftask 包内自注册的任务（各任务文件在 init 时挂入）。
+// 平台侧新增任务只需「本包内 extraTaskFuncs[方法名] = 任务函数」，
+// NewTaskRegistry 创建注册器时统一装载，不必再改 cmd/samwaf/main.go 的注册清单。
+var extraTaskFuncs = map[string]TaskFunc{}
+
 // NewTaskRegistry 创建新的任务注册器
 func NewTaskRegistry() *TaskRegistry {
-	return &TaskRegistry{
+	tr := &TaskRegistry{
 		Tasks:   make(map[string]TaskFunc),
 		mutexes: make(map[string]*sync.Mutex),
 	}
+	// 装载包内自注册任务
+	for name, taskFunc := range extraTaskFuncs {
+		tr.RegisterTask(name, taskFunc)
+	}
+	return tr
 }
 
 // RegisterTask 注册一个任务方法

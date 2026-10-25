@@ -98,7 +98,50 @@ legacy 参数含全部角色）。
 （dashboard+host+system_ops+log）。BuiltIn=1 不可删、不可改名。
 租户开通流程落地后应为新租户复制同一套（租户隔离使预置组按租户各自一份）。
 
-## 当前边界（阶段0未包含）
+## 租户生命周期（已落地 MVP）
+
+`tenants` 表（`model.Tenant`，平台豁免清单内——注册表本身跨租户可读）：
+租户码、名称、状态机（Active/Suspended/Expired/Cancelled）、套餐码（预留）、
+配额（max_hosts/max_accounts，0=不限）、到期时间（空=永久）、宽限天数。
+
+### 生命周期流转
+
+- **开通**（`POST /api/v1/tenant/add`，平台域 `platform:admin`）：PlatformScope
+  身份依次落库——租户行（Tenant_ID=新租户码）→ 复制三个 BuiltIn 预置组到新租户 →
+  建"租户管理员"组（除 platform:admin/permission:manage 外全部权限码）→
+  建租户管理员账号（Role=tenantAdmin，首登强制改密）。
+  跨租户写入的身份问题由 PlatformScope（跳过盖章）+ 手工 BaseOrm 三要素解决。
+- **登录校验**（实时查库）：Suspended/Cancelled/过期超宽限 → 拒绝登录；
+  宽限期内放行（请求期只读）；租户行不存在 → 视为平台自身（存量实例向后兼容）。
+- **请求期执行**（Auth 中间件，策略缓存 5 分钟，改状态/续期主动失效）：
+  Suspended/Cancelled/过期超宽限 → 全部请求 403；宽限期内 → 非 GET/HEAD 一律 403。
+- **到期巡检**（每日任务 `task_tenant_expire`，PlatformScope）：Active+已过期 →
+  落库 Expired；剩余 7/3/1 天经消息队列发提醒。
+- **续期**（`/api/v1/tenant/renew`）：顺延 ExpireTime（或绝对时间）+ 恢复 Active +
+  立即失效策略缓存。
+- **注销**：软删除（Status=Cancelled，数据保留）；平台自身租户不可删。
+
+### 配额
+
+建站/建账号入口（host/account AddApi）经 `CheckTenantQuota(ctx, kind)` 校验
+max_hosts/max_accounts。注意：Account 在平台豁免清单内，配额统计对 hosts/accounts
+都显式携带租户条件（不能依赖回调）。
+
+### 已知实现细节（审计关注点）
+
+- `model.Tenant` 外层 `TenantID` 与内嵌 `BaseOrm.Tenant_ID` 同映射 `tenant_id` 列
+  （字段遮蔽）：读回时值在外层 `TenantID` 字段，业务判断归属一律取外层字段。
+- 策略缓存 TTL 5 分钟意味着停用/超期最迟 5 分钟生效（登录期是实时校验，
+  缓存后端故障 fail-open 由登录期兜底）。
+- 计费聚合（按租户的用量汇总/账单输出）未实现：套餐码与 stats 库按租户的列
+  已预留，`attachTrafficMeter` 为流量计量挂钩点。
+- 引擎数据面对到期租户的站点**继续转发**（商业默认）；如需"到期即停代理"，
+  在引擎配置装载处按租户状态过滤即可（hook 点：GetAllHostApi 的 PlatformScope 读）。
+
+## 阶段0 的边界说明（历史）
+
+> 下文为阶段0刚落地时的边界记录，其中"尚未让业务查询按租户隔离"一条已在
+> 阶段2批量推广中解决，保留作演进轨迹。
 
 阶段0 只打通"机制"，**尚未让业务查询真正按租户隔离**：
 service 层目前仍直接用 `global.GWAF_LOCAL_DB` 调用，未传 `db.WithContext(ctx)`，
