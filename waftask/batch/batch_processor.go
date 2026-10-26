@@ -8,6 +8,7 @@ import (
 	"SamWaf/utils"
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -19,14 +20,16 @@ import (
 	"time"
 )
 
-// BatchProcessor 批量处理器接口
+// BatchProcessor 批量处理器接口。
+// ctx 携带任务归属租户（手工执行=请求租户、cron=任务行自带租户），
+// 处理器内所有库读写都必须 WithContext(ctx)，让行落任务归属租户、且只触碰该租户的行。
 type BatchProcessor interface {
 	// ProcessItem 处理单个项目
-	ProcessBatch(items []string, task model.BatchTask, progress *BatchProgress) bool
+	ProcessBatch(ctx context.Context, items []string, task model.BatchTask, progress *BatchProgress) bool
 	// GetExistingItems 获取已存在的项目
-	GetExistingItems(items []string, task model.BatchTask, config interface{}) map[string]interface{}
+	GetExistingItems(ctx context.Context, items []string, task model.BatchTask, config interface{}) map[string]interface{}
 	// NotifyEngine 通知引擎更新
-	NotifyEngine(task model.BatchTask)
+	NotifyEngine(ctx context.Context, task model.BatchTask)
 }
 
 // BatchFinalizer 可选接口：所有批次都跑完之后回调一次。
@@ -36,7 +39,7 @@ type BatchProcessor interface {
 // 否则一次网络抖动就能把组清空：被白名单引用时是全站失去豁免，被黑名单引用时是瞬间放行。
 // 返回值语义与 ProcessBatch 一致：true 表示数据有变化，需要通知引擎。
 type BatchFinalizer interface {
-	Finalize(task model.BatchTask, progress *BatchProgress, sourceComplete bool) bool
+	Finalize(ctx context.Context, task model.BatchTask, progress *BatchProgress, sourceComplete bool) bool
 }
 
 // BatchProcessorConfig 批量处理器配置
@@ -90,10 +93,13 @@ func (p *BatchProgress) GetProgress() float64 {
 
 // ProcessBatchTask 通用批量处理函数。
 //
+// ctx 携带任务归属租户，贯穿全部处理器回调（查询/写入/引擎通知），
+// 保证批量导入的行落任务归属租户、去重比对也只在该租户的行上进行。
+//
 // 返回 error 而不是像以前那样只打日志静默返回：调用方（手工执行接口 / 定时任务）
 // 需要据此给用户明确结果并写安全审计。以前无论来源读不出、执行方式非法还是
 // 一条都没导进去，接口都回"手工执行任务成功"，运维完全看不出任务其实没跑。
-func ProcessBatchTask(task model.BatchTask, processor BatchProcessor, config BatchProcessorConfig) error {
+func ProcessBatchTask(ctx context.Context, task model.BatchTask, processor BatchProcessor, config BatchProcessorConfig) error {
 	innerLogName := config.LogPrefix
 
 	// 枚举在这里再兜一次：保存侧已经拦了，但存量库里可能留着旧的非法值。
@@ -175,7 +181,7 @@ func ProcessBatchTask(task model.BatchTask, processor BatchProcessor, config Bat
 		// 当收集到一批或者是最后一批时，进行批量处理
 		if batchCount >= config.BatchSize {
 			// 处理当前批次
-			if processor.ProcessBatch(validItems, task, progress) {
+			if processor.ProcessBatch(ctx, validItems, task, progress) {
 				hasAffectInfo = true
 			}
 
@@ -193,7 +199,7 @@ func ProcessBatchTask(task model.BatchTask, processor BatchProcessor, config Bat
 
 	// 处理最后一批不足BatchSize的项目
 	if len(validItems) > 0 {
-		if processor.ProcessBatch(validItems, task, progress) {
+		if processor.ProcessBatch(ctx, validItems, task, progress) {
 			hasAffectInfo = true
 		}
 
@@ -212,14 +218,14 @@ func ProcessBatchTask(task model.BatchTask, processor BatchProcessor, config Bat
 
 	// 收尾回调（可选实现）
 	if finalizer, ok := processor.(BatchFinalizer); ok {
-		if finalizer.Finalize(task, progress, scanErr == nil) {
+		if finalizer.Finalize(ctx, task, progress, scanErr == nil) {
 			hasAffectInfo = true
 		}
 	}
 
 	if hasAffectInfo {
 		// 通知引擎进行实时生效
-		processor.NotifyEngine(task)
+		processor.NotifyEngine(ctx, task)
 	}
 
 	// 输出最终处理结果

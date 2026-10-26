@@ -14,7 +14,7 @@ func (w *WafLogAPi) AddIPWatchlistApi(c *gin.Context) {
 		response.FailWithMessage("参数错误: "+err.Error(), c)
 		return
 	}
-	if err := wafIPWatchlistService.AddApi(req); err != nil {
+	if err := wafIPWatchlistService.AddApi(c.Request.Context(), req); err != nil {
 		response.FailWithMessage("加入观察名单失败: "+err.Error(), c)
 		return
 	}
@@ -28,7 +28,7 @@ func (w *WafLogAPi) DelIPWatchlistApi(c *gin.Context) {
 		response.FailWithMessage("参数错误: "+err.Error(), c)
 		return
 	}
-	if err := wafIPWatchlistService.DelApi(req.IP); err != nil {
+	if err := wafIPWatchlistService.DelApi(c.Request.Context(), req.IP); err != nil {
 		response.FailWithMessage("移除失败: "+err.Error(), c)
 		return
 	}
@@ -42,14 +42,14 @@ func (w *WafLogAPi) GetIPWatchlistApi(c *gin.Context) {
 		response.FailWithMessage("参数错误: "+err.Error(), c)
 		return
 	}
-	list, total, err := wafIPWatchlistService.ListApi(req)
+	list, total, err := wafIPWatchlistService.ListApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("查询失败: "+err.Error(), c)
 		return
 	}
 	response.OkWithData(response.PageResult{
-		List:     list,
-		Total:    total,
+		List:      list,
+		Total:     total,
 		PageIndex: req.PageIndex,
 		PageSize:  req.PageSize,
 	}, c)

@@ -143,7 +143,7 @@ func EchoErrorInfo(w http.ResponseWriter, r *http.Request, weblogbean *innerbean
 					go func() {
 						// 发送推送消息
 						global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.RuleMessageInfo{
-							BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "命中保护规则", Server: global.GWAF_CUSTOM_SERVER_NAME},
+							BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "命中保护规则", Server: global.GWAF_CUSTOM_SERVER_NAME, TenantId: weblogbean.TenantId},
 							Domain:          weblogbean.HOST,
 							RuleInfo:        ruleName,
 							Ip:              fmt.Sprintf("%s (%s)", weblogbean.SRC_IP, utils.GetCountry(weblogbean.SRC_IP)),
@@ -179,7 +179,7 @@ func EchoErrorInfo(w http.ResponseWriter, r *http.Request, weblogbean *innerbean
 		go func() {
 			// 发送推送消息
 			global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.RuleMessageInfo{
-				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "命中保护规则", Server: global.GWAF_CUSTOM_SERVER_NAME},
+				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "命中保护规则", Server: global.GWAF_CUSTOM_SERVER_NAME, TenantId: weblogbean.TenantId},
 				Domain:          weblogbean.HOST,
 				RuleInfo:        ruleName,
 				Ip:              fmt.Sprintf("%s (%s)", weblogbean.SRC_IP, utils.GetCountry(weblogbean.SRC_IP)),
@@ -297,7 +297,7 @@ func EchoResponseErrorInfo(resp *http.Response, weblogbean *innerbean.WebLog, ru
 			go func() {
 				// 发送推送消息
 				global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.RuleMessageInfo{
-					BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "命中保护规则", Server: global.GWAF_CUSTOM_SERVER_NAME},
+					BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "命中保护规则", Server: global.GWAF_CUSTOM_SERVER_NAME, TenantId: weblogbean.TenantId},
 					Domain:          weblogbean.HOST,
 					RuleInfo:        ruleName,
 					Ip:              fmt.Sprintf("%s (%s)", weblogbean.SRC_IP, utils.GetCountry(weblogbean.SRC_IP)),
@@ -330,7 +330,7 @@ func EchoResponseErrorInfo(resp *http.Response, weblogbean *innerbean.WebLog, ru
 		go func() {
 			// 发送推送消息
 			global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.RuleMessageInfo{
-				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "命中保护规则", Server: global.GWAF_CUSTOM_SERVER_NAME},
+				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "命中保护规则", Server: global.GWAF_CUSTOM_SERVER_NAME, TenantId: weblogbean.TenantId},
 				Domain:          weblogbean.HOST,
 				RuleInfo:        ruleName,
 				Ip:              fmt.Sprintf("%s (%s)", weblogbean.SRC_IP, utils.GetCountry(weblogbean.SRC_IP)),

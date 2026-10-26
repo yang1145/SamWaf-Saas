@@ -14,7 +14,7 @@ func (w *WafAnalysisApi) StatAnalysisDayCountryRangeApi(c *gin.Context) {
 	var req request.WafStatsAnalysisDayRangeCountryReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		wafStat := wafAnalysisService.StatAnalysisDayCountryRangeApi(req)
+		wafStat := wafAnalysisService.StatAnalysisDayCountryRangeApi(c.Request.Context(), req)
 		response.OkWithDetailed(wafStat, "获取成功", c)
 	} else {
 
@@ -27,7 +27,7 @@ func (w *WafAnalysisApi) AnalysisSpiderRangeApi(c *gin.Context) {
 	var req request.WafAnalysisSpiderReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafAnalysisService.AnalysisSpiderApi(req)
+		bean := wafAnalysisService.AnalysisSpiderApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 
@@ -42,7 +42,7 @@ func (w *WafAnalysisApi) AnalysisActorListApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	response.OkWithDetailed(wafAnalysisViewService.ActorListApi(req), "获取成功", c)
+	response.OkWithDetailed(wafAnalysisViewService.ActorListApi(c.Request.Context(), req), "获取成功", c)
 }
 
 // AnalysisPathListApi 来源与路径分析 - 目标视角（打哪里）
@@ -52,7 +52,7 @@ func (w *WafAnalysisApi) AnalysisPathListApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	response.OkWithDetailed(wafAnalysisViewService.PathListApi(req), "获取成功", c)
+	response.OkWithDetailed(wafAnalysisViewService.PathListApi(c.Request.Context(), req), "获取成功", c)
 }
 
 // AnalysisDetailApi 来源与路径分析 - 抽屉下钻
@@ -70,5 +70,5 @@ func (w *WafAnalysisApi) AnalysisDetailApi(c *gin.Context) {
 		response.FailWithMessage("请传入要查看的 key", c)
 		return
 	}
-	response.OkWithDetailed(wafAnalysisViewService.DetailApi(req), "获取成功", c)
+	response.OkWithDetailed(wafAnalysisViewService.DetailApi(c.Request.Context(), req), "获取成功", c)
 }

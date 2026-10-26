@@ -2,10 +2,12 @@ package wafonekey
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/customtype"
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
+	"context"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -15,8 +17,23 @@ import (
 	"time"
 )
 
+// oneKeyModScope 取一键修改记录的归属租户：请求 ctx 携带租户时用请求租户，
+// 否则回落全局（与租户回调的取值口径一致）。执行一键修改的记录必须归属发起者，
+// 否则租户在记录列表里互相可见。
+func oneKeyModScope(ctx context.Context) (string, string) {
+	if ctx != nil {
+		if tid, ucode, ok := wafctx.TenantFrom(ctx); ok && tid != "" {
+			if ucode == "" {
+				ucode = global.GWAF_USER_CODE
+			}
+			return tid, ucode
+		}
+	}
+	return global.GWAF_TENANT_ID, global.GWAF_USER_CODE
+}
+
 // 一键修改数据
-func OneKeyModifyBt(btSavePath string) (error, string) {
+func OneKeyModifyBt(ctx context.Context, btSavePath string) (error, string) {
 	if btSavePath == "" {
 		btSavePath = "/www/server/panel/vhost/nginx"
 	}
@@ -54,14 +71,15 @@ func OneKeyModifyBt(btSavePath string) (error, string) {
 				} else {
 					// 读取文件内容
 					afterContent, _ := ioutil.ReadFile(filePath)
-					//插入记录
-					global.GQEQUE_LOG_DB.Enqueue(model.OneKeyMod{
-						BaseOrm: baseorm.BaseOrm{
-							Id:          uuid.GenUUID(),
-							USER_CODE:   global.GWAF_USER_CODE,
-							Tenant_ID:   global.GWAF_TENANT_ID,
-							CREATE_TIME: customtype.JsonTime(time.Now()),
-							UPDATE_TIME: customtype.JsonTime(time.Now())},
+				//插入记录（归属取发起者租户，见 oneKeyModScope）
+				opTenant, opUser := oneKeyModScope(ctx)
+				global.GQEQUE_LOG_DB.Enqueue(model.OneKeyMod{
+					BaseOrm: baseorm.BaseOrm{
+						Id:          uuid.GenUUID(),
+						USER_CODE:   opUser,
+						Tenant_ID:   opTenant,
+						CREATE_TIME: customtype.JsonTime(time.Now()),
+						UPDATE_TIME: customtype.JsonTime(time.Now())},
 						OpSystem:      "宝塔",
 						FilePath:      filePath,
 						BeforeContent: string(beforeContent),
@@ -114,10 +132,12 @@ func replaceListenPorts(filePath string) error {
 	return nil
 }
 
-// 读取 model.OneKeyMod 表中 IsRestore 为 0 的记录，并还原文件
-func RestoreOneKeyMod(id string) error {
+// 读取 model.OneKeyMod 表中 IsRestore 为 0 的记录，并还原文件。
+// 查询/更新随请求 ctx 走租户过滤：租户只能还原自己发起的修改记录。
+func RestoreOneKeyMod(ctx context.Context, id string) error {
 	var oneKeyMod model.OneKeyMod
-	err := global.GWAF_LOCAL_LOG_DB.Where("id = ?", id).First(&oneKeyMod).Error
+	db := global.GWAF_LOCAL_LOG_DB.WithContext(ctx)
+	err := db.Where("id = ?", id).First(&oneKeyMod).Error
 	if err != nil {
 		return err
 	}
@@ -130,8 +150,7 @@ func RestoreOneKeyMod(id string) error {
 		return err
 	}
 	//更新 IsRestore 为 1
-	global.GWAF_LOCAL_LOG_DB.Model(&model.OneKeyMod{}).Where("id = ?", id).Update("is_restore", 1)
-	if err != nil {
+	if err = db.Model(&model.OneKeyMod{}).Where("id = ?", id).Update("is_restore", 1).Error; err != nil {
 		return err
 	}
 	return nil

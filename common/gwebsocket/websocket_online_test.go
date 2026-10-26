@@ -303,3 +303,129 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatal("向已关闭会话发送应当返回错误")
 	}
 }
+
+// 租户路由断言辅助：每条客户端连接配一个只管收的 goroutine，把消息塞进通道。
+// 不在客户端上用读超时做「应当无消息」断言——gorilla 的读超时错误会粘在连接上
+// （readErr 一次性缓存），之后这条连接就没法再用来断言后续消息了。
+func startRecvChan(client *Wssocket.Conn) <-chan string {
+	ch := make(chan string, 32)
+	go func() {
+		for {
+			_, data, err := client.ReadMessage()
+			if err != nil {
+				close(ch)
+				return
+			}
+			ch <- string(data)
+		}
+	}()
+	return ch
+}
+
+// 期望该客户端在窗口内收到下一条消息且内容相符
+func expectMessage(t *testing.T, who string, recv <-chan string, want string) {
+	t.Helper()
+	select {
+	case got, ok := <-recv:
+		if !ok {
+			t.Fatalf("%s 应收到消息 %q, 实际读协程已退出", who, want)
+		}
+		if got != want {
+			t.Fatalf("%s 收到的消息不符: 期望 %q, 实际 %q", who, want, got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("%s 应收到消息 %q, 等待超时", who, want)
+	}
+}
+
+// 期望该客户端在短窗口内什么也收不到（跨租户不得串台）
+func expectNoMessage(t *testing.T, who string, recv <-chan string) {
+	t.Helper()
+	select {
+	case got := <-recv:
+		t.Fatalf("%s 不应收到任何消息，但收到了 %q", who, got)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// 多租户路由回归用例：广播曾对全部租户的连接全量投递，引擎事件（规则命中、
+// 防篡改、CC 封禁）带着主机与来源 IP 跨租户泄露。修复后的投递规则：
+//  1. 租户消息只到达本租户连接与平台侧连接（平台管理员监管一切）；
+//  2. 未携带租户的消息按失败关闭默认，只到达平台侧连接；
+//  3. 未知租户的消息同样只到达平台侧连接；
+//  4. 全量 Broadcast 与租户无关（仅限系统级消息使用），对所有连接可见。
+func TestTenantRoutedBroadcast(t *testing.T) {
+	online := InitWafWebSocket()
+
+	upGrader := Wssocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	// 服务端把升级好的连接送出来，由测试按不同租户登记进注册表
+	srvCh := make(chan *Wssocket.Conn, 3)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upGrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade 失败: %v", err)
+			return
+		}
+		srvCh <- ws
+		select {}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dial := func() *Wssocket.Conn {
+		c, _, err := Wssocket.DefaultDialer.Dial(wsURL, nil)
+		if err != nil {
+			t.Fatalf("客户端连接失败: %v", err)
+		}
+		t.Cleanup(func() { c.Close() })
+		return c
+	}
+
+	// 三条连接：租户A（带传输密钥标识，验证 build 能拿到各自 KeyID）、租户B、平台侧（空租户）
+	clientA, clientB, clientP := dial(), dial(), dial()
+	connA, connB, connP := <-srvCh, <-srvCh, <-srvCh
+	t.Cleanup(func() {
+		connA.Close()
+		connB.Close()
+		connP.Close()
+	})
+
+	online.AddWebSocketWithKeyAndTenant("userA", "keyA", "tenant-a", connA)
+	online.AddWebSocketWithKeyAndTenant("userB", "", "tenant-b", connB)
+	online.AddWebSocketWithKeyAndTenant("userP", "", "", connP) // 平台侧连接
+
+	recvA, recvB, recvP := startRecvChan(clientA), startRecvChan(clientB), startRecvChan(clientP)
+	buildEchoKeyID := func(keyID string) ([]byte, error) { return []byte(keyID), nil }
+
+	// 1. 面向租户A 的消息：A 与平台侧收到，租户B 收不到
+	if n := online.BroadcastBuildToTenant("tenant-a", Wssocket.TextMessage, buildEchoKeyID); n != 2 {
+		t.Fatalf("租户A 路由应送达 2 条连接(A+平台)，实际 %d", n)
+	}
+	expectMessage(t, "租户A连接", recvA, "keyA")
+	expectMessage(t, "平台侧连接", recvP, "")
+	expectNoMessage(t, "租户B连接", recvB)
+
+	// 2. 失败关闭默认：未携带租户的消息只投给平台侧连接
+	if n := online.BroadcastBuildToTenant("", Wssocket.TextMessage, buildEchoKeyID); n != 1 {
+		t.Fatalf("空租户(失败关闭)应只送达平台侧 1 条连接，实际 %d", n)
+	}
+	expectMessage(t, "平台侧连接", recvP, "")
+	expectNoMessage(t, "租户A连接", recvA)
+	expectNoMessage(t, "租户B连接", recvB)
+
+	// 3. 未知租户的消息同样只投给平台侧连接
+	if n := online.BroadcastToTenant("tenant-unknown", Wssocket.TextMessage, []byte("x")); n != 1 {
+		t.Fatalf("未知租户应只送达平台侧 1 条连接，实际 %d", n)
+	}
+	expectMessage(t, "平台侧连接", recvP, "x")
+	expectNoMessage(t, "租户A连接", recvA)
+	expectNoMessage(t, "租户B连接", recvB)
+
+	// 4. 全量广播（仅限系统级消息）仍对全部连接可见
+	if n := online.Broadcast(Wssocket.TextMessage, []byte("all")); n != 3 {
+		t.Fatalf("全量广播应送达 3 条连接，实际 %d", n)
+	}
+	expectMessage(t, "租户A连接", recvA, "all")
+	expectMessage(t, "租户B连接", recvB, "all")
+	expectMessage(t, "平台侧连接", recvP, "all")
+}

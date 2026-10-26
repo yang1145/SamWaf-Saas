@@ -17,8 +17,15 @@ func (receiver *WafVpConfigRouter) InitAdminTitlesPublicRouter(group *gin.Router
 
 func (receiver *WafVpConfigRouter) InitWafVpConfigRouter(group *gin.RouterGroup) {
 	wafVpConfigApi := api.APIGroupAPP.WafVpConfigApi
-	// 读接口：任意已登录管理员可查看当前配置
-	router := group.Group("")
+	// 管理端自身配置（管理口 IP 白名单/可信代理/应急访问路径/管理端证书/重启等）是
+	// 实例级资源，读接口同样披露安全面（应急路径、白名单网段可推导绕过面），
+	// 整组收进平台域：在挂载组的权限门之上叠加 platform:admin 门，
+	// legacy=systemAdmin 保持存量账号可达，租户（权限组/套餐天花板均不含该码）被拦。
+	platform := group.Group("")
+	platform.Use(middleware.RequirePermission(enums.PERM_PLATFORM_ADMIN, enums.ROLE_SYSTEM_ADMIN))
+
+	// 读接口：平台侧可查看当前配置
+	router := platform.Group("")
 	router.GET("/api/v1/vipconfig/getIpWhitelist", wafVpConfigApi.GetIpWhitelistApi)
 	router.GET("/api/v1/vipconfig/getManageTrustedProxies", wafVpConfigApi.GetManageTrustedProxiesApi)
 	router.GET("/api/v1/vipconfig/getManageCDNProvider", wafVpConfigApi.GetManageCDNProviderApi)
@@ -34,7 +41,7 @@ func (receiver *WafVpConfigRouter) InitWafVpConfigRouter(group *gin.RouterGroup)
 
 	// N7：写接口仅系统管理员(或超管)可操作。这些是系统级访问控制/证书/重启等高危配置，
 	// 尤其含 P0-3 的 IP 白名单与可信代理网段——低权限角色(审计/安全)不得篡改。
-	writeRouter := group.Group("")
+	writeRouter := platform.Group("")
 	writeRouter.Use(middleware.RequireRole(enums.ROLE_SYSTEM_ADMIN))
 	writeRouter.POST("/api/v1/vipconfig/updateIpWhitelist", wafVpConfigApi.UpdateIpWhitelistApi)
 	writeRouter.POST("/api/v1/vipconfig/updateManageTrustedProxies", wafVpConfigApi.UpdateManageTrustedProxiesApi)

@@ -1,6 +1,7 @@
 package batch
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -199,7 +200,7 @@ func TestProcessBatchTask_非法来源类型被拒(t *testing.T) {
 
 	task := localTask(p)
 	task.BatchSourceType = "file" // 存量库里可能留着的非法值
-	err := ProcessBatchTask(task, &IPDenyProcessor{}, BatchProcessorConfig{BatchSize: 10, LogPrefix: "test"})
+	err := ProcessBatchTask(context.Background(), task, &IPDenyProcessor{}, BatchProcessorConfig{BatchSize: 10, LogPrefix: "test"})
 	if err == nil {
 		t.Fatal("非法来源类型必须报错")
 	}
@@ -233,7 +234,7 @@ func TestProcessBatchTask_非法执行方式被拒(t *testing.T) {
 
 	task := localTask(p)
 	task.BatchExecuteMethod = "sync" // 存量库里可能留着的非法值
-	err := ProcessBatchTask(task, &IPDenyProcessor{}, BatchProcessorConfig{BatchSize: 10, LogPrefix: "test"})
+	err := ProcessBatchTask(context.Background(), task, &IPDenyProcessor{}, BatchProcessorConfig{BatchSize: 10, LogPrefix: "test"})
 	if err == nil {
 		t.Fatal("非法执行方式必须报错，而不是静默什么都不做")
 	}
@@ -243,7 +244,7 @@ func TestProcessBatchTask_非法执行方式被拒(t *testing.T) {
 
 	// 来源被拒时同样要报错，且必须在碰数据库之前就返回
 	bad := localTask(filepath.Join(t.TempDir(), "outside.txt"))
-	if err = ProcessBatchTask(bad, &IPDenyProcessor{}, BatchProcessorConfig{BatchSize: 10, LogPrefix: "test"}); err == nil {
+	if err = ProcessBatchTask(context.Background(), bad, &IPDenyProcessor{}, BatchProcessorConfig{BatchSize: 10, LogPrefix: "test"}); err == nil {
 		t.Fatal("越界来源必须报错")
 	}
 }

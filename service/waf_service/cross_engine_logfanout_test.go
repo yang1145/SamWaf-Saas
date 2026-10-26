@@ -17,6 +17,7 @@ import (
 	"SamWaf/wafdb"
 	"SamWaf/wafdb/dialect"
 	"SamWaf/wafdb/partition"
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -117,7 +118,7 @@ func runLogFanoutCases(t *testing.T, core, logdb *gorm.DB) {
 	}
 
 	t.Run("自动模式按时间范围扇出", func(t *testing.T) {
-		rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(baseReq())
+		rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), baseReq())
 		fatalIf(t, err)
 		want := int64(3)
 		if multi {
@@ -154,7 +155,7 @@ func runLogFanoutCases(t *testing.T, core, logdb *gorm.DB) {
 				req := baseReq()
 				req.PageSize = 2
 				req.PageIndex = page
-				rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(req)
+				rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 				fatalIf(t, err)
 				if total != 9 {
 					t.Fatalf("每页返回的总数都应是 9，第 %d 页拿到 %d", page, total)
@@ -179,7 +180,7 @@ func runLogFanoutCases(t *testing.T, core, logdb *gorm.DB) {
 			at := now.AddDate(0, -2, 0)
 			req.UnixAddTimeBegin = fmt.Sprint(at.AddDate(0, 0, -2).UnixMilli())
 			req.UnixAddTimeEnd = fmt.Sprint(at.AddDate(0, 0, 1).UnixMilli())
-			_, total, meta, err := WafLogServiceApp.GetListApiWithMeta(req)
+			_, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 			fatalIf(t, err)
 			if total != 3 {
 				t.Fatalf("只该命中最老那段的 3 行，实际 %d（覆盖 %+v）", total, meta.Shards)
@@ -188,9 +189,9 @@ func runLogFanoutCases(t *testing.T, core, logdb *gorm.DB) {
 	}
 
 	t.Run("重复查询走计数缓存且实时分区不被缓存", func(t *testing.T) {
-		_, first, _, err := WafLogServiceApp.GetListApiWithMeta(baseReq())
+		_, first, _, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), baseReq())
 		fatalIf(t, err)
-		_, second, meta, err := WafLogServiceApp.GetListApiWithMeta(baseReq())
+		_, second, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), baseReq())
 		fatalIf(t, err)
 		if first != second {
 			t.Fatalf("同样的查询两次总数不一致：%d vs %d", first, second)
@@ -201,7 +202,7 @@ func runLogFanoutCases(t *testing.T, core, logdb *gorm.DB) {
 		// 实时分区的计数绝不能被缓存：新写进来的行必须立刻算得进去
 		extra := mkRow(base, now, 99)
 		defer logdb.Table(base).Where("req_uuid = ?", extra).Delete(&model.AccessLog{})
-		_, third, _, err := WafLogServiceApp.GetListApiWithMeta(baseReq())
+		_, third, _, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), baseReq())
 		fatalIf(t, err)
 		if third != second+1 {
 			t.Fatalf("实时分区新增一行后总数应 +1（%d → %d），实时分区被缓存了？", second, third)
@@ -218,7 +219,7 @@ func runLogFanoutCases(t *testing.T, core, logdb *gorm.DB) {
 		// 故意把时间范围设成「今天以后」，证明识别码直查压根不看时间
 		req.UnixAddTimeBegin = fmt.Sprint(now.AddDate(0, 0, 1).UnixMilli())
 		req.UnixAddTimeEnd = fmt.Sprint(now.AddDate(0, 0, 2).UnixMilli())
-		rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(req)
+		rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 		fatalIf(t, err)
 		if !meta.UuidLookup {
 			t.Fatal("填了识别码就该走直查")
@@ -237,7 +238,7 @@ func runLogFanoutCases(t *testing.T, core, logdb *gorm.DB) {
 	t.Run("识别码查不到不是错误", func(t *testing.T) {
 		req := baseReq()
 		req.ReqUuid = "fan_" + tag + "_not_exist"
-		rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(req)
+		rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 		fatalIf(t, err)
 		if total != 0 || len(rows) != 0 {
 			t.Fatalf("不存在的识别码应返回空，实际 total=%d rows=%d", total, len(rows))
@@ -250,7 +251,7 @@ func runLogFanoutCases(t *testing.T, core, logdb *gorm.DB) {
 	t.Run("指定分区时只查它", func(t *testing.T) {
 		req := baseReq()
 		req.CurrrentDbName = "" // 空 = 实时库
-		_, total, meta, err := WafLogServiceApp.GetListApiWithMeta(req)
+		_, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 		fatalIf(t, err)
 		if total != 3 {
 			t.Fatalf("实时库里只有 3 行，实际 %d", total)
@@ -262,7 +263,7 @@ func runLogFanoutCases(t *testing.T, core, logdb *gorm.DB) {
 
 	if multi {
 		t.Run("详情按识别码自动定位分区", func(t *testing.T) {
-			got, err := WafLogServiceApp.GetDetailApi(request.WafAttackLogDetailReq{REQ_UUID: oldestUUID})
+			got, err := WafLogServiceApp.GetDetailApi(context.Background(), request.WafAttackLogDetailReq{REQ_UUID: oldestUUID})
 			fatalIf(t, err)
 			if got.REQ_UUID != oldestUUID {
 				t.Fatalf("没给分区标识时详情也该找得到归档里的记录，实际 %q", got.REQ_UUID)

@@ -2,11 +2,13 @@ package waf_service
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/customtype"
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
+	"context"
 	"errors"
 	"net"
 	"strings"
@@ -26,7 +28,9 @@ const (
 )
 
 // AddApi 加入观察名单；已存在则续期（到期时间取更晚者）并更新原因。
-func (receiver *WafIPWatchlistService) AddApi(req request.WafIPWatchlistAddReq) error {
+// 名单是租户级资源（ip_watchlists 租户内唯一）：查询/写入随请求 ctx 走租户
+// 过滤与盖章，租户各维护各的观察名单，互不可见。
+func (receiver *WafIPWatchlistService) AddApi(ctx context.Context, req request.WafIPWatchlistAddReq) error {
 	ip := strings.TrimSpace(req.IP)
 	if net.ParseIP(ip) == nil {
 		return errors.New("IP 格式不正确")
@@ -44,9 +48,9 @@ func (receiver *WafIPWatchlistService) AddApi(req request.WafIPWatchlistAddReq) 
 	}
 	expireAt := time.Now().AddDate(0, 0, days).Unix()
 
+	db := global.GWAF_LOCAL_DB.WithContext(ctx)
 	var existing model.IPWatchlist
-	res := global.GWAF_LOCAL_DB.Where("ip = ? and tenant_id = ? and user_code = ?",
-		ip, global.GWAF_TENANT_ID, global.GWAF_USER_CODE).First(&existing)
+	res := db.Where("ip = ?", ip).First(&existing)
 	if res.Error == nil {
 		fields := map[string]interface{}{
 			"reason":      reason,
@@ -55,10 +59,12 @@ func (receiver *WafIPWatchlistService) AddApi(req request.WafIPWatchlistAddReq) 
 		if existing.ExpireAt < expireAt {
 			fields["expire_at"] = expireAt
 		}
-		err := global.GWAF_LOCAL_DB.Model(&model.IPWatchlist{}).Where("id = ?", existing.Id).Updates(fields).Error
+		err := db.Model(&model.IPWatchlist{}).Where("id = ?", existing.Id).Updates(fields).Error
 		global.GWAF_IP_WATCH.Reload()
 		return err
 	}
+	// BaseOrm 显式值是无 ctx 调用方的兜底；请求 ctx 携带租户时由
+	// before_create 回调覆盖为请求租户（ctx 权威）
 	bean := &model.IPWatchlist{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -71,28 +77,30 @@ func (receiver *WafIPWatchlistService) AddApi(req request.WafIPWatchlistAddReq) 
 		ExpireAt: expireAt,
 		Reason:   reason,
 	}
-	err := global.GWAF_LOCAL_DB.Create(bean).Error
+	err := db.Create(bean).Error
 	global.GWAF_IP_WATCH.Reload()
 	return err
 }
 
-// DelApi 移出观察名单
-func (receiver *WafIPWatchlistService) DelApi(ip string) error {
-	err := global.GWAF_LOCAL_DB.Where("ip = ? and tenant_id = ? and user_code = ?",
-		strings.TrimSpace(ip), global.GWAF_TENANT_ID, global.GWAF_USER_CODE).Delete(&model.IPWatchlist{}).Error
+// DelApi 移出观察名单（随请求 ctx 的租户过滤，只删本租户的行）
+func (receiver *WafIPWatchlistService) DelApi(ctx context.Context, ip string) error {
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).
+		Where("ip = ?", strings.TrimSpace(ip)).Delete(&model.IPWatchlist{}).Error
 	global.GWAF_IP_WATCH.Reload()
 	return err
 }
 
 // ListApi 名单分页（顺带清掉已到期行）。
-func (receiver *WafIPWatchlistService) ListApi(req request.WafIPWatchlistSearch) ([]model.IPWatchlist, int64, error) {
+// 到期清理是平台级巡检语义（PlatformScope，不分租户）；列表查询随请求租户过滤。
+func (receiver *WafIPWatchlistService) ListApi(ctx context.Context, req request.WafIPWatchlistSearch) ([]model.IPWatchlist, int64, error) {
 	var list []model.IPWatchlist
 	var total int64
 	now := time.Now().Unix()
-	global.GWAF_LOCAL_DB.Where("expire_at <= ?", now).Delete(&model.IPWatchlist{})
+	global.GWAF_LOCAL_DB.WithContext(wafctx.PlatformScope(context.Background())).
+		Where("expire_at <= ?", now).Delete(&model.IPWatchlist{})
 	build := func() *gorm.DB {
-		q := global.GWAF_LOCAL_DB.Model(&model.IPWatchlist{}).
-			Where("tenant_id = ? and user_code = ? and expire_at > ?", global.GWAF_TENANT_ID, global.GWAF_USER_CODE, now)
+		q := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.IPWatchlist{}).
+			Where("expire_at > ?", now)
 		if strings.TrimSpace(req.IP) != "" {
 			q = q.Where("ip like ?", "%"+strings.TrimSpace(req.IP)+"%")
 		}

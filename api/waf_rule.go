@@ -2,6 +2,7 @@ package api
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/enums"
 	"SamWaf/global"
@@ -597,10 +598,22 @@ func (w *WafRuleAPi) TestRuleApi(c *gin.Context) {
 // 返回时尽量保证规则可直接编译落地，且不会被注入成放行规则。
 // RuleAiPromptApi 返回"复制给AI"的提示词（唯一来源在后端 api/waf_gpt.go，前端直接取用）
 func (w *WafRuleAPi) RuleAiPromptApi(c *gin.Context) {
+	// 平台侧限制：AI 能力依赖平台统一配置的模型服务（全局 GPT URL/Token），
+	// 租户账号不可使用；平台租户（含 legacy 存量角色）放行，行为不变
+	if tid, _, ok := wafctx.TenantFrom(c.Request.Context()); ok && tid != "" && tid != global.GWAF_TENANT_ID {
+		response.ForbiddenWithMessage("AI能力使用平台统一配置的模型服务，仅平台侧账号可用", c)
+		return
+	}
 	response.OkWithDetailed(GetRuleAiPrompt(c.Query("lang")), "获取成功", c)
 }
 
 func (w *WafRuleAPi) AiGenRuleApi(c *gin.Context) {
+	// 平台侧限制：AI 能力依赖平台统一配置的模型服务（全局 GPT URL/Token），
+	// 租户账号不可使用；平台租户（含 legacy 存量角色）放行，行为不变
+	if tid, _, ok := wafctx.TenantFrom(c.Request.Context()); ok && tid != "" && tid != global.GWAF_TENANT_ID {
+		response.ForbiddenWithMessage("AI能力使用平台统一配置的模型服务，仅平台侧账号可用", c)
+		return
+	}
 	var req request.WafGptRuleReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.FailWithMessage("参数解析失败", c)

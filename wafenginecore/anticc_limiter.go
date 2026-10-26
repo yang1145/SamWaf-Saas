@@ -1,6 +1,9 @@
 package wafenginecore
 
 import (
+	"context"
+
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/model"
@@ -63,7 +66,10 @@ func LoadCompiledCCRules(hostCode string) []*ccrule.CompiledRule {
 		return nil
 	}
 	var rules []model.AntiCCRule
-	if err := global.GWAF_LOCAL_DB.Where("host_code = ? and is_enable = 1", hostCode).
+	// 数据面加载语义（PlatformScope）：站点加载要读到全部租户的 CC 规则，
+	// 无 ctx 的全局回退会把租户规则排除在外
+	if err := global.GWAF_LOCAL_DB.WithContext(wafctx.PlatformScope(context.Background())).
+		Where("host_code = ? and is_enable = 1", hostCode).
 		Order("priority asc").Find(&rules).Error; err != nil {
 		zlog.Error("加载CC规则失败", err)
 		return nil

@@ -26,7 +26,7 @@ func (w *WafOneKeyModApi) GetDetailApi(c *gin.Context) {
 	var req request.WafOneKeyModDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafOneKeyModService.GetDetailApi(req)
+		bean := wafOneKeyModService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -47,7 +47,7 @@ func (w *WafOneKeyModApi) GetListApi(c *gin.Context) {
 	var req request.WafOneKeyModSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		beans, total, _ := wafOneKeyModService.GetListApi(req)
+		beans, total, _ := wafOneKeyModService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      beans,
 			Total:     total,
@@ -73,7 +73,7 @@ func (w *WafOneKeyModApi) DelApi(c *gin.Context) {
 	var req request.WafOneKeyModDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafOneKeyModService.DelApi(req)
+		err = wafOneKeyModService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -101,7 +101,7 @@ func (w *WafOneKeyModApi) DoOneKeyModifyApi(c *gin.Context) {
 	var req request.WafDoOneKeyModReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		err, s := wafonekey.OneKeyModifyBt(req.FilePath)
+		err, s := wafonekey.OneKeyModifyBt(c.Request.Context(), req.FilePath)
 		if err != nil {
 			response.FailWithMessage("修改失败 "+err.Error(), c)
 		} else {
@@ -158,7 +158,7 @@ func (w *WafOneKeyModApi) RestoreApi(c *gin.Context) {
 	var req request.WafOneKeyModRestoreReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafonekey.RestoreOneKeyMod(req.Id)
+		err = wafonekey.RestoreOneKeyMod(c.Request.Context(), req.Id)
 		if err != nil {
 			response.FailWithMessage("还原失败 "+err.Error(), c)
 		} else {

@@ -32,11 +32,19 @@ import (
 	"go.uber.org/zap"
 )
 
+// engineLoadCtx 引擎数据面读取配置专用 ctx：加载/重载站点要读**全部租户**的主机、
+// 规则、黑白名单等数据（引擎为所有租户的站点转发流量），平台作用域让租户过滤回调
+// 跳过过滤；不带 ctx 时回调会回退全局租户常量，租户站点会被静默排除（租户站点永远不被代理）。
+// 仅限加载/重载路径使用，请求处理链路禁止使用。
+func engineLoadCtx() context.Context {
+	return wafctx.PlatformScope(context.Background())
+}
+
 // 加载全部host
 func (waf *WafEngine) LoadAllHost() {
-	//重新查询
+	//重新查询（引擎数据面：平台作用域，覆盖全部租户）
 	var hosts []model.Hosts
-	global.GWAF_LOCAL_DB.Find(&hosts)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Find(&hosts)
 	for i := 0; i < len(hosts); i++ {
 		waf.LoadHost(hosts[i])
 	}
@@ -100,20 +108,20 @@ func (waf *WafEngine) LoadHost(inHost model.Hosts) []innerbean.ServerRunTime {
 	//加载主机对于的规则
 	ruleHelper := &utils.RuleHelper{}
 	ruleHelper.InitRuleEngine()
-	//查询规则
+	//查询规则（引擎数据面：平台作用域，跨租户可见）
 	var vcnt int
-	global.GWAF_LOCAL_DB.Model(&model.Rules{}).Where("host_code = ? and rule_status<>999",
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Model(&model.Rules{}).Where("host_code = ? and rule_status<>999",
 		inHost.Code).Select("sum(rule_version) as vcnt").Row().Scan(&vcnt)
 	zlog.Debug("主机host" + inHost.Code + " 版本" + strconv.Itoa(vcnt))
 	var ruleconfigs []model.Rules
 	if vcnt > 0 {
-		global.GWAF_LOCAL_DB.Where("host_code = ? and rule_status<>999", inHost.Code).Find(&ruleconfigs)
+		global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code = ? and rule_status<>999", inHost.Code).Find(&ruleconfigs)
 		ruleHelper.LoadRules(ruleconfigs)
 	}
 	//查询ip限流(应该针对一个网址只有一个)
 	var anticcBean model.AntiCC
 
-	global.GWAF_LOCAL_DB.Where("host_code=? ", inHost.Code).Limit(1).Find(&anticcBean)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? ", inHost.Code).Limit(1).Find(&anticcBean)
 
 	//初始化插件-ip计数器（与热更新 ApplyAntiCCConfig 共用同一构造函数，避免两处算法不一致）
 	pluginIpRateLimiter := BuildIPRateLimiter(anticcBean, inHost.Host)
@@ -123,35 +131,35 @@ func (waf *WafEngine) LoadHost(inHost model.Hosts) []innerbean.ServerRunTime {
 
 	//查询ip白名单（停用条目不下发引擎，下同）
 	var ipwhitelist []model.IPAllowList
-	global.GWAF_LOCAL_DB.Where("host_code=? and is_enable = 1", inHost.Code).Find(&ipwhitelist)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? and is_enable = 1", inHost.Code).Find(&ipwhitelist)
 
 	//查询url白名单
 	var urlwhitelist []model.URLAllowList
-	global.GWAF_LOCAL_DB.Where("host_code=? and is_enable = 1", inHost.Code).Find(&urlwhitelist)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? and is_enable = 1", inHost.Code).Find(&urlwhitelist)
 
 	//查询ip黑名单
 	var ipblocklist []model.IPBlockList
-	global.GWAF_LOCAL_DB.Where("host_code=? and is_enable = 1", inHost.Code).Find(&ipblocklist)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? and is_enable = 1", inHost.Code).Find(&ipblocklist)
 
 	//查询url白名单
 	var urlblocklist []model.URLBlockList
-	global.GWAF_LOCAL_DB.Where("host_code=? and is_enable = 1", inHost.Code).Find(&urlblocklist)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? and is_enable = 1", inHost.Code).Find(&urlblocklist)
 
 	//查询url隐私保护
 	var ldpurls []model.LDPUrl
-	global.GWAF_LOCAL_DB.Where("host_code=? ", inHost.Code).Find(&ldpurls)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? ", inHost.Code).Find(&ldpurls)
 
 	//查询负载均衡
 	var loadBalanceList []model.LoadBalance
-	global.GWAF_LOCAL_DB.Where("host_code=? ", inHost.Code).Order("create_time asc").Find(&loadBalanceList)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? ", inHost.Code).Order("create_time asc").Find(&loadBalanceList)
 
 	//查询HTTP AUTH
 	var httpAuthList []model.HttpAuthBase
-	global.GWAF_LOCAL_DB.Where("host_code=? ", inHost.Code).Find(&httpAuthList)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? ", inHost.Code).Find(&httpAuthList)
 
 	//查询自定义拦截界面
 	var blockingPageList []model.BlockingPage
-	global.GWAF_LOCAL_DB.Where("host_code=? ", inHost.Code).Order("update_time ASC, id ASC").Find(&blockingPageList)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? ", inHost.Code).Order("update_time ASC, id ASC").Find(&blockingPageList)
 	blockingPageMap := map[string]model.BlockingPage{}
 	if len(blockingPageList) > 0 {
 		for i := 0; i < len(blockingPageList); i++ {
@@ -169,15 +177,15 @@ func (waf *WafEngine) LoadHost(inHost model.Hosts) []innerbean.ServerRunTime {
 	}
 	//查询缓存规则
 	var cacheRuleList []model.CacheRule
-	global.GWAF_LOCAL_DB.Where("host_code=? ", inHost.Code).Find(&cacheRuleList)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? ", inHost.Code).Find(&cacheRuleList)
 
 	//查询网页防篡改规则（含基线正文，供响应比对/回吐）
 	var tamperRuleList []model.TamperRule
-	global.GWAF_LOCAL_DB.Where("host_code=? ", inHost.Code).Find(&tamperRuleList)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? ", inHost.Code).Find(&tamperRuleList)
 
 	//查询路径路由规则
 	var pathRuleList []model.HostPathRule
-	global.GWAF_LOCAL_DB.Where("host_code=? ", inHost.Code).Order("priority asc, create_time asc").Find(&pathRuleList)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=? ", inHost.Code).Order("priority asc, create_time asc").Find(&pathRuleList)
 
 	//解析静态站点安全配置（供路径规则静态文件服务共享使用）
 	var staticCfg model.StaticSiteConfig
@@ -455,9 +463,9 @@ func (waf *WafEngine) RemoveHost(host model.Hosts) {
 
 // ReLoadSensitive 加载敏感词
 func (waf *WafEngine) ReLoadSensitive() {
-	//敏感词处理
+	//敏感词处理（引擎数据面：平台作用域，加载全部租户的敏感词）
 	var sensitiveList []model.Sensitive
-	global.GWAF_LOCAL_DB.Find(&sensitiveList)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Find(&sensitiveList)
 	//敏感词
 	waf.Sensitive = sensitiveList
 
@@ -515,10 +523,10 @@ func (waf *WafEngine) CheckRequestSensitive() bool {
 		// 检查是否有针对请求的敏感词检测
 		return waf.SensitiveDirectionMap["in"] || waf.SensitiveDirectionMap["all"]
 	}
-	// 如果内存中没有数据，则进行数据库查询
+	// 如果内存中没有数据，则进行数据库查询（引擎数据面兜底：平台作用域，判定与全租户配置一致）
 	var bean model.Sensitive
 	//只要不是检测返回的，那说明是检查请求的
-	global.GWAF_LOCAL_DB.Where("check_direction!=?", "out").Find(&bean).Limit(1)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("check_direction!=?", "out").Find(&bean).Limit(1)
 	if len(bean.Id) > 0 {
 		return true
 	} else {
@@ -534,10 +542,10 @@ func (waf *WafEngine) CheckResponseSensitive() bool {
 		return waf.SensitiveDirectionMap["out"] || waf.SensitiveDirectionMap["all"]
 	}
 
-	// 如果内存中没有数据，则进行数据库查询
+	// 如果内存中没有数据，则进行数据库查询（引擎数据面兜底：平台作用域，判定与全租户配置一致）
 	var bean model.Sensitive
 	//只要不是检测请求的，那说明是检查返回的
-	global.GWAF_LOCAL_DB.Where("check_direction!=?", "in").Find(&bean).Limit(1)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("check_direction!=?", "in").Find(&bean).Limit(1)
 	if len(bean.Id) > 0 {
 		return true
 	} else {

@@ -398,6 +398,75 @@ service→service 透传同一 ctx。`NotifyWaf` 中 3 处无 DB 查询的保持
 平台豁免 9 表、日志/统计类、平台治理表在文件头注释中明确排除。
 扩展模型清单即维护本矩阵，新表入库前先过矩阵。
 
+## 租户隔离完整度审计与收口（2026-10 第二轮）
+
+针对"AI 功能是否隔离 + 全系统隔离完整度"的专项审计发现并修复了以下缺口（六条
+并行工作流 + 中心修复）：
+
+### 机制级修复（影响面最大）
+
+- **GORM Row 回调链补注册**（`wafdb/localdb.go`）：GORM 的 `Scan()/Row()` 走 Row
+  回调链而非 Query 链，此前**所有 Scan 系查询静默绕过租户过滤**（统计/聚合读取
+  大量使用）。现把同一 `before_query` 挂到 Row 链，语义与 Find 完全一致；
+  `wafdb/tenant_row_callback_test.go` 锚定（模型 Scan / Table 无 schema Scan /
+  无 ctx 回退全局）。
+- **引擎数据面 PlatformScope**（`wafenginecore/wafworker.go`、`wafengine.go`、
+  `anticc_limiter.go`）：LoadAllHost/LoadHost 的全部直查（主机/规则/CC/名单/缓存/
+  防篡改/路径规则/敏感词等）原先无 ctx 走全局回退——**租户站点从未被引擎加载**。
+  现统一 `engineLoadCtx()`（PlatformScope）。
+- **日志读取链路 ctx 化**（`waf_log_query.go`/`waf_log.go`/`waf_log_payload.go`）：
+  列表/详情/识别码直查/分片扇出/报文回填原先用内部 Background ctx——租户看到的
+  是平台租户的日志、自己的日志不可见。现全程携带请求租户；
+  `waf_log_tenant_scope_test.go` 锚定六条语义。
+- **流量统计按站点归属盖章**（`waftask/task_traffic_stats.go`）：采集器原先把
+  全部租户的流量都盖成平台租户戳 + 总览查询无 ctx 全量命中——**每个租户的仪表盘
+  能看到全部租户的域名与流量**。现按 host_code→归属租户映射盖章（归属解析失败
+  跳过并告警，fail-closed）；统计/分析读取全部 ctx 化。
+
+### 破坏性/实例级操作收权（URL 均不变，移入 tokenPlatformGroup）
+
+数据文件管理（可删共享日志库）、日志分片删除、IP 归属地库变更（上传/重载/配置/
+升级，查询类保留）、通知日志文件清空、**主机登录防护整组**（本机 SSH 防护+系统
+防火墙封禁，事件/封禁/阶梯均为实例级）、**管理端自身配置整组**（vpconfig：应急
+路径/管理口 IP 白名单/可信代理/管理端证书/重启——读接口也披露安全面）、**数据
+保留策略**（实例级日志治理）。前端对应菜单权限码已同步（见 SamWafWeb-Saas）。
+
+### AI 功能隔离结论
+
+- `/api/v1/ai/*`（模型/导出/标注）与 `/gpt/config`、`/gpt/chat`：平台域/租户禁持
+  码，租户不可达；引擎 AI 检测写本租户日志行，隔离正确。
+- **AI 规则生成（aigen/aiprompt）**：原挂安全域（租户可达）消耗平台全局 GPT
+  凭据，现处理器层拒绝租户调用（"AI能力使用平台统一配置的模型服务，仅平台侧
+  账号可用"）。
+- AI 仪表盘/导出/标注内部走全局回退只看平台切片（方向安全）；完整租户化 AI 语料
+  记为后续待办。
+
+### WebSocket 按租户路由
+
+连接注册携带租户（平台租户=平台作用域连接）；`BroadcastBuildToTenant` 按消息
+`TenantId` 投递（平台作用域连接可总览）；引擎事件/CC 封禁/防篡改/导出结果均带
+归属租户；**无租户信息的消息 fail-closed 只发平台连接**。节点级消息（升级结果/
+系统统计/系统错误）保留全局广播。`BaseMessageInfo.TenantId` 为 `json:"-"`，
+前端协议不变。
+
+### 服务层 ctx 化与盖章修复
+
+任务/批量任务（含后台处理器按任务归属租户写入 IP 名单）、通知渠道/订阅/日志
+（含订阅配置越权写入点收口：按 id 的 UPDATE/READ 随请求租户过滤）、一键修改
+（记录按发起者租户）、IP 观察名单、IP 归属查询辅助名单、Excel 导入（按发起者
+租户盖章+校验）、安全审计日志（豁免模型手工分桶：写盖请求租户、租户只见自己、
+平台总览全量）。
+
+### 遗留待办（记录不阻塞）
+
+- 通知发送侧（notify_sender）按订阅归属租户派发（当前租户订阅收不到通知，方向
+  为不可达而非泄漏）；
+- 引擎侧安全审计写入（wafworker 7 处）迁移 WriteCtx（需 host→租户映射）；
+  另 api/waf_diagnostic.go、api/waf_ssl.go、waf_httpauthsession_service.go、
+  task_httpauth_clean.go 的审计写入仍在全局桶；
+- crossdb 标签的 cross_engine_side/stats 测试需随本轮签名变更移植；
+- 存量未盖章 host 行的流量统计按"归属不可解析跳过"处理（如需可补回填迁移）。
+
 ## 阶段2 任务清单（数据面多租户化）
 
 1. **上下文传播**：~~已完成~~——试点 + 三批推广覆盖全部业务配置类 service

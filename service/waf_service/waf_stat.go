@@ -7,6 +7,7 @@ import (
 	"SamWaf/model/request"
 	response2 "SamWaf/model/response"
 	"SamWaf/utils"
+	"context"
 	"errors"
 	"fmt"
 	"github.com/gin-gonic/gin"
@@ -22,51 +23,68 @@ type WafStatService struct{}
 
 var WafStatServiceApp = new(WafStatService)
 
-func (receiver *WafStatService) StatHomeSumDayApi() (response2.WafStat, error) {
+// StatHomeSumDayApi 首页今日/昨日汇总卡片。
+// ctx 携带请求租户（gin 传 c.Request.Context()，平台任务传 PlatformScope），
+// 统计库查询全部走 WithContext(ctx) 由回调追加租户过滤，防止跨租户看到别人的量。
+// 注意：这里必须用 Find 收单行/标量结果而不是 Scan/Row——Scan/Row 走 gorm 的 Row
+// 回调链，租户过滤回调只注册在 Query 链上，用 Scan 会静默绕过租户过滤。
+func (receiver *WafStatService) StatHomeSumDayApi(ctx context.Context) (response2.WafStat, error) {
+	statsDB := global.GWAF_LOCAL_STATS_DB.WithContext(ctx)
 	currentDay, _ := strconv.Atoi(time.Now().Format("20060102"))
 	yesterdayDay, _ := strconv.Atoi(time.Now().AddDate(0, 0, -1).Format("20060102"))
 
 	// 空表时 sum() 返回 NULL，直接 Scan 进 int64 会报 "converting NULL to int64"，
 	// 用 coalesce 兜底成 0（sqlite/mysql/pg 通用），这样错误才能真实反映方言问题。
-	var AttackCountOfToday int64
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsDay{}).Where("day = ? and type = ? ",
-		currentDay, "阻止").Select("coalesce(sum(count),0) as vcnt").Row().Scan(&AttackCountOfToday); err != nil {
-		return response2.WafStat{}, err
+	sumOf := func(m interface{}, conds ...interface{}) (int64, error) {
+		var row struct {
+			Vcnt int64
+		}
+		if err := statsDB.Model(m).Where(conds[0], conds[1:]...).
+			Select("coalesce(sum(count),0) as vcnt").Find(&row).Error; err != nil {
+			return 0, err
+		}
+		return row.Vcnt, nil
 	}
 
-	var VisitCountOfToday int64
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsDay{}).Where("day = ? ",
-		currentDay).Select("coalesce(sum(count),0) as vcnt").Row().Scan(&VisitCountOfToday); err != nil {
+	AttackCountOfToday, err := sumOf(&model.StatsDay{}, "day = ? and type = ? ", currentDay, "阻止")
+	if err != nil {
 		return response2.WafStat{}, err
 	}
-
-	var AttackCountOfYesterday int64
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsDay{}).Where("day = ? and type = ? ",
-		yesterdayDay, "阻止").Select("coalesce(sum(count),0) as vcnt").Row().Scan(&AttackCountOfYesterday); err != nil {
+	VisitCountOfToday, err := sumOf(&model.StatsDay{}, "day = ? ", currentDay)
+	if err != nil {
 		return response2.WafStat{}, err
 	}
-
-	var VisitCountOfYesterday int64
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsDay{}).Where("day = ? ",
-		yesterdayDay).Select("coalesce(sum(count),0) as vcnt").Row().Scan(&VisitCountOfYesterday); err != nil {
+	AttackCountOfYesterday, err := sumOf(&model.StatsDay{}, "day = ? and type = ? ", yesterdayDay, "阻止")
+	if err != nil {
+		return response2.WafStat{}, err
+	}
+	VisitCountOfYesterday, err := sumOf(&model.StatsDay{}, "day = ? ", yesterdayDay)
+	if err != nil {
 		return response2.WafStat{}, err
 	}
 
 	// 去重IP数用 count(distinct ip)：老写法 Group("ip")+Count 靠 RowsAffected 取分组数，
 	// 数据库要把每个IP各回一行（单日20万IP就是20万行），走远程 MySQL/PG 时网络开销很可观。
-	var NormalIpCountOfToday int64
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsIPDay{}).Where("day = ? and type = ? ",
-		currentDay, "放行").Select("count(distinct ip)").Scan(&NormalIpCountOfToday).Error; err != nil {
+	distinctIP := func(action string) (int64, error) {
+		var row struct {
+			Vcnt int64
+		}
+		if err := statsDB.Model(&model.StatsIPDay{}).Where("day = ? and type = ? ", currentDay, action).
+			Select("count(distinct ip) as vcnt").Find(&row).Error; err != nil {
+			return 0, err
+		}
+		return row.Vcnt, nil
+	}
+	NormalIpCountOfToday, err := distinctIP("放行")
+	if err != nil {
 		return response2.WafStat{}, err
 	}
-
-	var IllegalIpCountOfToday int64
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsIPDay{}).Where("day = ? and type = ? ",
-		currentDay, "阻止").Select("count(distinct ip)").Scan(&IllegalIpCountOfToday).Error; err != nil {
+	IllegalIpCountOfToday, err := distinctIP("阻止")
+	if err != nil {
 		return response2.WafStat{}, err
 	}
 	// 同期环比（失败不影响卡片本身的数字，只是不显示对比）
-	attackCompare, visitCompare, illegalIpCompare, compareHours := receiver.buildDayCompare(time.Now())
+	attackCompare, visitCompare, illegalIpCompare, compareHours := receiver.buildDayCompare(ctx, time.Now())
 
 	return response2.WafStat{
 			AttackCountOfToday:          AttackCountOfToday,
@@ -99,12 +117,13 @@ func (receiver *WafStatService) StatHomeSumDayApi() (response2.WafStat, error) {
 // 这个IP当天第一次被记录时创建的，所以 create_time < T 的去重IP数就等于当天 T 之前出现过的IP数。
 //
 // 任一步出错都只降级成"无对比"，不让首页数字整体失败。
-func (receiver *WafStatService) buildDayCompare(now time.Time) (attack, visit, illegalIp response2.WafStatCompare, hours int) {
+func (receiver *WafStatService) buildDayCompare(ctx context.Context, now time.Time) (attack, visit, illegalIp response2.WafStatCompare, hours int) {
 	hours = now.Hour()
 	if hours == 0 {
 		// 刚过零点不足1小时，没有可比的窗口
 		return
 	}
+	statsDB := global.GWAF_LOCAL_STATS_DB.WithContext(ctx)
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	yesterdayStart := todayStart.AddDate(0, 0, -1)
 	window := int64(hours) * 3600
@@ -115,20 +134,23 @@ func (receiver *WafStatService) buildDayCompare(now time.Time) (attack, visit, i
 	}
 	sumHour := func(start time.Time) (hourSum, error) {
 		var s hourSum
-		err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsSiteHour{}).
+		// Find（Query 回调链）才会带租户过滤，Scan 走 Row 链会绕过
+		err := statsDB.Model(&model.StatsSiteHour{}).
 			Where("hour_time >= ? and hour_time < ?", start.Unix(), start.Unix()+window).
 			Select("coalesce(sum(attack_count),0) as attack_count,coalesce(sum(total_count),0) as total_count").
-			Scan(&s).Error
+			Find(&s).Error
 		return s, err
 	}
 	// 走 idx_stats_ip_days_day_type_ct(day,type,create_time,ip) 覆盖索引，
 	// 50万行实测 900ms -> 170ms
 	countIllegalIP := func(day int, before time.Time) (int64, error) {
-		var c int64
-		err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsIPDay{}).
+		var row struct {
+			Vcnt int64
+		}
+		err := statsDB.Model(&model.StatsIPDay{}).
 			Where("day = ? and type = ? and create_time < ?", day, "阻止", before).
-			Select("count(distinct ip)").Scan(&c).Error
-		return c, err
+			Select("count(distinct ip) as vcnt").Find(&row).Error
+		return row.Vcnt, err
 	}
 
 	todayHour, err := sumHour(todayStart)
@@ -198,7 +220,8 @@ func (receiver *WafStatService) StatQpsTrendApi(limit int) response2.WafQpsTrend
 	}
 }
 
-func (receiver *WafStatService) StatHomeSumDayRangeApi(req request.WafStatsDayRangeReq) (response2.WafStatRange, error) {
+func (receiver *WafStatService) StatHomeSumDayRangeApi(ctx context.Context, req request.WafStatsDayRangeReq) (response2.WafStatRange, error) {
+	statsDB := global.GWAF_LOCAL_STATS_DB.WithContext(ctx)
 	var rangeAttackMap = map[int]int64{}
 	var rangeNormalMap = map[int]int64{}
 	var rangeInt = (int)(utils.Str2Time(req.EndDay).Sub(utils.Str2Time(req.StartDay)).Hours() / 24)
@@ -209,13 +232,13 @@ func (receiver *WafStatService) StatHomeSumDayRangeApi(req request.WafStatsDayRa
 	}
 
 	var AttackCountOfRange []model.StatsDayCount
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsDay{}).Where("day between ? and ? and type = ? ",
-		req.StartDay, req.EndDay, "阻止").Select("day,sum(count) as count").Group("day").Scan(&AttackCountOfRange).Error; err != nil {
+	if err := statsDB.Model(&model.StatsDay{}).Where("day between ? and ? and type = ? ",
+		req.StartDay, req.EndDay, "阻止").Select("day,sum(count) as count").Group("day").Find(&AttackCountOfRange).Error; err != nil {
 		return response2.WafStatRange{}, err
 	}
 	var NormalCountOfRange []model.StatsDayCount
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsDay{}).Where("day between ? and ? and type = ? ",
-		req.StartDay, req.EndDay, "放行").Select("day,sum(count) as count").Group("day").Scan(&NormalCountOfRange).Error; err != nil {
+	if err := statsDB.Model(&model.StatsDay{}).Where("day between ? and ? and type = ? ",
+		req.StartDay, req.EndDay, "放行").Select("day,sum(count) as count").Group("day").Find(&NormalCountOfRange).Error; err != nil {
 		return response2.WafStatRange{}, err
 	}
 
@@ -239,24 +262,27 @@ func (receiver *WafStatService) StatHomeSumDayRangeApi(req request.WafStatsDayRa
 		},
 		nil
 }
-func (receiver *WafStatService) StatHomeSumDayTopIPRangeApi(req request.WafStatsDayRangeReq) (response2.WafIPStats, error) {
+func (receiver *WafStatService) StatHomeSumDayTopIPRangeApi(ctx context.Context, req request.WafStatsDayRangeReq) (response2.WafIPStats, error) {
+	statsDB := global.GWAF_LOCAL_STATS_DB.WithContext(ctx)
 	var AttackCountOfRange []model.StatsIPCount
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsIPDay{}).
+	if err := statsDB.Model(&model.StatsIPDay{}).
 		Where("day between ? and ? and type = ? ", req.StartDay, req.EndDay, "阻止").
 		Select("ip,sum(count) as count").Group("ip").Order("sum(count) desc").
 		Limit(10).
-		Scan(&AttackCountOfRange).Error; err != nil {
+		Find(&AttackCountOfRange).Error; err != nil {
 		return response2.WafIPStats{}, err
 	}
 
+	// IP 标签回填的租户值走统一口径（请求 ctx 优先、无 ctx 回退全局），禁止直引全局常量
+	tenantID, userCode := rawSQLTenantScope(ctx)
 	var AttackCountOfRangeMore []model.StatsIPCountMore
-	ipTagDB := global.GetIPTagDB() // 使用封装方法获取数据库连接
+	ipTagDB := global.GetIPTagDB().WithContext(ctx) // 使用封装方法获取数据库连接
 	for i := range AttackCountOfRange {
 		region := utils.GetCountry(AttackCountOfRange[i].IP)
 		//查询IP标签
 		var ipTags []model.IPTag
 		ipTagDB.Where("tenant_id = ? and user_code = ? and ip=?",
-			global.GWAF_TENANT_ID, global.GWAF_USER_CODE, AttackCountOfRange[i].IP).Find(&ipTags)
+			tenantID, userCode, AttackCountOfRange[i].IP).Find(&ipTags)
 
 		statMore := model.StatsIPCountMore{
 			IP:       AttackCountOfRange[i].IP,
@@ -268,12 +294,12 @@ func (receiver *WafStatService) StatHomeSumDayTopIPRangeApi(req request.WafStats
 	}
 
 	var NormalCountOfRange []model.StatsIPCount
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsIPDay{}).
+	if err := statsDB.Model(&model.StatsIPDay{}).
 		Where("day between ? and ? and type = ? ",
 			req.StartDay, req.EndDay, "放行").Select("ip,sum(count) as count").
 		Group("ip").Order("sum(count) desc").
 		Limit(10).
-		Scan(&NormalCountOfRange).Error; err != nil {
+		Find(&NormalCountOfRange).Error; err != nil {
 		return response2.WafIPStats{}, err
 	}
 
@@ -285,7 +311,7 @@ func (receiver *WafStatService) StatHomeSumDayTopIPRangeApi(req request.WafStats
 		//查询IP标签
 		var ipTags []model.IPTag
 		ipTagDB.Where("tenant_id = ? and user_code = ? and ip=?",
-			global.GWAF_TENANT_ID, global.GWAF_USER_CODE, NormalCountOfRange[i].IP).Find(&ipTags)
+			tenantID, userCode, NormalCountOfRange[i].IP).Find(&ipTags)
 
 		statMore := model.StatsIPCountMore{
 			IP:       NormalCountOfRange[i].IP,
@@ -316,13 +342,14 @@ func (receiver *WafStatService) StatHomeSysinfo(c *gin.Context) (response2.WafHo
 	}, nil
 }
 
-// GetTodaySiteStatsByHostCodes 获取指定站点今天的 PV/UV/拦截数/吞吐量
-func (receiver *WafStatService) GetTodaySiteStatsByHostCodes(hostCodes []string) map[string]response2.HostTodayStat {
+// GetTodaySiteStatsByHostCodes 获取指定站点今天的 PV/UV/拦截数/吞吐量（按请求租户过滤）
+func (receiver *WafStatService) GetTodaySiteStatsByHostCodes(ctx context.Context, hostCodes []string) map[string]response2.HostTodayStat {
 	statsMap := make(map[string]response2.HostTodayStat)
 	if len(hostCodes) == 0 {
 		return statsMap
 	}
 
+	statsDB := global.GWAF_LOCAL_STATS_DB.WithContext(ctx)
 	currentDay, _ := strconv.Atoi(time.Now().Format("20060102"))
 
 	type siteRow struct {
@@ -335,11 +362,11 @@ func (receiver *WafStatService) GetTodaySiteStatsByHostCodes(hostCodes []string)
 	var siteRows []siteRow
 	// 本方法无 error 返回值（列表页附带查询，查不到就不显示），但错误必须落日志，
 	// 否则方言不兼容这类问题只会表现为"数字全是 0"而无从排查
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsSiteDay{}).
+	if err := statsDB.Model(&model.StatsSiteDay{}).
 		Where("day = ? and host_code in ?", currentDay, hostCodes).
 		Select("host_code, sum(total_count) as total_count, sum(attack_count) as attack_count, sum(traffic_in) as traffic_in, sum(traffic_out) as traffic_out").
 		Group("host_code").
-		Scan(&siteRows).Error; err != nil {
+		Find(&siteRows).Error; err != nil {
 		zlog.Error("查询今日站点统计失败", err)
 	}
 
@@ -357,11 +384,11 @@ func (receiver *WafStatService) GetTodaySiteStatsByHostCodes(hostCodes []string)
 		UvCount  int64
 	}
 	var uvRows []uvRow
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsIPDay{}).
+	if err := statsDB.Model(&model.StatsIPDay{}).
 		Where("day = ? and host_code in ?", currentDay, hostCodes).
 		Select("host_code, count(distinct ip) as uv_count").
 		Group("host_code").
-		Scan(&uvRows).Error; err != nil {
+		Find(&uvRows).Error; err != nil {
 		zlog.Error("查询今日站点UV失败", err)
 	}
 
@@ -374,8 +401,11 @@ func (receiver *WafStatService) GetTodaySiteStatsByHostCodes(hostCodes []string)
 	return statsMap
 }
 
-// StatSiteOverviewApi 站点综合概览（按天范围查询，完全不依赖 web_logs）
-func (receiver *WafStatService) StatSiteOverviewApi(req request.WafStatsSiteOverviewReq) (response2.WafSiteOverview, error) {
+// StatSiteOverviewApi 站点综合概览（按天范围查询，完全不依赖 web_logs）。
+// 全链路按请求租户过滤：统计库两段聚合与核心库的站点备注回填都带 ctx，
+// 防止租户 A 的概览里看到租户 B 的站点/流量/备注（跨租户泄漏）。
+func (receiver *WafStatService) StatSiteOverviewApi(ctx context.Context, req request.WafStatsSiteOverviewReq) (response2.WafSiteOverview, error) {
+	statsDB := global.GWAF_LOCAL_STATS_DB.WithContext(ctx)
 	// 1) 从 StatsSiteDay 按 host_code 聚合
 	type siteRow struct {
 		HostCode       string
@@ -391,16 +421,16 @@ func (receiver *WafStatService) StatSiteOverviewApi(req request.WafStatsSiteOver
 	// host 是 host_code 的域名快照，语义上一对一，但 MySQL(ONLY_FULL_GROUP_BY)/PostgreSQL
 	// 不允许 SELECT 非聚合列，必须用 max() 取值；若改成 group by host_code,host，
 	// 站点在区间内改过域名时会被拆成多行，前端出现重复站点。
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsSiteDay{}).
+	if err := statsDB.Model(&model.StatsSiteDay{}).
 		Where("day between ? and ?", req.StartDay, req.EndDay).
 		Select("host_code, max(host) as host, sum(total_count) as total_count, sum(attack_count) as attack_count, sum(normal_count) as normal_count, sum(traffic_in) as traffic_in, sum(traffic_out) as traffic_out, sum(total_time_spent) as total_time_spent").
 		Group("host_code").
 		Order("sum(total_count) desc").
-		Scan(&rows).Error; err != nil {
+		Find(&rows).Error; err != nil {
 		return response2.WafSiteOverview{}, err
 	}
 
-	// 2) 根据 host_code 回填站点备注
+	// 2) 根据 host_code 回填站点备注（核心库查询同样带 ctx，按租户过滤）
 	type hostRemarkRow struct {
 		Code    string
 		Remarks string
@@ -415,10 +445,10 @@ func (receiver *WafStatService) StatSiteOverviewApi(req request.WafStatsSiteOver
 	hostRemarkMap := make(map[string]string)
 	if len(hostCodes) > 0 {
 		var hostRows []hostRemarkRow
-		if err := global.GWAF_LOCAL_DB.Model(&model.Hosts{}).
+		if err := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.Hosts{}).
 			Where("code in ?", hostCodes).
 			Select("code, remarks").
-			Scan(&hostRows).Error; err != nil {
+			Find(&hostRows).Error; err != nil {
 			return response2.WafSiteOverview{}, err
 		}
 		for _, r := range hostRows {
@@ -432,11 +462,11 @@ func (receiver *WafStatService) StatSiteOverviewApi(req request.WafStatsSiteOver
 		UvCount  int64
 	}
 	var uvRows []uvRow
-	if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsIPDay{}).
+	if err := statsDB.Model(&model.StatsIPDay{}).
 		Where("day between ? and ?", req.StartDay, req.EndDay).
 		Select("host_code, count(distinct ip) as uv_count").
 		Group("host_code").
-		Scan(&uvRows).Error; err != nil {
+		Find(&uvRows).Error; err != nil {
 		return response2.WafSiteOverview{}, err
 	}
 	uvMap := make(map[string]int64)
@@ -479,8 +509,9 @@ func (receiver *WafStatService) StatSiteOverviewApi(req request.WafStatsSiteOver
 	return overview, nil
 }
 
-// StatSiteDetailApi 站点详情趋势（完全不查 web_logs，小时/天级预聚合）
-func (receiver *WafStatService) StatSiteDetailApi(req request.WafStatsSiteDetailReq) (response2.WafSiteDetail, error) {
+// StatSiteDetailApi 站点详情趋势（完全不查 web_logs，小时/天级预聚合，按请求租户过滤）
+func (receiver *WafStatService) StatSiteDetailApi(ctx context.Context, req request.WafStatsSiteDetailReq) (response2.WafSiteDetail, error) {
+	statsDB := global.GWAF_LOCAL_STATS_DB.WithContext(ctx)
 	detail := response2.WafSiteDetail{
 		HostCode:  req.HostCode,
 		HourTrend: []response2.WafSiteHourPoint{},
@@ -493,9 +524,9 @@ func (receiver *WafStatService) StatSiteDetailApi(req request.WafStatsSiteDetail
 		// 最近1小时，按小时查（最多2个点：上一整点+当前整点）
 		startTs := (now.Add(-1*time.Hour).Unix() / 3600) * 3600
 		var pts []model.StatsSiteHour
-		if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsSiteHour{}).
+		if err := statsDB.Model(&model.StatsSiteHour{}).
 			Where("host_code = ? and hour_time >= ?", req.HostCode, startTs).
-			Order("hour_time asc").Scan(&pts).Error; err != nil {
+			Order("hour_time asc").Find(&pts).Error; err != nil {
 			return response2.WafSiteDetail{}, err
 		}
 
@@ -523,9 +554,9 @@ func (receiver *WafStatService) StatSiteDetailApi(req request.WafStatsSiteDetail
 		// 最近24小时，按小时查（最多24个点：过去23小时+当前整点）
 		startTs := (now.Add(-23*time.Hour).Unix() / 3600) * 3600
 		var pts []model.StatsSiteHour
-		if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsSiteHour{}).
+		if err := statsDB.Model(&model.StatsSiteHour{}).
 			Where("host_code = ? and hour_time >= ?", req.HostCode, startTs).
-			Order("hour_time asc").Scan(&pts).Error; err != nil {
+			Order("hour_time asc").Find(&pts).Error; err != nil {
 			return response2.WafSiteDetail{}, err
 		}
 
@@ -560,10 +591,10 @@ func (receiver *WafStatService) StatSiteDetailApi(req request.WafStatsSiteDetail
 			TotalTimeSpent int64
 		}
 		var dayRows []dayRow
-		if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsSiteDay{}).
+		if err := statsDB.Model(&model.StatsSiteDay{}).
 			Where("host_code = ? and day between ? and ?", req.HostCode, startDay, endDay).
 			Select("day, sum(total_count) as total_count, sum(attack_count) as attack_count, sum(normal_count) as normal_count, sum(total_time_spent) as total_time_spent").
-			Group("day").Order("day asc").Scan(&dayRows).Error; err != nil {
+			Group("day").Order("day asc").Find(&dayRows).Error; err != nil {
 			return response2.WafSiteDetail{}, err
 		}
 		// UV
@@ -572,10 +603,10 @@ func (receiver *WafStatService) StatSiteDetailApi(req request.WafStatsSiteDetail
 			UvCount int64
 		}
 		var uvDays []uvDay
-		if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsIPDay{}).
+		if err := statsDB.Model(&model.StatsIPDay{}).
 			Where("host_code = ? and day between ? and ?", req.HostCode, startDay, endDay).
 			Select("day, count(distinct ip) as uv_count").
-			Group("day").Order("day asc").Scan(&uvDays).Error; err != nil {
+			Group("day").Order("day asc").Find(&uvDays).Error; err != nil {
 			return response2.WafSiteDetail{}, err
 		}
 		uvDayMap := make(map[int]int64)
@@ -602,10 +633,10 @@ func (receiver *WafStatService) StatSiteDetailApi(req request.WafStatsSiteDetail
 			TotalTimeSpent int64
 		}
 		var dayRows []dayRow
-		if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsSiteDay{}).
+		if err := statsDB.Model(&model.StatsSiteDay{}).
 			Where("host_code = ? and day between ? and ?", req.HostCode, startDay, endDay).
 			Select("day, sum(total_count) as total_count, sum(attack_count) as attack_count, sum(normal_count) as normal_count, sum(total_time_spent) as total_time_spent").
-			Group("day").Order("day asc").Scan(&dayRows).Error; err != nil {
+			Group("day").Order("day asc").Find(&dayRows).Error; err != nil {
 			return response2.WafSiteDetail{}, err
 		}
 		type uvDay struct {
@@ -613,10 +644,10 @@ func (receiver *WafStatService) StatSiteDetailApi(req request.WafStatsSiteDetail
 			UvCount int64
 		}
 		var uvDays []uvDay
-		if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsIPDay{}).
+		if err := statsDB.Model(&model.StatsIPDay{}).
 			Where("host_code = ? and day between ? and ?", req.HostCode, startDay, endDay).
 			Select("day, count(distinct ip) as uv_count").
-			Group("day").Order("day asc").Scan(&uvDays).Error; err != nil {
+			Group("day").Order("day asc").Find(&uvDays).Error; err != nil {
 			return response2.WafSiteDetail{}, err
 		}
 		uvDayMap := make(map[int]int64)
@@ -636,9 +667,9 @@ func (receiver *WafStatService) StatSiteDetailApi(req request.WafStatsSiteDetail
 		// 默认 24h
 		startTs := (now.Add(-23*time.Hour).Unix() / 3600) * 3600
 		var pts []model.StatsSiteHour
-		if err := global.GWAF_LOCAL_STATS_DB.Model(&model.StatsSiteHour{}).
+		if err := statsDB.Model(&model.StatsSiteHour{}).
 			Where("host_code = ? and hour_time >= ?", req.HostCode, startTs).
-			Order("hour_time asc").Scan(&pts).Error; err != nil {
+			Order("hour_time asc").Find(&pts).Error; err != nil {
 			return response2.WafSiteDetail{}, err
 		}
 
@@ -679,7 +710,7 @@ func (receiver *WafStatService) StatSiteDetailApi(req request.WafStatsSiteDetail
 	}
 	// 查询域名
 	var siteDay model.StatsSiteDay
-	global.GWAF_LOCAL_STATS_DB.Model(&model.StatsSiteDay{}).
+	statsDB.Model(&model.StatsSiteDay{}).
 		Where("host_code = ?", req.HostCode).First(&siteDay)
 	detail.Host = siteDay.Host
 

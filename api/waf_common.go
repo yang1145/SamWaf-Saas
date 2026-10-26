@@ -2,6 +2,7 @@ package api
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/customtype"
 	"SamWaf/global"
 	"SamWaf/model"
@@ -128,7 +129,7 @@ func (w *WafCommonApi) ImportExcelApi(c *gin.Context) {
 		fmt.Println(err)
 		return
 	}
-	ret := saveDataToDatabase(importTable, rows, importCodeStrategy)
+	ret := saveDataToDatabase(c.Request.Context(), importTable, rows, importCodeStrategy)
 	// 删除临时文件
 	if err := os.Remove(fileName); err != nil {
 		log.Println("无法删除临时文件：", err)
@@ -161,13 +162,14 @@ func (w *WafCommonApi) GetColumnName(colIdx int) string {
 	return colName
 }
 
-// 通用数据插入函数
-func saveDataToDatabase(tableName string, rows [][]string, importCodeStrategy string) ReturnImportData {
+// 通用数据插入函数。ctx 携带导入发起者的租户：导入的行必须归属发起者租户，
+// 唯一性校验也按发起者租户判定（全局回退会把别人的 host 当重复、漏掉自己的重复）。
+func saveDataToDatabase(ctx context.Context, tableName string, rows [][]string, importCodeStrategy string) ReturnImportData {
 	successInt := 0
 	failInt := 0
 	msg := ""
 
-	processImportData(&model.Hosts{}, tableName, rows, &successInt, &failInt, &msg, importCodeStrategy)
+	processImportData(ctx, &model.Hosts{}, tableName, rows, &successInt, &failInt, &msg, importCodeStrategy)
 
 	return ReturnImportData{
 		SuccessInt: successInt,
@@ -177,7 +179,7 @@ func saveDataToDatabase(tableName string, rows [][]string, importCodeStrategy st
 }
 
 // processImportData 是通用的导入数据函数
-func processImportData(dataType interface{}, tableName string, rows [][]string, successInt, failInt *int, msg *string, importCodeStrategy string) {
+func processImportData(ctx context.Context, dataType interface{}, tableName string, rows [][]string, successInt, failInt *int, msg *string, importCodeStrategy string) {
 	var header []string
 	needJumpFristCol := false
 	rowNumber := 0
@@ -242,7 +244,7 @@ func processImportData(dataType interface{}, tableName string, rows [][]string, 
 				//检查数据是否已经存在
 				if tableName == "hosts" && fieldName == "Host" {
 					if importCodeStrategy == "1" {
-						errMsg, err := checkHostCodeData(dataMap["code"])
+						errMsg, err := checkHostCodeData(ctx, dataMap["code"])
 						if err != nil {
 							*msg += fmt.Sprintf("行 %d, 检测数据合法性时候 出错: %v |", rowNumber, errMsg)
 							*failInt++
@@ -250,7 +252,7 @@ func processImportData(dataType interface{}, tableName string, rows [][]string, 
 							break
 						}
 					}
-					errMsg, err := checkHostPortData(dataMap["host"], dataMap["port"])
+					errMsg, err := checkHostPortData(ctx, dataMap["host"], dataMap["port"])
 					if err != nil {
 						*msg += fmt.Sprintf("行 %d, 检测数据合法性时候 出错: %v |", rowNumber, errMsg)
 						*failInt++
@@ -289,11 +291,18 @@ func processImportData(dataType interface{}, tableName string, rows [][]string, 
 				}
 			} else if fieldName == "BaseOrm" {
 				fieldVal := newInstance.Field(fieldIdx)
-				// 给 BaseOrm 赋值
+				// 给 BaseOrm 赋值：归属取导入发起者的租户（无租户上下文回落全局）
+				impTenant, impUser := global.GWAF_TENANT_ID, global.GWAF_USER_CODE
+				if tid, ucode, ok := wafctx.TenantFrom(ctx); ok && tid != "" {
+					impTenant = tid
+					if ucode != "" {
+						impUser = ucode
+					}
+				}
 				baseOrm := baseorm.BaseOrm{
 					Id:          uuid.GenUUID(), // 新生成的 ID
-					USER_CODE:   global.GWAF_USER_CODE,
-					Tenant_ID:   global.GWAF_TENANT_ID,
+					USER_CODE:   impUser,
+					Tenant_ID:   impTenant,
 					CREATE_TIME: customtype.JsonTime(time.Now()),
 					UPDATE_TIME: customtype.JsonTime(time.Now()),
 				}
@@ -307,7 +316,7 @@ func processImportData(dataType interface{}, tableName string, rows [][]string, 
 			}
 		}
 		if isBadData == false {
-			if err := global.GWAF_LOCAL_DB.Create(newInstance.Interface()); err != nil {
+			if err := global.GWAF_LOCAL_DB.WithContext(ctx).Create(newInstance.Interface()); err != nil {
 				errGorm := err.Error
 				if errGorm != nil {
 					*msg += fmt.Sprintf("行 %d 插入失败: %v |", rowNumber, err.Error)
@@ -323,18 +332,18 @@ func processImportData(dataType interface{}, tableName string, rows [][]string, 
 }
 
 // checkHostData 检查host信息是否合法
-func checkHostCodeData(code string) (string, error) {
-	// 唯一性校验：检查 `Code` 是否已存在
-	if wafHostService.GetDetailByCodeApi(context.Background(), code).Code != "" {
+func checkHostCodeData(ctx context.Context, code string) (string, error) {
+	// 唯一性校验：检查 `Code` 是否已存在（按导入发起者租户）
+	if wafHostService.GetDetailByCodeApi(ctx, code).Code != "" {
 		errorMsg := "Code 数据已存在不进行插入"
 		// 数据已存在，不插入
 		return errorMsg, errors.New(errorMsg)
 	}
 	return "数据正常", nil
 }
-func checkHostPortData(host string, port string) (string, error) {
-	//唯一性校验：检查 `Host` 和 `Port` 的组合是否已存在
-	if err := wafHostService.CheckIsExist(context.Background(), host, port); err == nil {
+func checkHostPortData(ctx context.Context, host string, port string) (string, error) {
+	//唯一性校验：检查 `Host` 和 `Port` 的组合是否已存在（按导入发起者租户）
+	if err := wafHostService.CheckIsExist(ctx, host, port); err == nil {
 		errorMsg := "Host+Port 数据已存在不进行插入"
 		// 数据已存在，不插入
 		return errorMsg, errors.New(errorMsg)

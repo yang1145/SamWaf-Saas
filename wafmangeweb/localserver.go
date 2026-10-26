@@ -180,10 +180,12 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 			router.ApiGroupApp.InitOneKeyModRouter(hostGroup)
 			router.ApiGroupApp.InitWafVpConfigRouter(hostGroup)
 			router.ApiGroupApp.InitHostConnRouter(hostGroup)
-			router.ApiGroupApp.InitWafFileRouter(hostGroup)
+			// 数据文件管理已移入平台域：页面遍历/删除的是服务器 data 目录下的实例级
+			// 文件（含共享日志库 local_log*.db 的删除重建），影响全部租户，租户侧不应可达
 		}
 
-		// 访问日志与导出
+		// 访问日志与导出（仅保留租户可用的只读/查询端点：
+		// 日志分片删除、IP库变更、通知日志清空等实例级/破坏性操作已拆入下方平台域）
 		logGroup := RouterGroup.Group("")
 		logGroup.Use(middleware.RequirePermission(enums.PERM_LOG_VIEW, legacyAll...))
 		{
@@ -237,7 +239,8 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 			router.ApiGroupApp.InitWafTamperRuleRouter(securityAdminGroup)
 			router.ApiGroupApp.InitWafPrivateInfoRouter(securityAdminGroup)
 			router.ApiGroupApp.InitWafPrivateGroupRouter(securityAdminGroup)
-			router.ApiGroupApp.InitHostGuardRouter(securityAdminGroup)
+			// 主机登录防护移入平台域（见 tokenPlatformGroup 处说明）：保护对象是
+			// 本机 SSH/登录面，封禁落到系统防火墙，属实例级资源
 			router.ApiGroupApp.InitFirewallIPBlockRouter(securityAdminGroup)
 			router.ApiGroupApp.InitThreatIPRouter(securityAdminGroup)
 			// 统一访问认证：账号、策略配置、在线会话都是访问控制决策，属安全管理员域
@@ -311,6 +314,21 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 		router.ApiGroupApp.InitTenantRouter(tokenPlatformGroup)
 		// 套餐管理：租户差异化的配置源（权限集/配额/宽限默认值）
 		router.ApiGroupApp.InitPlanRouter(tokenPlatformGroup)
+		// === 以下为从租户可达域移入的实例级/破坏性操作（URL 均保持不变）===
+		// 数据文件管理：遍历/删除服务器 data 目录实例文件，含共享日志库 local_log*.db
+		// 的删除重建，影响全部租户，属平台侧文件基础设施
+		router.ApiGroupApp.InitWafFileRouter(tokenPlatformGroup)
+		// 日志分片删除：物理删除共享日志库的分片数据库文件，实例级破坏性操作
+		router.ApiGroupApp.InitLogPlatformRouter(tokenPlatformGroup)
+		// IP 归属地库变更：上传/重载/配置切换/在线升级替换 data 目录下的 IP 库文件，
+		// 库为全部租户共享（查询类端点仍留在 logGroup）
+		router.ApiGroupApp.InitIPLocationPlatformRouter(tokenPlatformGroup)
+		// 通知日志文件清空：清空实例共享的通知日志文件，破坏性操作
+		// （预览/备份列表等只读端点仍留在 logGroup）
+		router.ApiGroupApp.InitLogFileWritePlatformRouter(tokenPlatformGroup)
+		// 主机登录防护：保护对象是本机 SSH/登录面，封禁落到系统防火墙，
+		// 事件/封禁/阶梯配置均为实例级资源，租户不应触达（安全域 → 平台域）
+		router.ApiGroupApp.InitHostGuardRouter(tokenPlatformGroup)
 	}
 
 	// 保存 gin.Engine 引用供 API 文档生成使用

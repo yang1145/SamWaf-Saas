@@ -2,11 +2,14 @@ package waftask
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/customtype"
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
+	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -90,13 +93,52 @@ func planTrafficUpserts(list []global.TrafficSnapshot) ([]trafficDayAgg, []traff
 	return dayList, hourList
 }
 
+// trafficHostOwner 一个站点的归属租户（从核心库 hosts 表解析）
+type trafficHostOwner struct {
+	TenantID string
+	UserCode string
+}
+
+// loadTrafficHostOwners 用平台作用域一次性读出全部站点的归属映射（host_code → 租户）。
+//
+// 引擎侧流量计量的桶只带 host_code（热路径不碰库），落库前必须回核心库解析归属租户，
+// 才能把字节记到各自租户的统计行上；平台作用域跳过租户回调，保证能看到所有租户的站点。
+// 读取失败返回错误：调用方不得取走内存增量，保留下轮重试，绝不带着空归属瞎写。
+func loadTrafficHostOwners() (map[string]trafficHostOwner, error) {
+	if global.GWAF_LOCAL_DB == nil {
+		return nil, errors.New("核心库未初始化")
+	}
+	var rows []struct {
+		Code     string
+		TenantID string
+		UserCode string
+	}
+	res := global.GWAF_LOCAL_DB.WithContext(wafctx.PlatformScope(context.Background())).
+		Model(&model.Hosts{}).
+		Select("code, tenant_id, user_code").
+		Scan(&rows)
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	owners := make(map[string]trafficHostOwner, len(rows))
+	for _, r := range rows {
+		// 归属不全的站点按"无法解析"处理：宁可跳过告警，也不能并进平台桶串租户
+		if r.Code == "" || r.TenantID == "" || r.UserCode == "" {
+			continue
+		}
+		owners[r.Code] = trafficHostOwner{TenantID: r.TenantID, UserCode: r.UserCode}
+	}
+	return owners, nil
+}
+
 // TaskTrafficFlush 定时任务入口（默认 30s 一次）
 func TaskTrafficFlush() {
 	FlushTrafficStats()
 }
 
 // FlushTrafficStats 把内存里累计的流量落库。
-// 库没就绪或正在切库时**不取走**内存里的增量，等下个周期，避免把字节丢在切库窗口里。
+// 库没就绪、正在切库或站点归属解析失败时**不取走**内存里的增量，等下个周期，
+// 避免把字节丢在切库/解析失败窗口里。
 func FlushTrafficStats() {
 	if global.GWAF_LOCAL_STATS_DB == nil {
 		return
@@ -106,12 +148,19 @@ func FlushTrafficStats() {
 		return
 	}
 
+	// 归属解析先行：解析不了就不 Drain，增量原样留在内存里下轮重试
+	owners, err := loadTrafficHostOwners()
+	if err != nil {
+		zlog.Warn("流量统计落库：站点归属解析失败，本轮跳过等待重试", "错误", err.Error())
+		return
+	}
+
 	list := global.DrainTraffic()
 	if len(list) == 0 {
 		return
 	}
 
-	if err := writeTrafficStats(global.GWAF_LOCAL_STATS_DB, list); err != nil {
+	if err := writeTrafficStats(global.GWAF_LOCAL_STATS_DB, list, owners); err != nil {
 		// 整笔事务回滚了，把增量放回累加器下轮重试，绝不静默丢数
 		global.RestoreTraffic(list)
 		zlog.Error("流量统计落库失败，已退回内存等待重试", "错误", err.Error(), "桶数", len(list))
@@ -120,8 +169,10 @@ func FlushTrafficStats() {
 	zlog.Debug("流量统计落库完成", "桶数", len(list))
 }
 
-// writeTrafficStats 单事务写入：要么全成，要么全退（避免部分成功后重试造成重复计数）
-func writeTrafficStats(db *gorm.DB, list []global.TrafficSnapshot) error {
+// writeTrafficStats 单事务写入：要么全成，要么全退（避免部分成功后重试造成重复计数）。
+// 每个桶先按 host_code 从 owners 解析归属租户，UPSERT 的 WHERE 与新建行的 BaseOrm
+// 都盖该租户的标识；归属未知的桶跳过并告警（严禁落进平台全局桶，防止跨租户串数据）。
+func writeTrafficStats(db *gorm.DB, list []global.TrafficSnapshot, owners map[string]trafficHostOwner) error {
 	days, hours := planTrafficUpserts(list)
 	if len(days) == 0 && len(hours) == 0 {
 		return nil
@@ -130,9 +181,14 @@ func writeTrafficStats(db *gorm.DB, list []global.TrafficSnapshot) error {
 
 	return db.Transaction(func(tx *gorm.DB) error {
 		for _, d := range days {
+			owner, ok := owners[d.HostCode]
+			if !ok {
+				zlog.Warn("流量统计落库：站点归属租户未知，跳过该天级桶", "host_code", d.HostCode, "day", d.Day)
+				continue
+			}
 			res := tx.Model(&model.StatsSiteDay{}).
 				Where("tenant_id = ? and user_code = ? and host_code = ? and day = ?",
-					global.GWAF_TENANT_ID, global.GWAF_USER_CODE, d.HostCode, d.Day).
+					owner.TenantID, owner.UserCode, d.HostCode, d.Day).
 				Updates(map[string]interface{}{
 					"traffic_in":  gorm.Expr("traffic_in + ?", d.In),
 					"traffic_out": gorm.Expr("traffic_out + ?", d.Out),
@@ -145,8 +201,8 @@ func writeTrafficStats(db *gorm.DB, list []global.TrafficSnapshot) error {
 				if err := tx.Create(&model.StatsSiteDay{
 					BaseOrm: baseorm.BaseOrm{
 						Id:          uuid.GenUUID(),
-						USER_CODE:   global.GWAF_USER_CODE,
-						Tenant_ID:   global.GWAF_TENANT_ID,
+						USER_CODE:   owner.UserCode,
+						Tenant_ID:   owner.TenantID,
 						CREATE_TIME: now,
 						UPDATE_TIME: now,
 					},
@@ -162,9 +218,14 @@ func writeTrafficStats(db *gorm.DB, list []global.TrafficSnapshot) error {
 		}
 
 		for _, h := range hours {
+			owner, ok := owners[h.HostCode]
+			if !ok {
+				zlog.Warn("流量统计落库：站点归属租户未知，跳过该小时级桶", "host_code", h.HostCode, "hour_time", h.HourTime)
+				continue
+			}
 			res := tx.Model(&model.StatsSiteHour{}).
 				Where("tenant_id = ? and user_code = ? and host_code = ? and hour_time = ?",
-					global.GWAF_TENANT_ID, global.GWAF_USER_CODE, h.HostCode, h.HourTime).
+					owner.TenantID, owner.UserCode, h.HostCode, h.HourTime).
 				Updates(map[string]interface{}{
 					"traffic_in":  gorm.Expr("traffic_in + ?", h.In),
 					"traffic_out": gorm.Expr("traffic_out + ?", h.Out),
@@ -177,8 +238,8 @@ func writeTrafficStats(db *gorm.DB, list []global.TrafficSnapshot) error {
 				if err := tx.Create(&model.StatsSiteHour{
 					BaseOrm: baseorm.BaseOrm{
 						Id:          uuid.GenUUID(),
-						USER_CODE:   global.GWAF_USER_CODE,
-						Tenant_ID:   global.GWAF_TENANT_ID,
+						USER_CODE:   owner.UserCode,
+						Tenant_ID:   owner.TenantID,
 						CREATE_TIME: now,
 						UPDATE_TIME: now,
 					},

@@ -9,6 +9,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/spec"
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -23,8 +24,8 @@ type SensitiveConfig struct {
 // SensitiveProcessor 敏感词处理器
 type SensitiveProcessor struct{}
 
-// ProcessBatch 处理一批敏感词
-func (p *SensitiveProcessor) ProcessBatch(items []string, task model.BatchTask, progress *BatchProgress) bool {
+// ProcessBatch 处理一批敏感词（ctx 携带任务归属租户，写入行落该租户名下）
+func (p *SensitiveProcessor) ProcessBatch(ctx context.Context, items []string, task model.BatchTask, progress *BatchProgress) bool {
 	if len(items) == 0 {
 		return false
 	}
@@ -46,26 +47,26 @@ func (p *SensitiveProcessor) ProcessBatch(items []string, task model.BatchTask, 
 	}
 
 	// 获取已存在的记录
-	existMap := p.GetExistingItems(items, task, config)
+	existMap := p.GetExistingItems(ctx, items, task, config)
 
 	// 根据执行方法处理
 	if task.BatchExecuteMethod == enums.BATCHTASK_EXECUTEMETHODAPPEND {
-		return p.processAppendBatch(items, existMap, task, config, logName, progress)
+		return p.processAppendBatch(ctx, items, existMap, task, config, logName, progress)
 	} else if task.BatchExecuteMethod == enums.BATCHTASK_EXECUTEMETHODOVERWRITE {
-		return p.processOverwriteBatch(items, existMap, task, config, logName, progress)
+		return p.processOverwriteBatch(ctx, items, existMap, task, config, logName, progress)
 	}
 
 	return false
 }
 
-// GetExistingItems 获取已存在的敏感词记录
-func (p *SensitiveProcessor) GetExistingItems(items []string, task model.BatchTask, config interface{}) map[string]interface{} {
+// GetExistingItems 获取已存在的敏感词记录（按任务归属租户过滤，去重只对该租户的行）
+func (p *SensitiveProcessor) GetExistingItems(ctx context.Context, items []string, task model.BatchTask, config interface{}) map[string]interface{} {
 	existMap := make(map[string]interface{})
 	var existSensitives []model.Sensitive
 
 	sensitiveConfig := config.(SensitiveConfig)
 	// 使用IN查询一次性获取所有已存在的记录
-	global.GWAF_LOCAL_DB.Where("content IN (?) and check_direction = ?", items, sensitiveConfig.CheckDirection).Find(&existSensitives)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("content IN (?) and check_direction = ?", items, sensitiveConfig.CheckDirection).Find(&existSensitives)
 
 	// 将已存在的敏感词放入map中，方便快速查找
 	for _, sensitive := range existSensitives {
@@ -75,10 +76,10 @@ func (p *SensitiveProcessor) GetExistingItems(items []string, task model.BatchTa
 	return existMap
 }
 
-// NotifyEngine 通知引擎更新
-func (p *SensitiveProcessor) NotifyEngine(task model.BatchTask) {
+// NotifyEngine 通知引擎更新（引擎表单内容限定任务归属租户的敏感词，不再混入他租户词条）
+func (p *SensitiveProcessor) NotifyEngine(ctx context.Context, task model.BatchTask) {
 	var sensitives []model.Sensitive
-	global.GWAF_LOCAL_DB.Find(&sensitives)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Find(&sensitives)
 	var chanInfo = spec.ChanCommonHost{
 		HostCode: task.BatchHostCode,
 		Type:     enums.ChanTypeSensitive,
@@ -88,17 +89,16 @@ func (p *SensitiveProcessor) NotifyEngine(task model.BatchTask) {
 }
 
 // processAppendBatch 处理追加模式的批次
-func (p *SensitiveProcessor) processAppendBatch(items []string, existMap map[string]interface{}, task model.BatchTask, config SensitiveConfig, logName string, progress *BatchProgress) bool {
+func (p *SensitiveProcessor) processAppendBatch(ctx context.Context, items []string, existMap map[string]interface{}, task model.BatchTask, config SensitiveConfig, logName string, progress *BatchProgress) bool {
 	// 收集需要插入的记录
 	var toInsert []model.Sensitive
 	for _, content := range items {
 		// 如果敏感词不存在，则添加到待插入列表
 		if _, exists := existMap[content]; !exists {
+			// 租户归属不手工写死：before_create 回调按 ctx（任务归属租户）盖章
 			toInsert = append(toInsert, model.Sensitive{
 				BaseOrm: baseorm.BaseOrm{
 					Id:          uuid.GenUUID(),
-					USER_CODE:   global.GWAF_USER_CODE,
-					Tenant_ID:   global.GWAF_TENANT_ID,
 					CREATE_TIME: customtype.JsonTime(time.Now()),
 					UPDATE_TIME: customtype.JsonTime(time.Now()),
 				},
@@ -112,7 +112,7 @@ func (p *SensitiveProcessor) processAppendBatch(items []string, existMap map[str
 
 	// 批量插入新记录
 	if len(toInsert) > 0 {
-		tx := global.GWAF_LOCAL_DB.Begin()
+		tx := global.GWAF_LOCAL_DB.WithContext(ctx).Begin()
 		if err := tx.Create(&toInsert).Error; err != nil {
 			tx.Rollback()
 			zlog.Error(logName, "批量插入敏感词失败: "+err.Error())
@@ -130,7 +130,7 @@ func (p *SensitiveProcessor) processAppendBatch(items []string, existMap map[str
 }
 
 // processOverwriteBatch 处理覆写模式的批次
-func (p *SensitiveProcessor) processOverwriteBatch(items []string, existMap map[string]interface{}, task model.BatchTask, config SensitiveConfig, logName string, progress *BatchProgress) bool {
+func (p *SensitiveProcessor) processOverwriteBatch(ctx context.Context, items []string, existMap map[string]interface{}, task model.BatchTask, config SensitiveConfig, logName string, progress *BatchProgress) bool {
 	// 收集需要插入和更新的记录
 	var toInsert []model.Sensitive
 	var toUpdate []model.Sensitive
@@ -145,12 +145,10 @@ func (p *SensitiveProcessor) processOverwriteBatch(items []string, existMap map[
 			sensitiveRecord.UPDATE_TIME = customtype.JsonTime(time.Now())
 			toUpdate = append(toUpdate, sensitiveRecord)
 		} else {
-			// 不存在，需要插入
+			// 不存在，需要插入（租户归属由回调按 ctx 盖章）
 			toInsert = append(toInsert, model.Sensitive{
 				BaseOrm: baseorm.BaseOrm{
 					Id:          uuid.GenUUID(),
-					USER_CODE:   global.GWAF_USER_CODE,
-					Tenant_ID:   global.GWAF_TENANT_ID,
 					CREATE_TIME: customtype.JsonTime(time.Now()),
 					UPDATE_TIME: customtype.JsonTime(time.Now()),
 				},
@@ -163,7 +161,7 @@ func (p *SensitiveProcessor) processOverwriteBatch(items []string, existMap map[
 	}
 
 	// 开始事务
-	tx := global.GWAF_LOCAL_DB.Begin()
+	tx := global.GWAF_LOCAL_DB.WithContext(ctx).Begin()
 	hasChanges := false
 
 	// 批量插入新记录

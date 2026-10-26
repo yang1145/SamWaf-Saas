@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"SamWaf/common/uuid"
 	"SamWaf/customtype"
 	"SamWaf/global"
@@ -52,7 +53,7 @@ func (receiver *WafAILabelService) MarkApi(req request.WafAILabelMarkReq) error 
 	}
 	// BODY/POST_FORM 在 event_payload 里，补回来才有东西做快照
 	wl.REQ_UUID = req.ReqUuid
-	FillLivePayloads([]*innerbean.WebLog{&wl})
+	FillLivePayloads(context.Background(), []*innerbean.WebLog{&wl})
 
 	body := wl.BODY
 	if body == "" {
@@ -263,7 +264,7 @@ func (receiver *WafAILabelService) ListApi(req request.WafAILabelListReq) respon
 	for i := range rows {
 		fillRows = append(fillRows, &rows[i])
 	}
-	FillLivePayloads(fillRows)
+	FillLivePayloads(context.Background(), fillRows)
 
 	for i := range rows {
 		r := &rows[i]

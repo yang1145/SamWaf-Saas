@@ -8,6 +8,7 @@ import (
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
 	"SamWaf/wafdb"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -109,7 +110,7 @@ func TestLogURLKeywordQueries(t *testing.T) {
 					if shard == AutoShard {
 						want *= 3
 					}
-					rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(req)
+					rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 					if err != nil || meta.Partial || total != want || int64(len(rows)) != want {
 						t.Fatalf("want %d rows, total=%d len=%d meta=%+v err=%v", want, total, len(rows), meta, err)
 					}
@@ -121,7 +122,7 @@ func TestLogURLKeywordQueries(t *testing.T) {
 		req := base
 		req.CurrrentDbName, req.URLKeyword = AutoShard, "a_b%20!x|z"
 		req.SrcIp, req.Method, req.FilterBy, req.FilterValue = "203.0.113.8", "GET", "user_agent", "url-agent"
-		rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(req)
+		rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 		if err != nil || total != 3 || len(rows) != 3 {
 			t.Fatalf("combined filters: total=%d len=%d err=%v", total, len(rows), err)
 		}
@@ -137,7 +138,7 @@ func TestLogURLKeywordQueries(t *testing.T) {
 			case "agent":
 				other.FilterValue = "other-agent"
 			}
-			rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(other)
+			rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), other)
 			if err != nil || total != 0 || len(rows) != 0 {
 				t.Fatalf("URL must retain %s filter: total=%d len=%d err=%v", field, total, len(rows), err)
 			}
@@ -147,24 +148,24 @@ func TestLogURLKeywordQueries(t *testing.T) {
 				other := req
 				other.ReqUuid, other.ViewType = id, view
 				other.UnixAddTimeBegin, other.UnixAddTimeEnd = "4102444800000", "4102531200000"
-				rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(other)
+				rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), other)
 				if err != nil || total != 1 || len(rows) != 1 || !meta.UuidLookup {
 					t.Fatalf("archive UUID URL lookup: total=%d len=%d meta=%+v err=%v", total, len(rows), meta, err)
 				}
 				other.URLKeyword = "missing"
-				rows, total, _, err = WafLogServiceApp.GetListApiWithMeta(other)
+				rows, total, _, err = WafLogServiceApp.GetListApiWithMeta(context.Background(), other)
 				if err != nil || total != 0 || len(rows) != 0 {
 					t.Fatalf("archive UUID must retain URL filter: total=%d len=%d err=%v", total, len(rows), err)
 				}
 			}
 		}
 		req.ReqUuid, req.UnixAddTimeBegin, req.UnixAddTimeEnd = "live-url-0", "4102444800000", "4102531200000"
-		rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(req)
+		rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 		if err != nil || total != 1 || len(rows) != 1 || !meta.UuidLookup {
 			t.Fatalf("UUID combination: total=%d len=%d meta=%+v err=%v", total, len(rows), meta, err)
 		}
 		req.URLKeyword = "missing"
-		rows, total, _, err = WafLogServiceApp.GetListApiWithMeta(req)
+		rows, total, _, err = WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 		if err != nil || total != 0 || len(rows) != 0 {
 			t.Fatalf("UUID must retain URL filter: total=%d len=%d err=%v", total, len(rows), err)
 		}
@@ -176,7 +177,7 @@ func TestLogURLKeywordQueries(t *testing.T) {
 		seen := map[string]bool{}
 		for page := 1; page <= 3; page++ {
 			req.PageIndex = page
-			rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(req)
+			rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 			if err != nil || total != 6 || len(rows) != 2 {
 				t.Fatalf("page=%d total=%d len=%d err=%v", page, total, len(rows), err)
 			}
@@ -191,7 +192,7 @@ func TestLogURLKeywordQueries(t *testing.T) {
 			t.Fatal("archive count cache was not exercised")
 		}
 		req.PageIndex, req.URLKeyword = 1, "a_b"
-		_, total, _, err := WafLogServiceApp.GetListApiWithMeta(req)
+		_, total, _, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 		if err != nil || total != 3 {
 			t.Fatalf("keyword count cache isolation: total=%d err=%v", total, err)
 		}

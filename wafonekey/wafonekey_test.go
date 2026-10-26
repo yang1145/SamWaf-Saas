@@ -1,7 +1,10 @@
 package wafonekey
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestOneKeyModifyBt(t *testing.T) {
-	OneKeyModifyBt("C:\\huawei\\goproject\\SamWafOneModify\\BtTest")
+	OneKeyModifyBt(context.Background(), "C:\\huawei\\goproject\\SamWafOneModify\\BtTest")
 }

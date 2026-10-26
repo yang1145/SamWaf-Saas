@@ -10,6 +10,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/common/request"
 	req "SamWaf/model/request"
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func runLogCases(t *testing.T, logdb *gorm.DB) {
 					UnixAddTimeBegin: "0", UnixAddTimeEnd: fmt.Sprint(now + 1), SortBy: "unix_add_time",
 					PageInfo: request.PageInfo{PageIndex: 1, PageSize: 10},
 				}
-				rows, total, err := WafLogServiceApp.GetListApi(r)
+				rows, total, err := WafLogServiceApp.GetListApi(context.Background(), r)
 				if err != nil || total != tc.want || int64(len(rows)) != tc.want {
 					t.Fatalf("view=%s keyword=%q want=%d total=%d len=%d err=%v", view, tc.keyword, tc.want, total, len(rows), err)
 				}
@@ -108,7 +109,7 @@ func runLogCases(t *testing.T, logdb *gorm.DB) {
 		}
 
 		// 访问日志视图（默认）：按 req_uuid 查到窄行
-		list, total, err := WafLogServiceApp.GetListApi(base)
+		list, total, err := WafLogServiceApp.GetListApi(context.Background(), base)
 		fatalIf(t, err)
 		if total < 1 || len(list) < 1 {
 			t.Fatalf("访问日志视图未查到刚写入的窄行: total=%d len=%d", total, len(list))
@@ -117,7 +118,7 @@ func runLogCases(t *testing.T, logdb *gorm.DB) {
 		// 安全事件视图：同一 req_uuid 也查得到（事件双写），且报文被补回
 		evReq := base
 		evReq.ViewType = "event"
-		evList, evTotal, err := WafLogServiceApp.GetListApi(evReq)
+		evList, evTotal, err := WafLogServiceApp.GetListApi(context.Background(), evReq)
 		fatalIf(t, err)
 		if evTotal < 1 || len(evList) < 1 {
 			t.Fatalf("安全事件视图未查到刚写入的事件: total=%d len=%d", evTotal, len(evList))
@@ -131,7 +132,7 @@ func runLogCases(t *testing.T, logdb *gorm.DB) {
 		hdrReq.ViewType = "event"
 		hdrReq.FilterBy = "header"
 		hdrReq.FilterValue = "crossdb-probe"
-		_, hdrTotal, err := WafLogServiceApp.GetListApi(hdrReq)
+		_, hdrTotal, err := WafLogServiceApp.GetListApi(context.Background(), hdrReq)
 		fatalIf(t, err)
 		if hdrTotal < 1 {
 			t.Fatal("事件视图的 header 全文筛选应命中报文子查询")
@@ -139,7 +140,7 @@ func runLogCases(t *testing.T, logdb *gorm.DB) {
 		accHdr := base
 		accHdr.FilterBy = "header"
 		accHdr.FilterValue = "crossdb-probe"
-		if _, _, err = WafLogServiceApp.GetListApi(accHdr); err == nil {
+		if _, _, err = WafLogServiceApp.GetListApi(context.Background(), accHdr); err == nil {
 			t.Fatal("访问日志视图的 header 全文筛选应被拒绝（窄行没有这一列）")
 		}
 
@@ -147,7 +148,7 @@ func runLogCases(t *testing.T, logdb *gorm.DB) {
 		uaReq := base
 		uaReq.FilterBy = "user_agent"
 		uaReq.FilterValue = "crossdb-probe"
-		_, uaTotal, err := WafLogServiceApp.GetListApi(uaReq)
+		_, uaTotal, err := WafLogServiceApp.GetListApi(context.Background(), uaReq)
 		fatalIf(t, err)
 		if uaTotal < 1 {
 			t.Fatal("访问视图的 UA 筛选应命中窄行")
@@ -185,8 +186,8 @@ func runLogCases(t *testing.T, logdb *gorm.DB) {
 	// NotifyLog：AddLog（裸参数）写入 + GetListApi（channel_id 过滤）
 	t.Run("NotifyLog", func(t *testing.T) {
 		ch := "nl_" + sfx()
-		fatalIf(t, WafNotifyLogServiceApp.AddLog(ch, "chanName", "dingtalk", "attack", "title", "content", "a@b.com", 1, ""))
-		list, total, err := WafNotifyLogServiceApp.GetListApi(req.WafNotifyLogSearchReq{
+		fatalIf(t, WafNotifyLogServiceApp.AddLog(context.Background(), ch, "chanName", "dingtalk", "attack", "title", "content", "a@b.com", 1, ""))
+		list, total, err := WafNotifyLogServiceApp.GetListApi(context.Background(), req.WafNotifyLogSearchReq{
 			ChannelId: ch, PageIndex: 1, PageSize: 20,
 		})
 		fatalIf(t, err)

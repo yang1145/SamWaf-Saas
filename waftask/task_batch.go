@@ -1,12 +1,14 @@
 package waftask
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/enums"
 	"SamWaf/model"
 	"SamWaf/service/waf_service"
 	"SamWaf/utils"
 	"SamWaf/waftask/batch"
+	"context"
 	"fmt"
 	"strings"
 )
@@ -18,6 +20,20 @@ var (
 // sensitiveMaxLines 敏感词单次导入的行数上限
 const sensitiveMaxLines = 50000
 
+// BatchTaskTenantCtx 用任务行自带的租户标识构造执行上下文。
+//
+// 批量任务可能在请求结束之后仍要写库（手工执行接口同步执行但已脱离响应语义、
+// cron 定时执行更没有请求可言），处理器不能复用可能被取消的请求 ctx，
+// 统一从任务行还原"任务归属租户"的独立上下文：
+//   - 行带租户标识 → 以该租户执行，IP名单/组条目/敏感词落任务归属租户名下；
+//   - 行不带租户标识（存量单租户实例）→ 无租户上下文，回调回退全局常量，行为与改造前一致。
+func BatchTaskTenantCtx(task model.BatchTask) context.Context {
+	if task.Tenant_ID == "" {
+		return context.Background()
+	}
+	return wafctx.WithTenant(context.Background(), task.Tenant_ID, task.USER_CODE)
+}
+
 /*
 *
 批量任务
@@ -26,7 +42,8 @@ func BatchTask() {
 	innerLogName := "BatchTask"
 	zlog.Info(innerLogName, "准备进行自动执行批量任务")
 
-	batchTaskList, size, err := wafBatchTaskService.GetAllCronListInner()
+	// 平台级定时任务：跨租户装载全部定时批量任务，逐任务按其自带租户执行
+	batchTaskList, size, err := wafBatchTaskService.GetAllCronListInner(wafctx.PlatformScope(context.Background()))
 	if err != nil {
 		zlog.Error(innerLogName, "批量任务:", err)
 		return
@@ -36,10 +53,12 @@ func BatchTask() {
 		return
 	}
 	for _, batchTask := range batchTaskList {
-		runErr := ExecuteBatchTask(batchTask)
+		taskCtx := BatchTaskTenantCtx(batchTask)
+		runErr := ExecuteBatchTask(taskCtx, batchTask)
 		// 定时执行同样入统一安全审计：这条链路会读宿主机文件/拉远端地址并批量改防护策略，
 		// 只有手工执行留痕的话，改成 cron 就能绕开审计。
-		AuditBatchTaskRun(batchTask, "system(cron)", "", runErr)
+		// 审计代表任务归属租户执行，落任务租户名下。
+		AuditBatchTaskRun(taskCtx, batchTask, "system(cron)", "", runErr)
 		if runErr != nil {
 			zlog.Error(innerLogName, fmt.Sprintf("批量任务[%s]执行失败: %s", batchTask.BatchTaskName, runErr.Error()))
 			continue
@@ -51,23 +70,24 @@ func BatchTask() {
 // ExecuteBatchTask 按任务类型分发执行，未知类型显式报错。
 // 以前分发用的是一个没有 default 分支的 switch：类型写错时什么都不做，
 // 而手工执行接口照样返回"成功"，运维完全看不出任务其实从未运行。
-func ExecuteBatchTask(task model.BatchTask) error {
+func ExecuteBatchTask(ctx context.Context, task model.BatchTask) error {
 	switch task.BatchType {
 	case enums.BATCHTASK_IPALLOW:
-		return IPAllowBatch(task)
+		return IPAllowBatch(ctx, task)
 	case enums.BATCHTASK_IPDENY:
-		return IPDenyBatch(task)
+		return IPDenyBatch(ctx, task)
 	case enums.BATCHTASK_IPGROUP:
-		return IPGroupBatch(task)
+		return IPGroupBatch(ctx, task)
 	case enums.BATCHTASK_SENSITIVE:
-		return SensitiveBatch(task)
+		return SensitiveBatch(ctx, task)
 	}
 	return fmt.Errorf("任务类型非法(%s)，未执行", task.BatchType)
 }
 
 // AuditBatchTaskRun 把一次批量任务执行（成功/被拒）记入统一安全审计（config 类）。
-// Message 只写来源类型、来源路径或URL、操作者与结果，绝不写文件内容
-func AuditBatchTaskRun(task model.BatchTask, accountName, clientIP string, runErr error) {
+// Message 只写来源类型、来源路径或URL、操作者与结果，绝不写文件内容。
+// 审计行归属按 ctx 手工落列（豁免模型）：手工执行传请求 ctx（谁点的）、cron 传任务租户 ctx。
+func AuditBatchTaskRun(ctx context.Context, task model.BatchTask, accountName, clientIP string, runErr error) {
 	source := utils.RedactURLCredentials(strings.TrimSpace(task.BatchSource))
 	if len(source) > 200 {
 		source = source[:200] + "..."
@@ -81,7 +101,7 @@ func AuditBatchTaskRun(task model.BatchTask, accountName, clientIP string, runEr
 	} else {
 		detail += " 结果=成功"
 	}
-	waf_service.WafSecurityAuditServiceApp.Write(waf_service.AuditEntry{
+	waf_service.WafSecurityAuditServiceApp.WriteCtx(ctx, waf_service.AuditEntry{
 		Event:       model.AuditEventConfigBatchTaskRun,
 		AccountName: accountName,
 		ClientIP:    clientIP,
@@ -92,43 +112,43 @@ func AuditBatchTaskRun(task model.BatchTask, accountName, clientIP string, runEr
 }
 
 // IPAllowBatch 白名单IP批量处理
-func IPAllowBatch(task model.BatchTask) error {
+func IPAllowBatch(ctx context.Context, task model.BatchTask) error {
 	processor := &batch.IPAllowProcessor{}
 	config := batch.BatchProcessorConfig{
 		BatchSize: 1000,
 		LogPrefix: "BatchTask-IPAllowBatch",
 	}
-	return batch.ProcessBatchTask(task, processor, config)
+	return batch.ProcessBatchTask(ctx, task, processor, config)
 }
 
 // IPDenyBatch 黑名单IP批量处理
-func IPDenyBatch(task model.BatchTask) error {
+func IPDenyBatch(ctx context.Context, task model.BatchTask) error {
 	processor := &batch.IPDenyProcessor{}
 	config := batch.BatchProcessorConfig{
 		BatchSize: 1000,
 		LogPrefix: "BatchTask-IPDenyBatch",
 	}
-	return batch.ProcessBatchTask(task, processor, config)
+	return batch.ProcessBatchTask(ctx, task, processor, config)
 }
 
 // IPGroupBatch IP组条目批量处理。
 // 处理器持有跨批次状态(覆盖模式的差集)，所以每次执行都要新建实例，不能复用。
-func IPGroupBatch(task model.BatchTask) error {
+func IPGroupBatch(ctx context.Context, task model.BatchTask) error {
 	processor := &batch.IPGroupProcessor{}
 	config := batch.BatchProcessorConfig{
 		BatchSize: 1000,
 		LogPrefix: "BatchTask-IPGroupBatch",
 	}
-	return batch.ProcessBatchTask(task, processor, config)
+	return batch.ProcessBatchTask(ctx, task, processor, config)
 }
 
 // SensitiveBatch 敏感词批量处理
-func SensitiveBatch(task model.BatchTask) error {
+func SensitiveBatch(ctx context.Context, task model.BatchTask) error {
 	processor := &batch.SensitiveProcessor{}
 	config := batch.BatchProcessorConfig{
 		BatchSize: 1000,
 		LogPrefix: "BatchTask-SensitiveBatch",
 		MaxLines:  sensitiveMaxLines,
 	}
-	return batch.ProcessBatchTask(task, processor, config)
+	return batch.ProcessBatchTask(ctx, task, processor, config)
 }

@@ -161,7 +161,10 @@ type logQuery struct {
 }
 
 // buildLogQuery 在指定分区上组装查询条件。ignoreTime=true 时不带时间范围（识别码直查用）。
-func buildLogQuery(req request.WafAttackLogSearch, shardName string, ignoreTime bool) (*logQuery, error) {
+//
+// ctx 携带请求租户（wafctx），随 logQuery.db 一路传给 count/find：Table() 查询同样被
+// 租户回调过滤（见 wafdb/tenant_bypass_channels_test.go），租户只能看到自己分区的行。
+func buildLogQuery(ctx context.Context, req request.WafAttackLogSearch, shardName string, ignoreTime bool) (*logQuery, error) {
 	splitFilterBys := strings.Split(req.FilterBy, "|")
 	splitFilterValues := strings.Split(req.FilterValue, "|")
 	// 解析当前分片的三层表：访问日志视图读 access_log，安全事件视图读 security_event；
@@ -170,7 +173,7 @@ func buildLogQuery(req request.WafAttackLogSearch, shardName string, ignoreTime 
 	if tier.Err != nil {
 		return nil, tier.Err
 	}
-	logDB := tier.DB
+	logDB := tier.DB.WithContext(ctx)
 	isEventView := req.ViewType == "event"
 	logTable := tier.Access
 	if isEventView {
@@ -424,7 +427,7 @@ func (q *logQuery) find(ctx context.Context, offset, limit int, orderOverride st
 		for i := range rows {
 			ptrs = append(ptrs, &rows[i])
 		}
-		FillShardPayloads(q.shardName, ptrs)
+		FillShardPayloads(ctx, q.shardName, ptrs)
 	}
 	return rows, nil
 }
@@ -493,7 +496,10 @@ func candidateShards(fromMs, toMs int64, ignoreTime bool) []logShard {
 // GetListApiWithMeta 日志列表查询，并告诉调用方这次到底查了哪些分区。
 //
 // 三条路：填了识别码走直查（忽略时间与分区）／auto 走按时间范围扇出／指定了分区就只查它。
-func (receiver *WafLogService) GetListApiWithMeta(req request.WafAttackLogSearch) ([]innerbean.WebLog, int64, LogQueryMeta, error) {
+//
+// ctx 携带请求租户（wafctx）：扇出预算从 ctx 派生而非 Background，租户随每条
+// 分区查询下推（Table() 查询也被租户回调过滤）；请求取消时整次扇出一并中止。
+func (receiver *WafLogService) GetListApiWithMeta(ctx context.Context, req request.WafAttackLogSearch) ([]innerbean.WebLog, int64, LogQueryMeta, error) {
 	var meta LogQueryMeta
 	shardName := strings.TrimSpace(req.CurrrentDbName)
 	// 只有明确传 auto 才扇出。空值沿用旧语义（实时库）——存量调用方与 Vue3 还在传空，
@@ -502,16 +508,16 @@ func (receiver *WafLogService) GetListApiWithMeta(req request.WafAttackLogSearch
 
 	req.ReqUuid = strings.TrimSpace(req.ReqUuid)
 	if req.ReqUuid != "" {
-		return receiver.lookupByUuid(req)
+		return receiver.lookupByUuid(ctx, req)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), fanoutBudget)
+	ctx, cancel := context.WithTimeout(ctx, fanoutBudget)
 	defer cancel()
 	started := time.Now()
 	defer func() { meta.TookMs = time.Since(started).Milliseconds() }()
 
 	if !auto {
-		q, err := buildLogQuery(req, shardName, false)
+		q, err := buildLogQuery(ctx, req, shardName, false)
 		var tier wafdb.TierTables
 		if q != nil {
 			tier = q.tier
@@ -586,7 +592,7 @@ func (receiver *WafLogService) GetListApiWithMeta(req request.WafAttackLogSearch
 	}
 	build := func(p *plan) error {
 		if !p.built {
-			p.q, p.err = buildLogQuery(req, p.name, false)
+			p.q, p.err = buildLogQuery(ctx, req, p.name, false)
 			p.built = true
 		}
 		return p.err
@@ -731,9 +737,12 @@ func (receiver *WafLogService) GetListApiWithMeta(req request.WafAttackLogSearch
 // 查不到不是错误：所有分区都查询成功但没有行时，调用方按空结果处理，界面负责解释可能的原因
 // （已过保留期 / 抄错 / 本就没记录）。有分区查询失败则返回首个错误——明明可能是扫描失败，
 // 不能伪装成「未找到」。
-func (receiver *WafLogService) lookupByUuid(req request.WafAttackLogSearch) ([]innerbean.WebLog, int64, LogQueryMeta, error) {
+//
+// ctx 携带请求租户：预算从 ctx 派生，租户随各分区点查下推——否则回退全局租户后，
+// 租户自己的日志在本分区也查不到。
+func (receiver *WafLogService) lookupByUuid(ctx context.Context, req request.WafAttackLogSearch) ([]innerbean.WebLog, int64, LogQueryMeta, error) {
 	meta := LogQueryMeta{UuidLookup: true}
-	ctx, cancel := context.WithTimeout(context.Background(), fanoutBudget)
+	ctx, cancel := context.WithTimeout(ctx, fanoutBudget)
 	defer cancel()
 	started := time.Now()
 	defer func() { meta.TookMs = time.Since(started).Milliseconds() }()
@@ -750,7 +759,7 @@ func (receiver *WafLogService) lookupByUuid(req request.WafAttackLogSearch) ([]i
 			break
 		}
 		meta.Scanned = i + 1
-		q, err := buildLogQuery(req, sh.Name, true)
+		q, err := buildLogQuery(ctx, req, sh.Name, true)
 		if err != nil {
 			if issue := shardIssueOf(sh.Name, sh.Registered, err, wafdb.TierTables{}); issue != nil {
 				meta.Issues = append(meta.Issues, *issue)
@@ -783,7 +792,10 @@ func (receiver *WafLogService) lookupByUuid(req request.WafAttackLogSearch) ([]i
 
 // ResolveDetailShard 详情按识别码定位分区：明确给了就用它，
 // auto / 空 时从新到旧找出第一个有这条记录的分区。找不到返回空字符串（调用方回落实时库）。
-func ResolveDetailShard(shardName, reqUuid string) string {
+//
+// ctx 携带请求租户（wafctx）：定位点查也按租户过滤——否则租户拿着自己的识别码
+// 会被引导到错误分区（或把别的租户有该记录误判为命中），预算同样从 ctx 派生。
+func ResolveDetailShard(ctx context.Context, shardName, reqUuid string) string {
 	name := strings.TrimSpace(shardName)
 	if name != "" && name != AutoShard {
 		return name
@@ -791,7 +803,7 @@ func ResolveDetailShard(shardName, reqUuid string) string {
 	if strings.TrimSpace(reqUuid) == "" {
 		return name
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), fanoutBudget)
+	ctx, cancel := context.WithTimeout(ctx, fanoutBudget)
 	defer cancel()
 	for i, sh := range candidateShards(0, 0, true) {
 		if i >= maxUuidLookupShards || ctx.Err() != nil {

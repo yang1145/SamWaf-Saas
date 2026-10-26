@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -90,7 +91,7 @@ func setupAnalysisViewDB(t *testing.T) *gorm.DB {
 // 行为视角的命门：distinct_path 必须是真去重，且默认按它倒序——扫目录的要排第一。
 func TestAnalysisActorList(t *testing.T) {
 	setupAnalysisViewDB(t)
-	resp := WafAnalysisViewServiceApp.ActorListApi(request.WafAnalysisActorReq{Day: avDay})
+	resp := WafAnalysisViewServiceApp.ActorListApi(context.Background(), request.WafAnalysisActorReq{Day: avDay})
 
 	if len(resp.List) != 4 {
 		t.Fatalf("应有 4 个来源，实际 %d", len(resp.List))
@@ -124,7 +125,7 @@ func TestAnalysisActorList(t *testing.T) {
 func TestAnalysisActorSortWhitelist(t *testing.T) {
 	setupAnalysisViewDB(t)
 	evil := request.WafAnalysisActorReq{Day: avDay, SortBy: "req_cnt desc; drop table stats_actor_path_days --"}
-	resp := WafAnalysisViewServiceApp.ActorListApi(evil)
+	resp := WafAnalysisViewServiceApp.ActorListApi(context.Background(), evil)
 	if len(resp.List) != 4 {
 		t.Fatalf("非法排序值应被忽略并照常返回，实际 %d 行", len(resp.List))
 	}
@@ -139,7 +140,7 @@ func TestAnalysisActorSortWhitelist(t *testing.T) {
 	}
 
 	// 合法值要真的生效
-	byReq := WafAnalysisViewServiceApp.ActorListApi(request.WafAnalysisActorReq{Day: avDay, SortBy: "req_cnt"})
+	byReq := WafAnalysisViewServiceApp.ActorListApi(context.Background(), request.WafAnalysisActorReq{Day: avDay, SortBy: "req_cnt"})
 	if byReq.List[0].ActorKey != "ip:203.0.113.20" {
 		t.Fatalf("按请求数倒序首位应是 20，实际 %q", byReq.List[0].ActorKey)
 	}
@@ -148,7 +149,7 @@ func TestAnalysisActorSortWhitelist(t *testing.T) {
 // 目标视角：去重来源数 + top_rule 取最大的那条。
 func TestAnalysisPathList(t *testing.T) {
 	setupAnalysisViewDB(t)
-	resp := WafAnalysisViewServiceApp.PathListApi(request.WafAnalysisPathReq{Day: avDay})
+	resp := WafAnalysisViewServiceApp.PathListApi(context.Background(), request.WafAnalysisPathReq{Day: avDay})
 
 	var products *struct {
 		Req, Actor int64
@@ -183,7 +184,7 @@ func TestAnalysisPathList(t *testing.T) {
 // 站点过滤要真的收窄：只看 h1 时，跨站的那个来源只剩 h1 那部分。
 func TestAnalysisHostFilter(t *testing.T) {
 	setupAnalysisViewDB(t)
-	resp := WafAnalysisViewServiceApp.ActorListApi(request.WafAnalysisActorReq{Day: avDay, HostCode: "h1"})
+	resp := WafAnalysisViewServiceApp.ActorListApi(context.Background(), request.WafAnalysisActorReq{Day: avDay, HostCode: "h1"})
 	for _, r := range resp.List {
 		if r.ActorKey == "ip:203.0.113.10" {
 			if r.DistinctPath != 4 || r.ReqCnt != 8 {
@@ -198,7 +199,7 @@ func TestAnalysisHostFilter(t *testing.T) {
 // 抽屉：actor 模式要给出站点清单——加黑/加白的 host_code 必填，界面靠它选。
 func TestAnalysisDetailActor(t *testing.T) {
 	setupAnalysisViewDB(t)
-	resp := WafAnalysisViewServiceApp.DetailApi(request.WafAnalysisDetailReq{
+	resp := WafAnalysisViewServiceApp.DetailApi(context.Background(), request.WafAnalysisDetailReq{
 		Day: avDay, Kind: "actor", Key: "ip:203.0.113.10",
 	})
 	if len(resp.Paths) != 5 {
@@ -220,7 +221,7 @@ func TestAnalysisDetailActor(t *testing.T) {
 
 func TestAnalysisDetailPath(t *testing.T) {
 	setupAnalysisViewDB(t)
-	resp := WafAnalysisViewServiceApp.DetailApi(request.WafAnalysisDetailReq{
+	resp := WafAnalysisViewServiceApp.DetailApi(context.Background(), request.WafAnalysisDetailReq{
 		Day: avDay, Kind: "path", Key: "/api/products",
 	})
 	if len(resp.Actors) != 2 {
@@ -244,7 +245,7 @@ func TestAnalysisThresholdCounts(t *testing.T) {
 
 	global.GDATA_ANALYSIS_SCAN_PATH_THRESHOLD = 5
 	global.GDATA_ANALYSIS_UA_THRESHOLD = 3
-	resp := WafAnalysisViewServiceApp.ActorListApi(request.WafAnalysisActorReq{Day: avDay})
+	resp := WafAnalysisViewServiceApp.ActorListApi(context.Background(), request.WafAnalysisActorReq{Day: avDay})
 	if resp.ScanActor != 1 || resp.UaActor != 1 {
 		t.Fatalf("阈值 5/3 时各应命中 1 个，实际 scan=%d ua=%d", resp.ScanActor, resp.UaActor)
 	}
@@ -253,7 +254,7 @@ func TestAnalysisThresholdCounts(t *testing.T) {
 	}
 
 	global.GDATA_ANALYSIS_SCAN_PATH_THRESHOLD = 99
-	resp = WafAnalysisViewServiceApp.ActorListApi(request.WafAnalysisActorReq{Day: avDay})
+	resp = WafAnalysisViewServiceApp.ActorListApi(context.Background(), request.WafAnalysisActorReq{Day: avDay})
 	if resp.ScanActor != 0 {
 		t.Fatalf("阈值调到 99 后不该有人命中，实际 %d", resp.ScanActor)
 	}

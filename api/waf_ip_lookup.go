@@ -32,7 +32,7 @@ func (w *WafIPLookupApi) LookupApi(c *gin.Context) {
 	if strings.TrimSpace(req.Sources) != "" {
 		sources = strings.Split(req.Sources, ",")
 	}
-	result, err := wafIPLookupService.Lookup(req.Ip, sources)
+	result, err := wafIPLookupService.Lookup(c.Request.Context(), req.Ip, sources)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return

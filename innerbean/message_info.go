@@ -19,6 +19,10 @@ IP地址:
 type BaseMessageInfo struct {
 	OperaType string `json:"operatype"`
 	Server    string `json:"server"`
+	// TenantId 仅用于多租户 WebSocket 路由：消息产生方填入事件所属租户，
+	// 消息队列按它决定投递范围；未携带（空串）时按失败关闭原则只投给平台侧连接。
+	// 刻意标记 json:"-" 不参与序列化，保证对前端的通知报文协议不变。
+	TenantId string `json:"-"`
 }
 
 /*

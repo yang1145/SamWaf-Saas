@@ -1,6 +1,9 @@
 package waf_service
 
 import (
+	"context"
+
+	"SamWaf/common/wafctx"
 	"SamWaf/common/uuid"
 	"SamWaf/common/zlog"
 	"SamWaf/customtype"
@@ -98,14 +101,14 @@ func (receiver *WafHostGuardService) FlushEvents() {
 }
 
 // GetEventList 分页查询登录失败事件
-func (receiver *WafHostGuardService) GetEventList(req request.WafHostGuardEventSearchReq) ([]model.HostLoginEvent, int64, error) {
+func (receiver *WafHostGuardService) GetEventList(ctx context.Context, req request.WafHostGuardEventSearchReq) ([]model.HostLoginEvent, int64, error) {
 	var list []model.HostLoginEvent
 	var total int64
 	if global.GWAF_LOCAL_LOG_DB == nil {
 		return list, 0, nil
 	}
 
-	query := global.GWAF_LOCAL_LOG_DB.Model(&model.HostLoginEvent{})
+	query := global.GWAF_LOCAL_LOG_DB.WithContext(ctx).Model(&model.HostLoginEvent{})
 	if req.Source != "" {
 		query = query.Where("source = ?", req.Source)
 	}
@@ -138,11 +141,11 @@ func (receiver *WafHostGuardService) GetEventList(req request.WafHostGuardEventS
 
 // GetBanList 分页查询封禁记录。status 留空默认只看生效中的——
 // 用户点进"封禁列表"想看的是"现在谁被封着"，而不是历史流水。
-func (receiver *WafHostGuardService) GetBanList(req request.WafHostGuardBanSearchReq) ([]model.HostGuardBan, int64, error) {
+func (receiver *WafHostGuardService) GetBanList(ctx context.Context, req request.WafHostGuardBanSearchReq) ([]model.HostGuardBan, int64, error) {
 	var list []model.HostGuardBan
 	var total int64
 
-	query := global.GWAF_LOCAL_DB.Model(&model.HostGuardBan{})
+	query := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HostGuardBan{})
 	status := req.Status
 	if status == "" {
 		status = model.HostBanStatusActive
@@ -166,9 +169,9 @@ func (receiver *WafHostGuardService) GetBanList(req request.WafHostGuardBanSearc
 }
 
 // ReleaseBan 手工提前解封
-func (receiver *WafHostGuardService) ReleaseBan(id string) error {
+func (receiver *WafHostGuardService) ReleaseBan(ctx context.Context, id string) error {
 	var ban model.HostGuardBan
-	if err := global.GWAF_LOCAL_DB.Where("id = ?", id).First(&ban).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", id).First(&ban).Error; err != nil {
 		return errors.New("封禁记录不存在")
 	}
 	if ban.Status != model.HostBanStatusActive {
@@ -183,7 +186,7 @@ func (receiver *WafHostGuardService) ReleaseBan(id string) error {
 		zlog.Warn("[主机登录防护] 手工解封时同步防火墙失败", "ip", ban.IP, "error", err.Error())
 	}
 
-	return global.GWAF_LOCAL_DB.Model(&model.HostGuardBan{}).
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HostGuardBan{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"status":      model.HostBanStatusReleased,
@@ -193,15 +196,15 @@ func (receiver *WafHostGuardService) ReleaseBan(id string) error {
 }
 
 // PromoteToPermanent 把一条临时封禁改成永久
-func (receiver *WafHostGuardService) PromoteToPermanent(id string) error {
+func (receiver *WafHostGuardService) PromoteToPermanent(ctx context.Context, id string) error {
 	var ban model.HostGuardBan
-	if err := global.GWAF_LOCAL_DB.Where("id = ?", id).First(&ban).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", id).First(&ban).Error; err != nil {
 		return errors.New("封禁记录不存在")
 	}
 	if ban.Status != model.HostBanStatusActive {
 		return errors.New("该记录已不在封禁中")
 	}
-	return global.GWAF_LOCAL_DB.Model(&model.HostGuardBan{}).
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HostGuardBan{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"expire_time": 0,
@@ -247,11 +250,11 @@ func (receiver *WafHostGuardService) ManualBan(req request.WafHostGuardManualBan
 }
 
 // GetOffenderList 分页查询攻击者档案
-func (receiver *WafHostGuardService) GetOffenderList(req request.WafHostGuardOffenderSearchReq) ([]model.HostGuardOffender, int64, error) {
+func (receiver *WafHostGuardService) GetOffenderList(ctx context.Context, req request.WafHostGuardOffenderSearchReq) ([]model.HostGuardOffender, int64, error) {
 	var list []model.HostGuardOffender
 	var total int64
 
-	query := global.GWAF_LOCAL_DB.Model(&model.HostGuardOffender{})
+	query := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HostGuardOffender{})
 	if req.IP != "" {
 		query = query.Where("ip LIKE ?", "%"+req.IP+"%")
 	}
@@ -268,8 +271,8 @@ func (receiver *WafHostGuardService) GetOffenderList(req request.WafHostGuardOff
 }
 
 // ResetOffender 重置某个攻击者的阶梯（下次封禁从第1级重新开始）
-func (receiver *WafHostGuardService) ResetOffender(id string) error {
-	return global.GWAF_LOCAL_DB.Model(&model.HostGuardOffender{}).
+func (receiver *WafHostGuardService) ResetOffender(ctx context.Context, id string) error {
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HostGuardOffender{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"ban_count":     0,
@@ -280,21 +283,21 @@ func (receiver *WafHostGuardService) ResetOffender(id string) error {
 }
 
 // DeleteOffender 删除攻击者档案
-func (receiver *WafHostGuardService) DeleteOffender(id string) error {
-	return global.GWAF_LOCAL_DB.Where("id = ?", id).Delete(&model.HostGuardOffender{}).Error
+func (receiver *WafHostGuardService) DeleteOffender(ctx context.Context, id string) error {
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", id).Delete(&model.HostGuardOffender{}).Error
 }
 
 // GetLadders 取阶梯配置（按级别升序）
-func (receiver *WafHostGuardService) GetLadders() ([]model.HostGuardBanLadder, error) {
+func (receiver *WafHostGuardService) GetLadders(ctx context.Context) ([]model.HostGuardBanLadder, error) {
 	var list []model.HostGuardBanLadder
-	err := global.GWAF_LOCAL_DB.Order("level asc").Find(&list).Error
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Order("level asc").Find(&list).Error
 	return list, err
 }
 
 // SaveLadders 整表替换阶梯配置。
 // 用整表替换而不是逐行增删改：阶梯是一个有序整体，级别之间要连续，
 // 让前端一次提交完整列表，后端校验后原子替换，比维护单行 CRUD 的一致性简单得多。
-func (receiver *WafHostGuardService) SaveLadders(req request.WafHostGuardLadderEditReq) error {
+func (receiver *WafHostGuardService) SaveLadders(ctx context.Context, req request.WafHostGuardLadderEditReq) error {
 	if len(req.Ladders) == 0 {
 		return errors.New("至少要保留一级封禁阶梯")
 	}
@@ -313,7 +316,7 @@ func (receiver *WafHostGuardService) SaveLadders(req request.WafHostGuardLadderE
 	}
 
 	now := time.Now()
-	tx := global.GWAF_LOCAL_DB.Begin()
+	tx := global.GWAF_LOCAL_DB.WithContext(ctx).Begin()
 	if err := tx.Where("1 = 1").Delete(&model.HostGuardBanLadder{}).Error; err != nil {
 		tx.Rollback()
 		return err
@@ -419,15 +422,15 @@ type HostGuardTrend struct {
 }
 
 // GetStatistics 概览页数据
-func (receiver *WafHostGuardService) GetStatistics() HostGuardStatistics {
+func (receiver *WafHostGuardService) GetStatistics(ctx context.Context) HostGuardStatistics {
 	st := HostGuardStatistics{Status: wafhostguard.GetStatus()}
 
 	if global.GWAF_LOCAL_DB != nil {
-		global.GWAF_LOCAL_DB.Model(&model.HostGuardBan{}).
+		global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HostGuardBan{}).
 			Where(dialect.Q("status")+" = ?", model.HostBanStatusActive).Count(&st.ActiveBans)
-		global.GWAF_LOCAL_DB.Model(&model.HostGuardBan{}).
+		global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HostGuardBan{}).
 			Where(dialect.Q("status")+" = ? AND expire_time = 0", model.HostBanStatusActive).Count(&st.PermanentBans)
-		global.GWAF_LOCAL_DB.Model(&model.HostGuardBan{}).Count(&st.TotalBans)
+		global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HostGuardBan{}).Count(&st.TotalBans)
 		global.GWAF_LOCAL_DB.Model(&model.HostGuardOffender{}).Count(&st.OffenderCount)
 
 		var offenders []model.HostGuardOffender
@@ -510,9 +513,11 @@ func (receiver *WafHostGuardService) AddToWhitelist(ip string) error {
 
 	// 已经封着的要立刻放出来
 	var bans []model.HostGuardBan
-	global.GWAF_LOCAL_DB.Where("ip = ? AND "+dialect.Q("status")+" = ?", ip, model.HostBanStatusActive).Find(&bans)
+	// 服务器级白名单的巡检语义：跨租户找出该 IP 的生效封禁并解封（PlatformScope）
+	pctx := wafctx.PlatformScope(context.Background())
+	global.GWAF_LOCAL_DB.WithContext(pctx).Where("ip = ? AND "+dialect.Q("status")+" = ?", ip, model.HostBanStatusActive).Find(&bans)
 	for _, b := range bans {
-		if err := receiver.ReleaseBan(b.Id); err != nil {
+		if err := receiver.ReleaseBan(pctx, b.Id); err != nil {
 			zlog.Warn("[主机登录防护] 加白名单后解封失败", "ip", ip, "error", err.Error())
 		}
 	}

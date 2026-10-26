@@ -8,6 +8,7 @@ import (
 	"SamWaf/innerbean"
 	"SamWaf/model"
 	req "SamWaf/model/request"
+	"context"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func runPayloadCases(t *testing.T, logdb *gorm.DB) {
 			Day:         20260918,
 		}).Error)
 
-		got, err := WafLogServiceApp.GetDetailApi(req.WafAttackLogDetailReq{REQ_UUID: uid})
+		got, err := WafLogServiceApp.GetDetailApi(context.Background(), req.WafAttackLogDetailReq{REQ_UUID: uid})
 		fatalIf(t, err)
 		if got.BODY != "user=admin&pwd=1" {
 			t.Fatalf("BODY 没从报文表补回来: %q", got.BODY)
@@ -80,7 +81,7 @@ func runPayloadCases(t *testing.T, logdb *gorm.DB) {
 			COOKIES:       "legacy-cookie",
 		}).Error)
 
-		got, err := WafLogServiceApp.GetDetailApi(req.WafAttackLogDetailReq{REQ_UUID: uid})
+		got, err := WafLogServiceApp.GetDetailApi(context.Background(), req.WafAttackLogDetailReq{REQ_UUID: uid})
 		fatalIf(t, err)
 		if got.BODY != "legacy-body" || got.RES_BODY != "legacy-res" || got.COOKIES != "legacy-cookie" {
 			t.Fatalf("存量行的报文被抹掉了: %+v", got)

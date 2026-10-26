@@ -1,10 +1,12 @@
 package waf_service
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/model/request"
 	response2 "SamWaf/model/response"
+	"context"
 	"strings"
 	"time"
 
@@ -83,8 +85,8 @@ func (receiver *WafAnalysisViewService) scoped(tx *gorm.DB, day int, hostCode st
 	return tx
 }
 
-// ActorListApi 行为视角：谁在打。
-func (receiver *WafAnalysisViewService) ActorListApi(req request.WafAnalysisActorReq) response2.WafAnalysisActorResp {
+// ActorListApi 行为视角：谁在打。查询按请求租户过滤（ctx 经 WithContext 交给租户回调）。
+func (receiver *WafAnalysisViewService) ActorListApi(ctx context.Context, req request.WafAnalysisActorReq) response2.WafAnalysisActorResp {
 	day := analysisDay(req.Day)
 	limit := analysisLimit(req.Limit, analysisDefaultLimit)
 	resp := response2.WafAnalysisActorResp{
@@ -93,33 +95,50 @@ func (receiver *WafAnalysisViewService) ActorListApi(req request.WafAnalysisActo
 		ScanThreshold: global.GDATA_ANALYSIS_SCAN_PATH_THRESHOLD,
 		UaThreshold:   global.GDATA_ANALYSIS_UA_THRESHOLD,
 	}
-	statsDB := global.GWAF_LOCAL_STATS_DB
-	if statsDB == nil {
+	if global.GWAF_LOCAL_STATS_DB == nil {
 		return resp
 	}
+	statsDB := global.GWAF_LOCAL_STATS_DB.WithContext(ctx)
 
+	// 标量计数也走 Find（Query 回调链）：Scan 走 Row 链会绕过租户过滤
+	var totalActorRow struct {
+		Cnt int64
+	}
 	receiver.scoped(statsDB.Model(&model.StatsActorPathDay{}), day, req.HostCode).
-		Select("count(distinct actor_key)").Scan(&resp.TotalActor)
+		Select("count(distinct actor_key) as cnt").Find(&totalActorRow)
+	resp.TotalActor = totalActorRow.Cnt
 
 	receiver.scoped(statsDB.Model(&model.StatsActorPathDay{}), day, req.HostCode).
 		Select("actor_key, sum(req_cnt) as req_cnt, sum(deny_cnt) as deny_cnt, " +
 			"sum(err4xx_cnt) as err4xx_cnt, count(distinct path_norm) as distinct_path").
 		Group("actor_key").
 		Order(analysisOrder(analysisActorSort, req.SortBy, "distinct_path")).
-		Limit(limit).Scan(&resp.List)
+		Limit(limit).Find(&resp.List)
 
 	receiver.fillUaCnt(statsDB, day, req.HostCode, resp.List)
 
 	// 两个「疑似」计数：达到阈值的来源有几个。子查询必须带别名，PostgreSQL 不接受匿名派生表。
+	// 外层 count(*) 的 FROM 是派生表（无 tenant_id 列），必须用平台作用域跑外层，
+	// 否则租户回调会给派生表追加 tenant_id 过滤直接报错（错误没接，计数会静默归零）；
+	// 租户隔离由内层子查询承担——子查询语句带模型与请求 ctx，回调照常追加过滤。
 	scanSub := receiver.scoped(statsDB.Model(&model.StatsActorPathDay{}), day, req.HostCode).
 		Select("actor_key").Group("actor_key").
 		Having("count(distinct path_norm) >= ?", global.GDATA_ANALYSIS_SCAN_PATH_THRESHOLD)
-	statsDB.Table("(?) as t", scanSub).Select("count(*)").Scan(&resp.ScanActor)
+	platformDB := global.GWAF_LOCAL_STATS_DB.WithContext(wafctx.PlatformScope(context.Background()))
+	var scanActorRow struct {
+		Cnt int64
+	}
+	platformDB.Table("(?) as t", scanSub).Select("count(*) as cnt").Find(&scanActorRow)
+	resp.ScanActor = scanActorRow.Cnt
 
 	uaSub := receiver.scoped(statsDB.Model(&model.StatsActorUaDay{}), day, req.HostCode).
 		Select("actor_key").Group("actor_key").
 		Having("count(*) >= ?", global.GDATA_ANALYSIS_UA_THRESHOLD)
-	statsDB.Table("(?) as t", uaSub).Select("count(*)").Scan(&resp.UaActor)
+	var uaActorRow struct {
+		Cnt int64
+	}
+	platformDB.Table("(?) as t", uaSub).Select("count(*) as cnt").Find(&uaActorRow)
+	resp.UaActor = uaActorRow.Cnt
 
 	return resp
 }
@@ -141,7 +160,7 @@ func (receiver *WafAnalysisViewService) fillUaCnt(statsDB *gorm.DB, day int, hos
 	}
 	receiver.scoped(statsDB.Model(&model.StatsActorUaDay{}), day, hostCode).
 		Where("actor_key in ?", keys).
-		Select("actor_key, count(*) as cnt").Group("actor_key").Scan(&uaRows)
+		Select("actor_key, count(*) as cnt").Group("actor_key").Find(&uaRows)
 
 	m := make(map[string]int64, len(uaRows))
 	for _, u := range uaRows {
@@ -152,25 +171,29 @@ func (receiver *WafAnalysisViewService) fillUaCnt(statsDB *gorm.DB, day int, hos
 	}
 }
 
-// PathListApi 目标视角：打哪里。
-func (receiver *WafAnalysisViewService) PathListApi(req request.WafAnalysisPathReq) response2.WafAnalysisPathResp {
+// PathListApi 目标视角：打哪里。查询按请求租户过滤。
+func (receiver *WafAnalysisViewService) PathListApi(ctx context.Context, req request.WafAnalysisPathReq) response2.WafAnalysisPathResp {
 	day := analysisDay(req.Day)
 	limit := analysisLimit(req.Limit, analysisDefaultLimit)
 	resp := response2.WafAnalysisPathResp{Day: day, List: []response2.WafAnalysisPathRow{}}
-	statsDB := global.GWAF_LOCAL_STATS_DB
-	if statsDB == nil {
+	if global.GWAF_LOCAL_STATS_DB == nil {
 		return resp
 	}
+	statsDB := global.GWAF_LOCAL_STATS_DB.WithContext(ctx)
 
+	var totalPathRow struct {
+		Cnt int64
+	}
 	receiver.scoped(statsDB.Model(&model.StatsActorPathDay{}), day, req.HostCode).
-		Select("count(distinct path_norm)").Scan(&resp.TotalPath)
+		Select("count(distinct path_norm) as cnt").Find(&totalPathRow)
+	resp.TotalPath = totalPathRow.Cnt
 
 	receiver.scoped(statsDB.Model(&model.StatsActorPathDay{}), day, req.HostCode).
 		Select("path_norm, sum(req_cnt) as req_cnt, sum(deny_cnt) as deny_cnt, " +
 			"sum(err4xx_cnt) as err4xx_cnt, count(distinct actor_key) as distinct_actor").
 		Group("path_norm").
 		Order(analysisOrder(analysisPathSort, req.SortBy, "req_cnt")).
-		Limit(limit).Scan(&resp.List)
+		Limit(limit).Find(&resp.List)
 
 	receiver.fillTopRule(statsDB, day, req.HostCode, resp.List)
 	return resp
@@ -193,7 +216,7 @@ func (receiver *WafAnalysisViewService) fillTopRule(statsDB *gorm.DB, day int, h
 	}
 	receiver.scoped(statsDB.Model(&model.StatsPathRuleDay{}), day, hostCode).
 		Where("path_norm in ?", paths).
-		Select("path_norm, rule, sum(cnt) as cnt").Group("path_norm, rule").Scan(&ruleRows)
+		Select("path_norm, rule, sum(cnt) as cnt").Group("path_norm, rule").Find(&ruleRows)
 
 	type best struct {
 		rule string
@@ -213,15 +236,16 @@ func (receiver *WafAnalysisViewService) fillTopRule(statsDB *gorm.DB, day int, h
 }
 
 // DetailApi 抽屉下钻。Kind=actor 看这个来源摸过什么、用过什么 UA、打过哪些站点；
-// Kind=path 看这个路径被谁打、命中过哪些规则。
-func (receiver *WafAnalysisViewService) DetailApi(req request.WafAnalysisDetailReq) response2.WafAnalysisDetailResp {
+// Kind=path 看这个路径被谁打、命中过哪些规则。查询按请求租户过滤，
+// 跨租户拿别人的 key 也只会查到空结果（fail-closed）。
+func (receiver *WafAnalysisViewService) DetailApi(ctx context.Context, req request.WafAnalysisDetailReq) response2.WafAnalysisDetailResp {
 	day := analysisDay(req.Day)
 	limit := analysisLimit(req.Limit, analysisDetailLimit)
 	resp := response2.WafAnalysisDetailResp{Kind: req.Kind, Key: req.Key}
-	statsDB := global.GWAF_LOCAL_STATS_DB
-	if statsDB == nil || strings.TrimSpace(req.Key) == "" {
+	if global.GWAF_LOCAL_STATS_DB == nil || strings.TrimSpace(req.Key) == "" {
 		return resp
 	}
+	statsDB := global.GWAF_LOCAL_STATS_DB.WithContext(ctx)
 
 	var totals struct {
 		ReqCnt    int64
@@ -235,16 +259,16 @@ func (receiver *WafAnalysisViewService) DetailApi(req request.WafAnalysisDetailR
 		receiver.scoped(statsDB.Model(&model.StatsActorPathDay{}), day, req.HostCode).
 			Where("path_norm = ?", req.Key).
 			Select("sum(req_cnt) as req_cnt, sum(deny_cnt) as deny_cnt, sum(err4xx_cnt) as err4xx_cnt").
-			Scan(&totals)
+			Find(&totals)
 
 		receiver.scoped(statsDB.Model(&model.StatsActorPathDay{}), day, req.HostCode).
 			Where("path_norm = ?", req.Key).
 			Select("actor_key, sum(req_cnt) as req_cnt, sum(deny_cnt) as deny_cnt, sum(err4xx_cnt) as err4xx_cnt").
-			Group("actor_key").Order("req_cnt desc").Limit(limit).Scan(&resp.Actors)
+			Group("actor_key").Order("req_cnt desc").Limit(limit).Find(&resp.Actors)
 
 		receiver.scoped(statsDB.Model(&model.StatsPathRuleDay{}), day, req.HostCode).
 			Where("path_norm = ?", req.Key).
-			Select("rule, sum(cnt) as cnt").Group("rule").Order("cnt desc").Limit(limit).Scan(&resp.Rules)
+			Select("rule, sum(cnt) as cnt").Group("rule").Order("cnt desc").Limit(limit).Find(&resp.Rules)
 	} else {
 		resp.Kind = "actor"
 		resp.Paths = []response2.WafAnalysisDetailPath{}
@@ -254,22 +278,22 @@ func (receiver *WafAnalysisViewService) DetailApi(req request.WafAnalysisDetailR
 		receiver.scoped(statsDB.Model(&model.StatsActorPathDay{}), day, req.HostCode).
 			Where("actor_key = ?", req.Key).
 			Select("sum(req_cnt) as req_cnt, sum(deny_cnt) as deny_cnt, sum(err4xx_cnt) as err4xx_cnt").
-			Scan(&totals)
+			Find(&totals)
 
 		receiver.scoped(statsDB.Model(&model.StatsActorPathDay{}), day, req.HostCode).
 			Where("actor_key = ?", req.Key).
 			Select("path_norm, sum(req_cnt) as req_cnt, sum(deny_cnt) as deny_cnt, sum(err4xx_cnt) as err4xx_cnt").
-			Group("path_norm").Order("req_cnt desc").Limit(limit).Scan(&resp.Paths)
+			Group("path_norm").Order("req_cnt desc").Limit(limit).Find(&resp.Paths)
 
 		receiver.scoped(statsDB.Model(&model.StatsActorUaDay{}), day, req.HostCode).
 			Where("actor_key = ?", req.Key).
-			Select("ua_hash, sum(cnt) as cnt").Group("ua_hash").Order("cnt desc").Limit(limit).Scan(&resp.Uas)
+			Select("ua_hash, sum(cnt) as cnt").Group("ua_hash").Order("cnt desc").Limit(limit).Find(&resp.Uas)
 
 		// 站点维度：加黑/加白的 host_code 是必填，界面靠它给用户选，别在前端瞎猜
 		receiver.scoped(statsDB.Model(&model.StatsActorPathDay{}), day, req.HostCode).
 			Where("actor_key = ?", req.Key).
 			Select("host_code, sum(req_cnt) as req_cnt, sum(deny_cnt) as deny_cnt").
-			Group("host_code").Order("req_cnt desc").Limit(limit).Scan(&resp.Hosts)
+			Group("host_code").Order("req_cnt desc").Limit(limit).Find(&resp.Hosts)
 	}
 	resp.ReqCnt, resp.DenyCnt, resp.Err4xxCnt = totals.ReqCnt, totals.DenyCnt, totals.Err4xxCnt
 	return resp

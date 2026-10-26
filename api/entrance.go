@@ -140,7 +140,7 @@ var (
 
 	wafSslExpireService = waf_service.WafSslExpireServiceApp
 
-	wafHttpAuthBaseService = waf_service.WafHttpAuthBaseServiceApp
+	wafHttpAuthBaseService    = waf_service.WafHttpAuthBaseServiceApp
 	wafHttpAuthSessionService = waf_service.WafHttpAuthSessionServiceApp
 
 	wafTaskService = waf_service.WafTaskServiceApp
@@ -149,7 +149,7 @@ var (
 
 	wafOtpService = waf_service.WafOtpServiceApp
 
-	wafAnalysisService = waf_service.WafAnalysisServiceApp
+	wafAnalysisService     = waf_service.WafAnalysisServiceApp
 	wafAnalysisViewService = waf_service.WafAnalysisViewServiceApp
 
 	wafAIService      = waf_service.WafAIServiceApp

@@ -311,11 +311,18 @@ func InitStatsDb(currentDir string) (bool, error) {
 
 // RegisterTenantScopeCallbacks 把租户过滤/盖章回调注册到指定 gorm 实例上。
 // 生产侧三种数据库初始化流程与本包/上层测试共用此入口，保证过滤行为单一来源。
-// 覆盖四类语句：查询按请求租户过滤（无 ctx 回退全局）；更新/删除仅在语句
+// 覆盖五类语句：查询按请求租户过滤（无 ctx 回退全局）；更新/删除仅在语句
 // 显式携带请求租户上下文时过滤（平台维护任务无 ctx，保持全量可达）；
 // 新增按租户盖章（见 before_create）。
+//
+// Row 链补注册（2026-10 审计收口）：GORM 的 Scan()/Row() 走 Row 回调链而非
+// Query 链（finisher_api.go: Scan→Rows→callbacks.Row()），只注册 before_query 时
+// 所有 Scan 系查询静默绕过租户过滤——本仓库多处统计/聚合读取用 Scan 落盘。
+// 同一个 before_query 挂到 Row 链后语义与 Find 完全一致（语句无租户列/平台
+// 豁免模型/PlatformScope 时按既有规则跳过，Raw().Scan 无 schema 同样跳过）。
 func RegisterTenantScopeCallbacks(db *gorm.DB) {
 	db.Callback().Query().Before("gorm:query").Register("tenant_plugin:before_query", before_query)
+	db.Callback().Row().Before("gorm:row").Register("tenant_plugin:before_row", before_query)
 	db.Callback().Update().Before("gorm:update").Register("tenant_plugin:update_scope", before_update)
 	db.Callback().Delete().Before("gorm:delete").Register("tenant_plugin:delete_scope", before_delete)
 	db.Callback().Create().Before("gorm:create").Register("tenant_plugin:create_scope", before_create)

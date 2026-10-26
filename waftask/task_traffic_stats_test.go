@@ -103,3 +103,23 @@ func TestFlushTrafficStats_KeepsDataWhileSwitchingDB(t *testing.T) {
 	}
 	global.DrainTraffic()
 }
+
+// 站点归属解析失败（核心库不可用）时：跳过本轮、不取走增量，绝不带空归属落库
+func TestFlushTrafficStats_KeepsDataWhenOwnerUnresolvable(t *testing.T) {
+	global.DrainTraffic()
+	oldStats, oldCore := global.GWAF_LOCAL_STATS_DB, global.GWAF_LOCAL_DB
+	global.GWAF_LOCAL_STATS_DB = &gorm.DB{}
+	global.GWAF_LOCAL_DB = nil // 归属解析必然失败
+	defer func() {
+		global.GWAF_LOCAL_STATS_DB = oldStats
+		global.GWAF_LOCAL_DB = oldCore
+	}()
+
+	global.AddTraffic("h1", "a.com", 20260818, 1000, 5, 5)
+	FlushTrafficStats()
+
+	if n := global.PendingTrafficBuckets(); n != 1 {
+		t.Fatalf("归属解析失败时应保留增量，实际待落库桶数 = %d", n)
+	}
+	global.DrainTraffic()
+}

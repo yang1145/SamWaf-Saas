@@ -17,6 +17,7 @@ import (
 	"SamWaf/wafdb"
 	"SamWaf/wafdb/dialect"
 	"SamWaf/wafdb/partition"
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -109,12 +110,12 @@ func runSQLiteArchiveCases(t *testing.T, core, logdb *gorm.DB) {
 	}
 
 	t.Run("被污染的归档按 web_logs 读", func(t *testing.T) {
-		rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(req(polluted, "access"))
+		rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req(polluted, "access"))
 		fatalIf(t, err)
 		if total != 3 || len(rows) != 3 {
 			t.Fatalf("访问日志视图应读到 3 行，实际 total=%d rows=%d", total, len(rows))
 		}
-		_, total, _, err = WafLogServiceApp.GetListApiWithMeta(req(polluted, "event"))
+		_, total, _, err = WafLogServiceApp.GetListApiWithMeta(context.Background(), req(polluted, "event"))
 		fatalIf(t, err)
 		if total != 1 {
 			t.Fatalf("安全事件视图应读到 1 行拦截，实际 %d", total)
@@ -122,7 +123,7 @@ func runSQLiteArchiveCases(t *testing.T, core, logdb *gorm.DB) {
 	})
 
 	t.Run("自动扇出跳过缺失分区并标出", func(t *testing.T) {
-		rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(req(AutoShard, "access"))
+		rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req(AutoShard, "access"))
 		fatalIf(t, err)
 		if total != 3 || len(rows) != 3 {
 			t.Fatalf("应只读到被污染归档里的 3 行，实际 total=%d rows=%d", total, len(rows))
@@ -142,7 +143,7 @@ func runSQLiteArchiveCases(t *testing.T, core, logdb *gorm.DB) {
 	})
 
 	t.Run("明确选中缺失分区给出说明", func(t *testing.T) {
-		_, _, meta, err := WafLogServiceApp.GetListApiWithMeta(req(missing, "access"))
+		_, _, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req(missing, "access"))
 		if err == nil || !strings.Contains(err.Error(), "已不存在") {
 			t.Fatalf("应报存储已不存在，实际 %v", err)
 		}

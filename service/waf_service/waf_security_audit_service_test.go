@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -89,7 +90,7 @@ func TestSecurityAudit_GetListFilterByCategory(t *testing.T) {
 	WafSecurityAuditServiceApp.Write(AuditEntry{Event: model.AuditEventConfigSSLExportWrite, Country: "本地", City: "本地"})
 
 	// 只要 config 类
-	list, total, err := WafSecurityAuditServiceApp.GetListApi(request.WafAccessAuditSearchReq{
+	list, total, err := WafSecurityAuditServiceApp.GetListApi(context.Background(), request.WafAccessAuditSearchReq{
 		Category: model.AuditCategoryConfig, PageInfo: commonreq.PageInfo{PageIndex: 1, PageSize: 10},
 	})
 	if err != nil {
@@ -100,7 +101,7 @@ func TestSecurityAudit_GetListFilterByCategory(t *testing.T) {
 	}
 
 	// 不带分类 = 全部
-	_, totalAll, _ := WafSecurityAuditServiceApp.GetListApi(request.WafAccessAuditSearchReq{PageInfo: commonreq.PageInfo{PageIndex: 1, PageSize: 10}})
+	_, totalAll, _ := WafSecurityAuditServiceApp.GetListApi(context.Background(), request.WafAccessAuditSearchReq{PageInfo: commonreq.PageInfo{PageIndex: 1, PageSize: 10}})
 	if totalAll != 3 {
 		t.Fatalf("不带分类应返回全部 3 条，实际 %d", totalAll)
 	}

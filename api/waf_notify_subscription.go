@@ -27,9 +27,9 @@ func (w *WafNotifySubscriptionApi) AddApi(c *gin.Context) {
 	var req request.WafNotifySubscriptionAddReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		err = wafNotifySubscriptionService.CheckIsExistApi(req)
+		err = wafNotifySubscriptionService.CheckIsExistApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-			err = wafNotifySubscriptionService.AddApi(req)
+			err = wafNotifySubscriptionService.AddApi(c.Request.Context(), req)
 			if err == nil {
 				response.OkWithMessage("添加成功", c)
 			} else {
@@ -50,7 +50,7 @@ func (w *WafNotifySubscriptionApi) GetDetailApi(c *gin.Context) {
 	var req request.WafNotifySubscriptionDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafNotifySubscriptionService.GetDetailApi(req)
+		bean := wafNotifySubscriptionService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -71,7 +71,7 @@ func (w *WafNotifySubscriptionApi) GetListApi(c *gin.Context) {
 	var req request.WafNotifySubscriptionSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		beans, total, _ := wafNotifySubscriptionService.GetListApi(req)
+		beans, total, _ := wafNotifySubscriptionService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      beans,
 			Total:     total,
@@ -97,7 +97,7 @@ func (w *WafNotifySubscriptionApi) DelApi(c *gin.Context) {
 	var req request.WafNotifySubscriptionDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafNotifySubscriptionService.DelApi(req)
+		err = wafNotifySubscriptionService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -115,7 +115,7 @@ func (w *WafNotifySubscriptionApi) ModifyApi(c *gin.Context) {
 	var req request.WafNotifySubscriptionEditReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		err = wafNotifySubscriptionService.ModifyApi(req)
+		err = wafNotifySubscriptionService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误", c)
 		} else {

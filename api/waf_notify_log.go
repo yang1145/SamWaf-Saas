@@ -27,7 +27,7 @@ func (w *WafNotifyLogApi) GetListApi(c *gin.Context) {
 	var req request.WafNotifyLogSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		beans, total, _ := wafNotifyLogService.GetListApi(req)
+		beans, total, _ := wafNotifyLogService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      beans,
 			Total:     total,
@@ -53,7 +53,7 @@ func (w *WafNotifyLogApi) GetDetailApi(c *gin.Context) {
 	var req request.WafNotifyLogDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafNotifyLogService.GetDetailApi(req)
+		bean := wafNotifyLogService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -74,7 +74,7 @@ func (w *WafNotifyLogApi) DelApi(c *gin.Context) {
 	var req request.WafNotifyLogDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafNotifyLogService.DelApi(req)
+		err = wafNotifyLogService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {

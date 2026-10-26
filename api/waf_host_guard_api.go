@@ -67,7 +67,7 @@ func (w *WafHostGuardApi) GetStatusApi(c *gin.Context) {
 // @Security     ApiKeyAuth
 // @Router       /hostguard/statistics [get]
 func (w *WafHostGuardApi) GetStatisticsApi(c *gin.Context) {
-	response.OkWithDetailed(wafHostGuardService.GetStatistics(), "获取成功", c)
+	response.OkWithDetailed(wafHostGuardService.GetStatistics(c.Request.Context()), "获取成功", c)
 }
 
 // GetEventListApi 登录失败事件列表
@@ -87,7 +87,7 @@ func (w *WafHostGuardApi) GetEventListApi(c *gin.Context) {
 	}
 	normalizeHostGuardPage(&req.PageIndex, &req.PageSize)
 
-	list, total, err := wafHostGuardService.GetEventList(req)
+	list, total, err := wafHostGuardService.GetEventList(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("查询失败: "+err.Error(), c)
 		return
@@ -117,7 +117,7 @@ func (w *WafHostGuardApi) GetBanListApi(c *gin.Context) {
 	}
 	normalizeHostGuardPage(&req.PageIndex, &req.PageSize)
 
-	list, total, err := wafHostGuardService.GetBanList(req)
+	list, total, err := wafHostGuardService.GetBanList(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("查询失败: "+err.Error(), c)
 		return
@@ -149,7 +149,7 @@ func (w *WafHostGuardApi) ReleaseBanApi(c *gin.Context) {
 		response.FailWithMessage("参数错误：ID不能为空", c)
 		return
 	}
-	if err := wafHostGuardService.ReleaseBan(req.Id); err != nil {
+	if err := wafHostGuardService.ReleaseBan(c.Request.Context(), req.Id); err != nil {
 		response.FailWithMessage("解封失败: "+err.Error(), c)
 		return
 	}
@@ -175,7 +175,7 @@ func (w *WafHostGuardApi) PromoteBanApi(c *gin.Context) {
 		response.FailWithMessage("参数错误：ID不能为空", c)
 		return
 	}
-	if err := wafHostGuardService.PromoteToPermanent(req.Id); err != nil {
+	if err := wafHostGuardService.PromoteToPermanent(c.Request.Context(), req.Id); err != nil {
 		response.FailWithMessage("操作失败: "+err.Error(), c)
 		return
 	}
@@ -229,7 +229,7 @@ func (w *WafHostGuardApi) GetOffenderListApi(c *gin.Context) {
 	}
 	normalizeHostGuardPage(&req.PageIndex, &req.PageSize)
 
-	list, total, err := wafHostGuardService.GetOffenderList(req)
+	list, total, err := wafHostGuardService.GetOffenderList(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage("查询失败: "+err.Error(), c)
 		return
@@ -262,7 +262,7 @@ func (w *WafHostGuardApi) ResetOffenderApi(c *gin.Context) {
 		response.FailWithMessage("参数错误：ID不能为空", c)
 		return
 	}
-	if err := wafHostGuardService.ResetOffender(req.Id); err != nil {
+	if err := wafHostGuardService.ResetOffender(c.Request.Context(), req.Id); err != nil {
 		response.FailWithMessage("重置失败: "+err.Error(), c)
 		return
 	}
@@ -288,7 +288,7 @@ func (w *WafHostGuardApi) DelOffenderApi(c *gin.Context) {
 		response.FailWithMessage("参数错误：ID不能为空", c)
 		return
 	}
-	if err := wafHostGuardService.DeleteOffender(req.Id); err != nil {
+	if err := wafHostGuardService.DeleteOffender(c.Request.Context(), req.Id); err != nil {
 		response.FailWithMessage("删除失败: "+err.Error(), c)
 		return
 	}
@@ -303,7 +303,7 @@ func (w *WafHostGuardApi) DelOffenderApi(c *gin.Context) {
 // @Security     ApiKeyAuth
 // @Router       /hostguard/ladder/list [get]
 func (w *WafHostGuardApi) GetLadderApi(c *gin.Context) {
-	list, err := wafHostGuardService.GetLadders()
+	list, err := wafHostGuardService.GetLadders(c.Request.Context())
 	if err != nil {
 		response.FailWithMessage("查询失败: "+err.Error(), c)
 		return
@@ -327,7 +327,7 @@ func (w *WafHostGuardApi) SaveLadderApi(c *gin.Context) {
 		response.FailWithMessage("解析失败: "+err.Error(), c)
 		return
 	}
-	if err := wafHostGuardService.SaveLadders(req); err != nil {
+	if err := wafHostGuardService.SaveLadders(c.Request.Context(), req); err != nil {
 		response.FailWithMessage("保存失败: "+err.Error(), c)
 		return
 	}

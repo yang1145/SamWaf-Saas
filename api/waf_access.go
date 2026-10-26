@@ -404,7 +404,7 @@ func (w *WafAccessAuditApi) GetListApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	list, total, err := wafAccessAuditService.GetListApi(req)
+	list, total, err := wafAccessAuditService.GetListApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(err.Error(), c)
 		return

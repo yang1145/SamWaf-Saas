@@ -1,6 +1,8 @@
 package waf_service
 
 import (
+	"context"
+
 	"SamWaf/common/zlog"
 	"SamWaf/innerbean"
 	"SamWaf/model"
@@ -11,9 +13,9 @@ import (
 // SQLite 默认最多 999 个绑定变量，留足余量。
 const payloadFetchChunk = 500
 
-// FillLivePayloads 给实时库查出来的日志补上报文列。
-func FillLivePayloads(rows []*innerbean.WebLog) {
-	FillShardPayloads("", rows)
+// FillLivePayloads 给实时库查出来的日志补上报文列（随调用方 ctx 按租户过滤报文行）。
+func FillLivePayloads(ctx context.Context, rows []*innerbean.WebLog) {
+	FillShardPayloads(ctx, "", rows)
 }
 
 // FillShardPayloads 按 req_uuid 把报文补回日志对象。
@@ -25,7 +27,7 @@ func FillLivePayloads(rows []*innerbean.WebLog) {
 //   - 新数据：找得到报文行，以它为准
 //   - 改造前的存量行：找不到报文行，保留 web_logs 原列里的报文
 //   - 改造前切出去的归档分片：整张报文表都不存在，直接返回，同样保留原列
-func FillShardPayloads(currentDbName string, rows []*innerbean.WebLog) {
+func FillShardPayloads(ctx context.Context, currentDbName string, rows []*innerbean.WebLog) {
 	if len(rows) == 0 {
 		return
 	}
@@ -55,7 +57,9 @@ func FillShardPayloads(currentDbName string, rows []*innerbean.WebLog) {
 			end = len(uuids)
 		}
 		var found []model.EventPayload
-		err := db.Table(payloadTable).
+		// Table() 通道同样被租户回调过滤（wafdb/tenant_bypass_channels_test.go 锚定），
+		// 带 ctx 才能把报文行限定在请求租户内
+		err := db.WithContext(ctx).Table(payloadTable).
 			Select("req_uuid", "header", "cookies", "body", "res_body", "post_form", "res_header", "truncated").
 			Where("req_uuid in ?", uuids[start:end]).Find(&found).Error
 		if err != nil {

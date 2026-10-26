@@ -9,6 +9,7 @@ import (
 	"SamWaf/model/request"
 	"SamWaf/wafdb"
 	"SamWaf/wafdb/dialect"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -119,7 +120,7 @@ func TestLogLookupUUIDIgnoresSelectedShardAndDate(t *testing.T) {
 			t.Run(selected+"/"+view, func(t *testing.T) {
 				req := base
 				req.CurrrentDbName, req.ViewType = selected, view
-				rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(req)
+				rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 				if err != nil || total != 1 || len(rows) != 1 || rows[0].REQ_UUID != narrow.ReqUUID || meta.FoundIn != archiveName || !meta.UuidLookup {
 					t.Fatalf("archive UUID lookup: total=%d rows=%+v meta=%+v err=%v", total, rows, meta, err)
 				}
@@ -147,7 +148,7 @@ func TestLogLookupUUIDIgnoresSelectedShardAndDate(t *testing.T) {
 			case "missing":
 				req.ReqUuid = "req_missing"
 			}
-			rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(req)
+			rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 			if err != nil || total != 0 || len(rows) != 0 || !meta.UuidLookup {
 				t.Fatalf("expected filtered empty lookup: total=%d rows=%+v meta=%+v err=%v", total, rows, meta, err)
 			}
@@ -155,7 +156,7 @@ func TestLogLookupUUIDIgnoresSelectedShardAndDate(t *testing.T) {
 	}
 	// 无识别码仍按显式分区、日期查询。
 	base.ReqUuid, base.CurrrentDbName = "   ", wafdb.LiveLogName()
-	rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(base)
+	rows, total, meta, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), base)
 	if err != nil || len(rows) != 0 || total != 0 || meta.UuidLookup || len(meta.Shards) != 1 {
 		t.Fatalf("ordinary selected query changed: total=%d meta=%+v err=%v", total, meta, err)
 	}
@@ -164,26 +165,26 @@ func TestLogLookupUUIDIgnoresSelectedShardAndDate(t *testing.T) {
 func TestLogDetailMissingAndReadError(t *testing.T) {
 	_, live, _ := setupLogLookupTest(t)
 	for _, id := range []string{"req_missing", "   "} {
-		got, err := WafLogServiceApp.GetDetailApi(request.WafAttackLogDetailReq{REQ_UUID: id, CurrrentDbName: wafdb.LiveLogName()})
+		got, err := WafLogServiceApp.GetDetailApi(context.Background(), request.WafAttackLogDetailReq{REQ_UUID: id, CurrrentDbName: wafdb.LiveLogName()})
 		if !errors.Is(err, ErrLogNotFound) || got.REQ_UUID != "" {
 			t.Fatalf("expected identifiable missing error: got=%+v err=%v", got, err)
 		}
 	}
-	if _, err := WafLogServiceApp.GetDetailApi(request.WafAttackLogDetailReq{REQ_UUID: "req_missing", CurrrentDbName: "local_log_199901.db"}); err == nil || errors.Is(err, ErrLogNotFound) {
+	if _, err := WafLogServiceApp.GetDetailApi(context.Background(), request.WafAttackLogDetailReq{REQ_UUID: "req_missing", CurrrentDbName: "local_log_199901.db"}); err == nil || errors.Is(err, ErrLogNotFound) {
 		t.Fatalf("missing shard must return storage error, got %v", err)
 	}
 	row := model.SecurityEvent{LogNarrow: model.LogNarrow{ReqUUID: "req_detail", TenantId: global.GWAF_TENANT_ID, UserCode: global.GWAF_USER_CODE}}
 	if err := live.Create(&row).Error; err != nil {
 		t.Fatal(err)
 	}
-	got, err := WafLogServiceApp.GetDetailApi(request.WafAttackLogDetailReq{REQ_UUID: " req_detail ", CurrrentDbName: wafdb.LiveLogName()})
+	got, err := WafLogServiceApp.GetDetailApi(context.Background(), request.WafAttackLogDetailReq{REQ_UUID: " req_detail ", CurrrentDbName: wafdb.LiveLogName()})
 	if err != nil || got.REQ_UUID != row.ReqUUID {
 		t.Fatalf("trimmed detail lookup: got=%+v err=%v", got, err)
 	}
 	if err := live.Callback().Query().Before("gorm:query").Register("test:read_error", func(db *gorm.DB) { db.AddError(errors.New("test read failure")) }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := WafLogServiceApp.GetDetailApi(request.WafAttackLogDetailReq{REQ_UUID: row.ReqUUID, CurrrentDbName: wafdb.LiveLogName()}); err == nil || errors.Is(err, ErrLogNotFound) {
+	if _, err := WafLogServiceApp.GetDetailApi(context.Background(), request.WafAttackLogDetailReq{REQ_UUID: row.ReqUUID, CurrrentDbName: wafdb.LiveLogName()}); err == nil || errors.Is(err, ErrLogNotFound) {
 		t.Fatalf("read failure must remain an error, got %v", err)
 	}
 }

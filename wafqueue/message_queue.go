@@ -59,17 +59,17 @@ func ProcessMessageDequeEngine() {
 				case innerbean.AccessMessageInfo:
 					handleAccessMessage(msg)
 				case innerbean.ExportResultMessageInfo:
-					//导出结果
-					sendToWebSocket("导出结果", msg.Msg, nil, "DOWNLOAD_LOG")
+					//导出结果（租户内操作产生，按租户路由；未携带租户时仅平台侧可见）
+					sendToWebSocket(msg.TenantId, "导出结果", msg.Msg, nil, "DOWNLOAD_LOG")
 				case innerbean.UpdateResultMessageInfo:
-					//升级结果
-					sendToWebSocket("升级结果", msg.Msg, nil, "Info")
+					//升级结果（节点级系统消息，全量广播）
+					sendToWebSocketGlobal("升级结果", msg.Msg, nil, "Info")
 				case innerbean.OpResultMessageInfo:
-					//操作实时结果
-					sendToWebSocket("信息通知", msg.Msg, nil, "Info")
+					//操作实时结果（按租户路由；未携带租户时仅平台侧可见）
+					sendToWebSocket(msg.TenantId, "信息通知", msg.Msg, nil, "Info")
 				case innerbean.SystemStatsData:
-					//系统统计数据
-					sendToWebSocket("系统统计信息", "", msg, "SystemStats")
+					//系统统计数据（节点级系统消息，全量广播）
+					sendToWebSocketGlobal("系统统计信息", "", msg, "SystemStats")
 				}
 
 			}
@@ -152,9 +152,9 @@ func handleRuleMessage(msg innerbean.RuleMessageInfo) {
 		zlog.Debug("通知关闭状态")
 	}
 
-	// 3. 发送到 WebSocket（实时推送，不走聚合）
+	// 3. 发送到 WebSocket（实时推送，不走聚合；按事件所属租户路由）
 	if msg.BaseMessageInfo.OperaType == "命中保护规则" {
-		sendToWebSocket("命中保护规则", msg.RuleInfo+msg.Ip, nil, "Info")
+		sendToWebSocket(msg.TenantId, "命中保护规则", msg.RuleInfo+msg.Ip, nil, "Info")
 	}
 }
 
@@ -170,8 +170,8 @@ func handleOperatorMessage(msg innerbean.OperatorMessageInfo) {
 	// 2. 保留原有的通知方式
 	utils.NotifyHelperApp.SendNoticeInfo(msg)
 
-	// 3. 发送到 WebSocket（实时推送）
-	sendToWebSocket(msg.OperaType, msg.OperaCnt, nil, "Info")
+	// 3. 发送到 WebSocket（实时推送，按操作者租户路由）
+	sendToWebSocket(msg.TenantId, msg.OperaType, msg.OperaCnt, nil, "Info")
 }
 
 // handleUserLoginMessage 处理用户登录消息
@@ -179,14 +179,14 @@ func handleUserLoginMessage(msg innerbean.UserLoginMessageInfo) {
 	// 1. 发送到新的通知订阅系统
 	waf_service.WafNotifySenderServiceApp.SendMessageInfo(msg)
 
-	// 2. 发送到 WebSocket
+	// 2. 发送到 WebSocket（按登录账号所属租户路由）
 	if msg.Abnormal {
 		wsContent := fmt.Sprintf("用户 %s 从 %s 登录，与上次(%s %s)来源不一致", msg.Username, msg.Ip, msg.LastIp, msg.LastLocation)
-		sendToWebSocket("登录来源变化", wsContent, nil, "Warning")
+		sendToWebSocket(msg.TenantId, "登录来源变化", wsContent, nil, "Warning")
 		return
 	}
 	wsContent := fmt.Sprintf("用户 %s 从 %s 登录", msg.Username, msg.Ip)
-	sendToWebSocket("用户登录", wsContent, nil, "Info")
+	sendToWebSocket(msg.TenantId, "用户登录", wsContent, nil, "Info")
 }
 
 // handleAttackInfoMessage 处理攻击信息消息
@@ -198,9 +198,9 @@ func handleAttackInfoMessage(msg innerbean.AttackInfoMessageInfo) {
 	// 1. 交给通知订阅系统
 	waf_service.WafNotifySenderServiceApp.SendMessageInfo(msg)
 
-	// 2. 发送到 WebSocket（实时推送）
+	// 2. 发送到 WebSocket（实时推送，按事件所属租户路由）
 	wsContent := fmt.Sprintf("检测到 %s 攻击，来源IP: %s", msg.AttackType, msg.Ip)
-	sendToWebSocket("攻击告警", wsContent, nil, "Info")
+	sendToWebSocket(msg.TenantId, "攻击告警", wsContent, nil, "Info")
 }
 
 // handleAccessMessage 处理统一访问认证事件（登录成功 / 安全异常）
@@ -212,7 +212,7 @@ func handleAccessMessage(msg innerbean.AccessMessageInfo) {
 	//    见 model.MSG_TYPE_ACCESS_LOGIN / MSG_TYPE_ACCESS_ABNORMAL 的注释
 	waf_service.WafNotifySenderServiceApp.SendMessageInfo(msg)
 
-	// 2. 发送到 WebSocket（管理端在线时实时弹出）
+	// 2. 发送到 WebSocket（管理端在线时实时弹出，按事件所属租户路由）
 	level := "Info"
 	if msg.Abnormal {
 		level = "Warning"
@@ -222,7 +222,7 @@ func handleAccessMessage(msg innerbean.AccessMessageInfo) {
 		who = "-"
 	}
 	wsContent := fmt.Sprintf("%s：账号 %s，来源 %s %s", msg.EventName, who, msg.Ip, msg.Location)
-	sendToWebSocket("统一访问认证", wsContent, nil, level)
+	sendToWebSocket(msg.TenantId, "统一访问认证", wsContent, nil, level)
 }
 
 // handleWeeklyReportMessage 处理周报消息
@@ -230,9 +230,9 @@ func handleWeeklyReportMessage(msg innerbean.WeeklyReportMessageInfo) {
 	// 1. 发送到新的通知订阅系统
 	waf_service.WafNotifySenderServiceApp.SendMessageInfo(msg)
 
-	// 2. 发送到 WebSocket
+	// 2. 发送到 WebSocket（按报告所属租户路由）
 	wsContent := fmt.Sprintf("周期: %s, 总请求: %d, 拦截: %d", msg.WeekRange, msg.TotalRequests, msg.BlockedRequests)
-	sendToWebSocket("WAF周报", wsContent, nil, "Info")
+	sendToWebSocket(msg.TenantId, "WAF周报", wsContent, nil, "Info")
 }
 
 // handleSSLExpireMessage 处理SSL证书过期消息
@@ -241,9 +241,9 @@ func handleSSLExpireMessage(msg innerbean.SSLExpireMessageInfo) {
 	// 1. 发送到新的通知订阅系统
 	waf_service.WafNotifySenderServiceApp.SendMessageInfo(msg)
 
-	// 2. 发送到 WebSocket
+	// 2. 发送到 WebSocket（按证书所属站点租户路由）
 	wsContent := fmt.Sprintf("域名 %s 的SSL证书将在 %d 天后过期", msg.Domain, msg.DaysLeft)
-	sendToWebSocket("SSL证书过期提醒", wsContent, nil, "Info")
+	sendToWebSocket(msg.TenantId, "SSL证书过期提醒", wsContent, nil, "Info")
 }
 
 // handleSystemErrorMessage 处理系统错误消息
@@ -251,9 +251,9 @@ func handleSystemErrorMessage(msg innerbean.SystemErrorMessageInfo) {
 	// 1. 发送到新的通知订阅系统
 	waf_service.WafNotifySenderServiceApp.SendMessageInfo(msg)
 
-	// 2. 发送到 WebSocket
+	// 2. 发送到 WebSocket（系统错误属于节点级事件，与具体租户无关，全量广播）
 	wsContent := fmt.Sprintf("系统错误: %s - %s", msg.ErrorType, msg.ErrorMsg)
-	sendToWebSocket("系统错误", wsContent, nil, "Info")
+	sendToWebSocketGlobal("系统错误", wsContent, nil, "Info")
 }
 
 // handleIPBanMessage 处理IP封禁消息
@@ -265,23 +265,26 @@ func handleIPBanMessage(msg innerbean.IPBanMessageInfo) {
 	// 1. 交给通知订阅系统
 	waf_service.WafNotifySenderServiceApp.SendMessageInfo(msg)
 
-	// 2. 发送到 WebSocket（实时推送）
+	// 2. 发送到 WebSocket（实时推送，按封禁事件所属租户路由）
 	wsContent := fmt.Sprintf("IP %s 已被封禁，原因: %s", msg.Ip, msg.Reason)
-	sendToWebSocket("IP封禁通知", wsContent, nil, "Info")
+	sendToWebSocket(msg.TenantId, "IP封禁通知", wsContent, nil, "Info")
 
 	// 3. 主机防爆破的封禁额外推一条带 HostGuard 命令字的消息，
 	//    让「远程防爆破」页面能即时刷新而不必等用户手动点。
 	//    单独用一个命令字而不是复用 Info：Info 是通用弹窗通知，
 	//    页面刷新逻辑挂上去会让所有通知都触发一次无谓的接口请求。
 	if strings.Contains(msg.OperaType, "主机远程登录爆破") {
-		sendToWebSocket("主机防爆破封禁", wsContent, msg, "HostGuard")
+		sendToWebSocket(msg.TenantId, "主机防爆破封禁", wsContent, msg, "HostGuard")
 	}
 }
 
-// sendToWebSocket 统一的 WebSocket 发送函数。
-// 写入必须走 global.GWebSocket.Broadcast：它按连接加锁串行化并带写超时，
+// sendToWebSocket 统一的 WebSocket 发送函数（按租户路由，失败关闭）。
+// 投递范围：tenantID 对应租户的连接 + 平台侧连接（平台管理员监管一切）。
+// tenantID 为空表示消息未携带租户信息：此时只投给平台侧连接，绝不投给租户连接——
+// 宁可少送不可错送，避免跨租户泄露引擎事件（规则命中/防篡改/CC 封禁等带主机与来源 IP 的告警）。
+// 写入必须走 global.GWebSocket 的广播出口：它按连接加锁串行化并带写超时，
 // 直接对裸连接 WriteMessage 会与 ping 回显、定时任务撞成 concurrent write panic。
-func sendToWebSocket(messageType, messageData string, messageAttach interface{}, cmdType string) {
+func sendToWebSocket(tenantID, messageType, messageData string, messageAttach interface{}, cmdType string) {
 	// 在线表尚未建好时直接丢弃：本协程可能早于初始化跑起来，对 nil 调方法会 panic。
 	// 正常启动顺序下不会走到这里，留着是防止将来调整启动顺序时再踩一次。
 	if global.GWebSocket == nil {
@@ -297,6 +300,31 @@ func sendToWebSocket(messageType, messageData string, messageAttach interface{},
 		MessageUnReadStatus: true,
 	}
 	// 按连接各自的会话密钥组装：v2 连接一份，旧连接回落 legacy
+	global.GWebSocket.BroadcastBuildToTenant(normalizeTenantID(tenantID), websocket.TextMessage, func(keyID string) ([]byte, error) {
+		msgBytes, err := wsmsg.Build(keyID, dataPacket, cmdType)
+		if err != nil {
+			zlog.Debug("组装websocket报文错误", err)
+		}
+		return msgBytes, err
+	})
+}
+
+// sendToWebSocketGlobal 全量广播（不区分租户）。
+// 仅限与具体租户无关的系统级消息（升级结果、系统统计等）；带租户属性的消息必须走 sendToWebSocket。
+func sendToWebSocketGlobal(messageType, messageData string, messageAttach interface{}, cmdType string) {
+	// 在线表尚未建好时直接丢弃，理由同 sendToWebSocket
+	if global.GWebSocket == nil {
+		zlog.Debug("WebSocket 在线表未就绪，跳过本条通知", messageType)
+		return
+	}
+	dataPacket := model.MsgDataPacket{
+		MessageId:           uuid.GenUUID(),
+		MessageType:         messageType,
+		MessageData:         messageData,
+		MessageAttach:       messageAttach,
+		MessageDateTime:     time.Now().Format("2006-01-02 15:04:05"),
+		MessageUnReadStatus: true,
+	}
 	global.GWebSocket.BroadcastBuild(websocket.TextMessage, func(keyID string) ([]byte, error) {
 		msgBytes, err := wsmsg.Build(keyID, dataPacket, cmdType)
 		if err != nil {
@@ -304,4 +332,14 @@ func sendToWebSocket(messageType, messageData string, messageAttach interface{},
 		}
 		return msgBytes, err
 	})
+}
+
+// normalizeTenantID 把平台租户 ID 归一化为空串：连接登记侧（api/waf_websocket.go）
+// 把平台租户按「平台侧连接」（空租户）登记，消息路由侧做同样的归一化，
+// 两边口径一致后，平台租户自己的事件正好只落到平台侧连接，租户连接一概收不到。
+func normalizeTenantID(tenantID string) string {
+	if tenantID == global.GWAF_TENANT_ID {
+		return ""
+	}
+	return tenantID
 }

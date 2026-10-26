@@ -9,6 +9,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/model/spec"
+	"context"
 	"fmt"
 	"time"
 )
@@ -16,8 +17,8 @@ import (
 // IPAllowProcessor 白名单IP处理器
 type IPAllowProcessor struct{}
 
-// ProcessBatch 处理一批IP
-func (p *IPAllowProcessor) ProcessBatch(items []string, task model.BatchTask, progress *BatchProgress) bool {
+// ProcessBatch 处理一批IP（ctx 携带任务归属租户，写入行落该租户名下）
+func (p *IPAllowProcessor) ProcessBatch(ctx context.Context, items []string, task model.BatchTask, progress *BatchProgress) bool {
 	if len(items) == 0 {
 		return false
 	}
@@ -26,25 +27,25 @@ func (p *IPAllowProcessor) ProcessBatch(items []string, task model.BatchTask, pr
 	zlog.Info(logName, fmt.Sprintf("处理白名单批次，包含 %d 个IP", len(items)))
 
 	// 获取已存在的记录
-	existMap := p.GetExistingItems(items, task, nil)
+	existMap := p.GetExistingItems(ctx, items, task, nil)
 
 	// 根据执行方法处理
 	if task.BatchExecuteMethod == enums.BATCHTASK_EXECUTEMETHODAPPEND {
-		return p.processAppendBatch(items, existMap, task, logName, progress)
+		return p.processAppendBatch(ctx, items, existMap, task, logName, progress)
 	} else if task.BatchExecuteMethod == enums.BATCHTASK_EXECUTEMETHODOVERWRITE {
-		return p.processOverwriteBatch(items, existMap, task, logName, progress)
+		return p.processOverwriteBatch(ctx, items, existMap, task, logName, progress)
 	}
 
 	return false
 }
 
-// GetExistingItems 获取已存在的IP记录
-func (p *IPAllowProcessor) GetExistingItems(items []string, task model.BatchTask, config interface{}) map[string]interface{} {
+// GetExistingItems 获取已存在的IP记录（按任务归属租户过滤，去重只对该租户的行）
+func (p *IPAllowProcessor) GetExistingItems(ctx context.Context, items []string, task model.BatchTask, config interface{}) map[string]interface{} {
 	existMap := make(map[string]interface{})
 	var existIPs []model.IPAllowList
 
 	// 使用IN查询一次性获取所有已存在的记录
-	global.GWAF_LOCAL_DB.Where("host_code = ? AND ip IN (?)", task.BatchHostCode, items).Find(&existIPs)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ? AND ip IN (?)", task.BatchHostCode, items).Find(&existIPs)
 
 	// 将已存在的IP放入map中，方便快速查找
 	for _, ip := range existIPs {
@@ -54,10 +55,10 @@ func (p *IPAllowProcessor) GetExistingItems(items []string, task model.BatchTask
 	return existMap
 }
 
-// NotifyEngine 通知引擎更新
-func (p *IPAllowProcessor) NotifyEngine(task model.BatchTask) {
+// NotifyEngine 通知引擎更新（站点表单内容也限定任务归属租户的行）
+func (p *IPAllowProcessor) NotifyEngine(ctx context.Context, task model.BatchTask) {
 	var ipWhites []model.IPAllowList
-	global.GWAF_LOCAL_DB.Where("host_code = ? and is_enable = 1", task.BatchHostCode).Find(&ipWhites)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("host_code = ? and is_enable = 1", task.BatchHostCode).Find(&ipWhites)
 	var chanInfo = spec.ChanCommonHost{
 		HostCode: task.BatchHostCode,
 		Type:     enums.ChanTypeAllowIP,
@@ -67,17 +68,16 @@ func (p *IPAllowProcessor) NotifyEngine(task model.BatchTask) {
 }
 
 // processAppendBatch 处理追加模式的批次
-func (p *IPAllowProcessor) processAppendBatch(items []string, existMap map[string]interface{}, task model.BatchTask, logName string, progress *BatchProgress) bool {
+func (p *IPAllowProcessor) processAppendBatch(ctx context.Context, items []string, existMap map[string]interface{}, task model.BatchTask, logName string, progress *BatchProgress) bool {
 	// 收集需要插入的记录
 	var toInsert []model.IPAllowList
 	for _, ip := range items {
 		// 如果IP不存在，则添加到待插入列表
 		if _, exists := existMap[ip]; !exists {
+			// 租户归属不手工写死：before_create 回调按 ctx（任务归属租户）盖章
 			toInsert = append(toInsert, model.IPAllowList{
 				BaseOrm: baseorm.BaseOrm{
 					Id:          uuid.GenUUID(),
-					USER_CODE:   global.GWAF_USER_CODE,
-					Tenant_ID:   global.GWAF_TENANT_ID,
 					CREATE_TIME: customtype.JsonTime(time.Now()),
 					UPDATE_TIME: customtype.JsonTime(time.Now()),
 				},
@@ -94,7 +94,7 @@ func (p *IPAllowProcessor) processAppendBatch(items []string, existMap map[strin
 
 	// 批量插入新记录
 	if len(toInsert) > 0 {
-		tx := global.GWAF_LOCAL_DB.Begin()
+		tx := global.GWAF_LOCAL_DB.WithContext(ctx).Begin()
 		if err := tx.Create(&toInsert).Error; err != nil {
 			tx.Rollback()
 			zlog.Error(logName, "批量插入白名单IP失败: "+err.Error())
@@ -112,7 +112,7 @@ func (p *IPAllowProcessor) processAppendBatch(items []string, existMap map[strin
 }
 
 // processOverwriteBatch 处理覆写模式的批次
-func (p *IPAllowProcessor) processOverwriteBatch(items []string, existMap map[string]interface{}, task model.BatchTask, logName string, progress *BatchProgress) bool {
+func (p *IPAllowProcessor) processOverwriteBatch(ctx context.Context, items []string, existMap map[string]interface{}, task model.BatchTask, logName string, progress *BatchProgress) bool {
 	// 收集需要插入和更新的记录
 	var toInsert []model.IPAllowList
 	var toUpdate []model.IPAllowList
@@ -125,12 +125,10 @@ func (p *IPAllowProcessor) processOverwriteBatch(items []string, existMap map[st
 			ipRecord.UPDATE_TIME = customtype.JsonTime(time.Now())
 			toUpdate = append(toUpdate, ipRecord)
 		} else {
-			// 不存在，需要插入
+			// 不存在，需要插入（租户归属由回调按 ctx 盖章）
 			toInsert = append(toInsert, model.IPAllowList{
 				BaseOrm: baseorm.BaseOrm{
 					Id:          uuid.GenUUID(),
-					USER_CODE:   global.GWAF_USER_CODE,
-					Tenant_ID:   global.GWAF_TENANT_ID,
 					CREATE_TIME: customtype.JsonTime(time.Now()),
 					UPDATE_TIME: customtype.JsonTime(time.Now()),
 				},
@@ -146,7 +144,7 @@ func (p *IPAllowProcessor) processOverwriteBatch(items []string, existMap map[st
 	}
 
 	// 开始事务
-	tx := global.GWAF_LOCAL_DB.Begin()
+	tx := global.GWAF_LOCAL_DB.WithContext(ctx).Begin()
 	hasChanges := false
 
 	// 批量插入新记录

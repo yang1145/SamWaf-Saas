@@ -5,6 +5,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/request"
 	"strconv"
+	"context"
 	"testing"
 )
 
@@ -22,7 +23,7 @@ func TestLogURLKeywordLiteralBoundaries(t *testing.T) {
 	for _, url := range urls {
 		req := request.WafAttackLogSearch{URLKeyword: url, UnixAddTimeBegin: "0", UnixAddTimeEnd: "10", SortBy: "unix_add_time"}
 		req.PageIndex, req.PageSize = 1, 10
-		rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(req)
+		rows, total, _, err := WafLogServiceApp.GetListApiWithMeta(context.Background(), req)
 		if err != nil || total != 1 || len(rows) != 1 || rows[0].URL != url {
 			t.Fatalf("literal keyword %q: total=%d len=%d err=%v", url, total, len(rows), err)
 		}

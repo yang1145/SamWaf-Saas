@@ -29,9 +29,9 @@ func (w *WafTaskApi) AddApi(c *gin.Context) {
 	var req request.WafTaskAddReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		cnt := wafTaskService.CheckIsExistApi(req)
+		cnt := wafTaskService.CheckIsExistApi(c.Request.Context(), req)
 		if cnt == 0 {
-			err = wafTaskService.AddApi(req)
+			err = wafTaskService.AddApi(c.Request.Context(), req)
 			if err == nil {
 				response.OkWithMessage("添加成功", c)
 			} else {
@@ -59,7 +59,7 @@ func (w *WafTaskApi) GetDetailApi(c *gin.Context) {
 	var req request.WafTaskDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafTaskService.GetDetailApi(req)
+		bean := wafTaskService.GetDetailApi(c.Request.Context(), req)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
 		response.FailWithMessage("解析失败", c)
@@ -80,7 +80,7 @@ func (w *WafTaskApi) GetListApi(c *gin.Context) {
 	var req request.WafTaskSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		Task, total, _ := wafTaskService.GetListApi(req)
+		Task, total, _ := wafTaskService.GetListApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      Task,
 			Total:     total,
@@ -106,7 +106,7 @@ func (w *WafTaskApi) DelApi(c *gin.Context) {
 	var req request.WafTaskDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafTaskService.DelApi(req)
+		err = wafTaskService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -134,14 +134,14 @@ func (w *WafTaskApi) ModifyApi(c *gin.Context) {
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
 		// 更新数据库中的任务
-		err = wafTaskService.ModifyApi(req)
+		err = wafTaskService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误"+err.Error(), c)
 			return
 		}
 
 		// 获取更新后的任务信息
-		newTask := wafTaskService.GetDetailByIdApi(req.Id)
+		newTask := wafTaskService.GetDetailByIdApi(c.Request.Context(), req.Id)
 
 		// 通过channel通知调度器重新加载任务
 		// 使用新任务的配置进行重新调度
@@ -167,7 +167,7 @@ func (w *WafTaskApi) ManualExecuteApi(c *gin.Context) {
 	var req request.WafTaskDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafTaskService.GetDetailApi(req)
+		bean := wafTaskService.GetDetailApi(c.Request.Context(), req)
 		if bean.Id == "" {
 			response.FailWithMessage("记录为空", c)
 		} else {

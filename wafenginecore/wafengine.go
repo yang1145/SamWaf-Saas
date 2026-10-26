@@ -1541,8 +1541,10 @@ func (waf *WafEngine) StartWaf() {
 
 // ensureGlobalHost 确保全局保护主机存在（首次启动时创建）。
 func (waf *WafEngine) ensureGlobalHost() {
+	// 启动期/引擎路径：平台作用域，跨租户判定全局主机是否已存在，
+	// 否则租户过滤回退全局常量后会把其他租户库里的全局主机误判为"不存在"
 	var hosts []model.Hosts
-	global.GWAF_LOCAL_DB.Where("global_host = ?", 1).Find(&hosts)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("global_host = ?", 1).Find(&hosts)
 	if len(hosts) != 0 {
 		return
 	}
@@ -1571,7 +1573,8 @@ func (waf *WafEngine) ensureGlobalHost() {
 		BindSslId:        "",
 		AutoJumpHTTPS:    0,
 	}
-	global.GWAF_LOCAL_DB.Create(wafGlobalHost)
+	// 创建同样走平台作用域：before_create 跳过盖章，保留上面显式写入的平台租户标识
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Create(wafGlobalHost)
 }
 
 // ReloadAllHostZeroGap 零空档重载全部主机配置（"重启引擎"用，替代 CloseWaf+StartWaf）。
@@ -1595,9 +1598,10 @@ func (waf *WafEngine) ReloadAllHostZeroGap() {
 		}
 	}
 
-	// 从 DB 重载每个 host（LoadHost 原子替换，无空档）
+	// 从 DB 重载每个 host（LoadHost 原子替换，无空档）；引擎数据面：平台作用域覆盖全部租户，
+	// 否则租户过滤回退全局常量后只有平台租户的站点会被重载
 	var dbHosts []model.Hosts
-	global.GWAF_LOCAL_DB.Find(&dbHosts)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Find(&dbHosts)
 	newCodes := make(map[string]bool, len(dbHosts))
 	for i := range dbHosts {
 		newCodes[dbHosts[i].Code] = true
@@ -1671,8 +1675,10 @@ func (waf *WafEngine) CloseWaf() {
 
 // 清除代理
 func (waf *WafEngine) ClearProxy(hostCode string) {
+	// 配置变更热重载路径：平台作用域，hostCode 跨租户唯一定位后端列表，
+	// 否则租户过滤回退全局常量后租户站点的负载均衡会被误清空
 	var list []model.LoadBalance
-	global.GWAF_LOCAL_DB.Where("host_code = ? ", hostCode).Find(&list)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code = ? ", hostCode).Find(&list)
 	// 字段级热更新(copy-on-write)：换 LoadBalanceLists；LoadBalanceRuntime 是共享可变子对象，
 	// 在其自身 Mux 下清空，触发下次请求按新后端懒重建(见 proxy.go)。
 	waf.UpdateHost(hostCode, func(h *wafenginmodel.HostSafe) {

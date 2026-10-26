@@ -158,7 +158,7 @@ func (w *WafNotifySubscriptionApi) SaveConfigApi(c *gin.Context) {
 		return
 	}
 
-	if _, err := wafNotifySubscriptionService.GetById(req.Id); err != nil {
+	if _, err := wafNotifySubscriptionService.GetByIdCtx(c.Request.Context(), req.Id); err != nil {
 		response.FailWithMessage("订阅不存在", c)
 		return
 	}
@@ -182,8 +182,13 @@ func (w *WafNotifySubscriptionApi) SaveConfigApi(c *gin.Context) {
 		return
 	}
 
-	if err = wafNotifySubscriptionService.SaveConfigApi(req.Id, mode, throttleJSON, filterJSON,
-		req.TitleTemplate, req.ContentTemplate); err != nil {
+	if err = wafNotifySubscriptionService.SaveConfigPartialApiCtx(c.Request.Context(), req.Id, map[string]interface{}{
+		"ThrottleMode":    mode,
+		"ThrottleJSON":    throttleJSON,
+		"FilterJSON":      filterJSON,
+		"TitleTemplate":   req.TitleTemplate,
+		"ContentTemplate": req.ContentTemplate,
+	}); err != nil {
 		response.FailWithMessage("保存失败: "+err.Error(), c)
 		return
 	}
@@ -252,14 +257,14 @@ func (w *WafNotifySubscriptionApi) BatchConfigApi(c *gin.Context) {
 
 	var targets []model.NotifySubscription
 	if req.MessageType != "" {
-		targets = wafNotifySubscriptionService.GetSubscriptionsByMessageTypeAll(req.MessageType)
+		targets = wafNotifySubscriptionService.GetSubscriptionsByMessageTypeAllCtx(c.Request.Context(), req.MessageType)
 	} else {
-		targets = wafNotifySubscriptionService.GetSubscriptionsByChannelType(req.ChannelType)
+		targets = wafNotifySubscriptionService.GetSubscriptionsByChannelTypeCtx(c.Request.Context(), req.ChannelType)
 	}
 	// 两个条件都给了就取交集：既限定渠道类型又限定消息类型
 	if req.MessageType != "" && req.ChannelType != "" {
 		allowed := map[string]bool{}
-		for _, s := range wafNotifySubscriptionService.GetSubscriptionsByChannelType(req.ChannelType) {
+		for _, s := range wafNotifySubscriptionService.GetSubscriptionsByChannelTypeCtx(c.Request.Context(), req.ChannelType) {
 			allowed[s.Id] = true
 		}
 		filtered := make([]model.NotifySubscription, 0, len(targets))
@@ -273,7 +278,7 @@ func (w *WafNotifySubscriptionApi) BatchConfigApi(c *gin.Context) {
 
 	success := 0
 	for _, sub := range targets {
-		if err := wafNotifySubscriptionService.SaveConfigPartialApi(sub.Id, copyMap(editMap)); err == nil {
+		if err := wafNotifySubscriptionService.SaveConfigPartialApiCtx(c.Request.Context(), sub.Id, copyMap(editMap)); err == nil {
 			success++
 		}
 	}
@@ -350,12 +355,12 @@ func (w *WafNotifySubscriptionApi) TestApi(c *gin.Context) {
 		return
 	}
 
-	sub, err := wafNotifySubscriptionService.GetById(req.Id)
+	sub, err := wafNotifySubscriptionService.GetByIdCtx(c.Request.Context(), req.Id)
 	if err != nil {
 		response.FailWithMessage("订阅不存在", c)
 		return
 	}
-	channel := wafNotifyChannelService.GetDetailApi(request.WafNotifyChannelDetailReq{Id: sub.ChannelId})
+	channel := wafNotifyChannelService.GetDetailApiCtx(c.Request.Context(), request.WafNotifyChannelDetailReq{Id: sub.ChannelId})
 	if channel.Id == "" {
 		response.FailWithMessage("渠道不存在", c)
 		return
@@ -385,7 +390,7 @@ func (w *WafNotifySubscriptionApi) DryRunApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
-	sub, err := wafNotifySubscriptionService.GetById(req.Id)
+	sub, err := wafNotifySubscriptionService.GetByIdCtx(c.Request.Context(), req.Id)
 	if err != nil {
 		response.FailWithMessage("订阅不存在", c)
 		return

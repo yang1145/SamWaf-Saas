@@ -15,6 +15,7 @@ import (
 	"SamWaf/wafnotify/serverchan"
 	"SamWaf/wafnotify/webhook"
 	"SamWaf/wafnotify/wechatwork"
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -36,13 +37,11 @@ func MaskNotifyChannelSecret(bean *model.NotifyChannel) {
 	bean.AccessToken = ""
 }
 
-// AddApi 添加通知渠道
-func (receiver *WafNotifyChannelService) AddApi(req request.WafNotifyChannelAddReq) error {
+// AddApi 添加通知渠道。租户归属由 before_create 回调按 ctx 盖章。
+func (receiver *WafNotifyChannelService) AddApi(ctx context.Context, req request.WafNotifyChannelAddReq) error {
 	var bean = &model.NotifyChannel{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
-			USER_CODE:   global.GWAF_USER_CODE,
-			Tenant_ID:   global.GWAF_TENANT_ID,
 			CREATE_TIME: customtype.JsonTime(time.Now()),
 			UPDATE_TIME: customtype.JsonTime(time.Now()),
 		},
@@ -55,16 +54,20 @@ func (receiver *WafNotifyChannelService) AddApi(req request.WafNotifyChannelAddR
 		Status:      req.Status,
 		Remarks:     req.Remarks,
 	}
-	return global.GWAF_LOCAL_DB.Create(bean).Error
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Create(bean).Error
 }
 
-// CheckIsExistApi 检查是否存在
-func (receiver *WafNotifyChannelService) CheckIsExistApi(req request.WafNotifyChannelAddReq) error {
-	return global.GWAF_LOCAL_DB.First(&model.NotifyChannel{}, "name = ? ", req.Name).Error
+// CheckIsExistApi 检查是否存在（按 ctx 租户判定重名）
+func (receiver *WafNotifyChannelService) CheckIsExistApi(ctx context.Context, req request.WafNotifyChannelAddReq) error {
+	return global.GWAF_LOCAL_DB.WithContext(ctx).First(&model.NotifyChannel{}, "name = ? ", req.Name).Error
 }
 
-// ModifyApi 修改通知渠道
-func (receiver *WafNotifyChannelService) ModifyApi(req request.WafNotifyChannelEditReq) error {
+// ModifyApi 修改通知渠道（UPDATE 随 ctx 租户过滤，改不到他租户行时显式报错）
+func (receiver *WafNotifyChannelService) ModifyApi(ctx context.Context, req request.WafNotifyChannelEditReq) error {
+	var exist model.NotifyChannel
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", req.Id).First(&exist).Error; err != nil {
+		return errors.New("通知渠道不存在或无权操作")
+	}
 	editMap := map[string]interface{}{
 		"Name":        req.Name,
 		"Type":        req.Type,
@@ -76,18 +79,25 @@ func (receiver *WafNotifyChannelService) ModifyApi(req request.WafNotifyChannelE
 		"Remarks":     req.Remarks,
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
 	}
-	return global.GWAF_LOCAL_DB.Model(model.NotifyChannel{}).Where("id = ?", req.Id).Updates(editMap).Error
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Model(model.NotifyChannel{}).Where("id = ?", req.Id).Updates(editMap).Error
 }
 
-// GetDetailApi 获取详情
+// GetDetailApi 获取详情（兼容入口：无租户上下文，回退全局租户过滤）。
+// 供 api/waf_notify_subscription_config.go 等未接入请求 ctx 的调用点使用；
+// 请求链路请改用 GetDetailApiCtx，待通知工作流统一 ctx 化后本入口可移除。
 func (receiver *WafNotifyChannelService) GetDetailApi(req request.WafNotifyChannelDetailReq) model.NotifyChannel {
+	return receiver.GetDetailApiCtx(context.Background(), req)
+}
+
+// GetDetailApiCtx 获取详情（按 ctx 租户过滤）
+func (receiver *WafNotifyChannelService) GetDetailApiCtx(ctx context.Context, req request.WafNotifyChannelDetailReq) model.NotifyChannel {
 	var bean model.NotifyChannel
-	global.GWAF_LOCAL_DB.Where("id=?", req.Id).Find(&bean)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("id=?", req.Id).Find(&bean)
 	return bean
 }
 
-// GetListApi 获取列表
-func (receiver *WafNotifyChannelService) GetListApi(req request.WafNotifyChannelSearchReq) ([]model.NotifyChannel, int64, error) {
+// GetListApi 获取列表（按 ctx 租户过滤）
+func (receiver *WafNotifyChannelService) GetListApi(ctx context.Context, req request.WafNotifyChannelSearchReq) ([]model.NotifyChannel, int64, error) {
 	var list []model.NotifyChannel
 	var total int64 = 0
 
@@ -118,31 +128,31 @@ func (receiver *WafNotifyChannelService) GetListApi(req request.WafNotifyChannel
 		whereValues = append(whereValues, req.Status)
 	}
 
-	global.GWAF_LOCAL_DB.Model(&model.NotifyChannel{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
-	global.GWAF_LOCAL_DB.Model(&model.NotifyChannel{}).Where(whereField, whereValues...).Count(&total)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.NotifyChannel{}).Where(whereField, whereValues...).Limit(req.PageSize).Offset(req.PageSize * (req.PageIndex - 1)).Find(&list)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.NotifyChannel{}).Where(whereField, whereValues...).Count(&total)
 
 	return list, total, nil
 }
 
-// DelApi 删除
-func (receiver *WafNotifyChannelService) DelApi(req request.WafNotifyChannelDelReq) error {
+// DelApi 删除（含关联订阅，均随 ctx 租户过滤，只能删到本租户的行）
+func (receiver *WafNotifyChannelService) DelApi(ctx context.Context, req request.WafNotifyChannelDelReq) error {
 	var bean model.NotifyChannel
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&bean).Error
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", req.Id).First(&bean).Error
 	if err != nil {
 		return err
 	}
 
 	// 删除关联的订阅
-	global.GWAF_LOCAL_DB.Where("channel_id = ?", req.Id).Delete(&model.NotifySubscription{})
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("channel_id = ?", req.Id).Delete(&model.NotifySubscription{})
 
 	// 删除渠道
-	return global.GWAF_LOCAL_DB.Where("id = ?", req.Id).Delete(&model.NotifyChannel{}).Error
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", req.Id).Delete(&model.NotifyChannel{}).Error
 }
 
-// TestChannelApi 测试通知渠道
-func (receiver *WafNotifyChannelService) TestChannelApi(req request.WafNotifyChannelTestReq) error {
+// TestChannelApi 测试通知渠道（渠道按 ctx 租户过滤后才能发起测试）
+func (receiver *WafNotifyChannelService) TestChannelApi(ctx context.Context, req request.WafNotifyChannelTestReq) error {
 	var channel model.NotifyChannel
-	err := global.GWAF_LOCAL_DB.Where("id = ?", req.Id).First(&channel).Error
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", req.Id).First(&channel).Error
 	if err != nil {
 		return errors.New("通知渠道不存在")
 	}
@@ -213,9 +223,9 @@ func ValidateChannelConfig(channelType, configJSON string) error {
 	return nil
 }
 
-// GetAllChannels 获取所有启用的通知渠道
-func (receiver *WafNotifyChannelService) GetAllChannels() []model.NotifyChannel {
+// GetAllChannels 获取所有启用的通知渠道（按 ctx 租户过滤）
+func (receiver *WafNotifyChannelService) GetAllChannels(ctx context.Context) []model.NotifyChannel {
 	var channels []model.NotifyChannel
-	global.GWAF_LOCAL_DB.Where(dialect.Q("status")+" = ?", 1).Find(&channels)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where(dialect.Q("status")+" = ?", 1).Find(&channels)
 	return channels
 }

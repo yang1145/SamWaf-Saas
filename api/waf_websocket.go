@@ -64,7 +64,14 @@ func (w *WafWebSocketApi) WebSocketMessageApi(c *gin.Context) {
 
 	// 生成用户标识和会话ID
 	userKey := tokenInfo.BaseOrm.Tenant_ID + tokenInfo.BaseOrm.USER_CODE + tokenInfo.LoginAccount
-	sessionID := global.GWebSocket.AddWebSocketWithKey(userKey, keyID, ws)
+
+	// 多租户路由：登记该连接所属租户。空租户与平台租户（SamWafCom）一律视为「平台侧」连接
+	// （平台管理员监管全部租户，可收到所有租户路由消息）；租户连接只收本租户的消息。
+	connTenantID := tokenInfo.BaseOrm.Tenant_ID
+	if connTenantID == global.GWAF_TENANT_ID {
+		connTenantID = ""
+	}
+	sessionID := global.GWebSocket.AddWebSocketWithKeyAndTenant(userKey, keyID, connTenantID, ws)
 
 	zlog.Debug("WebSocket连接建立，用户: " + userKey + ", 会话ID: " + sessionID)
 

@@ -8,6 +8,7 @@ import (
 	"SamWaf/model/request"
 	"SamWaf/wafdb"
 	"SamWaf/wafdb/dialect"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -123,7 +124,7 @@ func (receiver *WafLogService) AddApi(log innerbean.WebLog) error {
 func (receiver *WafLogService) ModifyApi(log innerbean.WebLog) error {
 	return nil
 }
-func (receiver *WafLogService) GetDetailApi(req request.WafAttackLogDetailReq) (innerbean.WebLog, error) {
+func (receiver *WafLogService) GetDetailApi(ctx context.Context, req request.WafAttackLogDetailReq) (innerbean.WebLog, error) {
 	var weblog innerbean.WebLog
 	req.REQ_UUID = strings.TrimSpace(req.REQ_UUID)
 	if req.REQ_UUID == "" {
@@ -133,7 +134,10 @@ func (receiver *WafLogService) GetDetailApi(req request.WafAttackLogDetailReq) (
 	// 事件双写了窄行，内容一致，但事件表保留期更长，优先从它读。
 	// 分区标识为空或 auto 时先按识别码定位分区：详情最常见的来路就是
 	// 用户手里只有一串识别码，不知道那次访问落在哪个分区
-	shardName := ResolveDetailShard(req.CurrrentDbName, req.REQ_UUID)
+	//
+	// ctx 携带请求租户：Table() 点查同样被租户回调过滤（wafdb/tenant_bypass_channels_test.go），
+	// 租户按识别码点查只能命中自己的行
+	shardName := ResolveDetailShard(ctx, req.CurrrentDbName, req.REQ_UUID)
 	tier := wafdb.ResolveTierTables(shardName)
 	if tier.Err != nil {
 		if errors.Is(tier.Err, wafdb.ErrShardMissing) {
@@ -147,7 +151,7 @@ func (receiver *WafLogService) GetDetailApi(req request.WafAttackLogDetailReq) (
 			continue
 		}
 		sel := webLogSelect(tier.DB, shardName, table, getWebLogDetailColumns(), "detail")
-		res := tier.DB.Table(table).Select(sel).Where("REQ_UUID=?", req.REQ_UUID).Find(&weblog)
+		res := tier.DB.WithContext(ctx).Table(table).Select(sel).Where("REQ_UUID=?", req.REQ_UUID).Find(&weblog)
 		if res.Error != nil {
 			return weblog, fmt.Errorf("查询日志详情失败: %w", res.Error)
 		}
@@ -165,23 +169,25 @@ func (receiver *WafLogService) GetDetailApi(req request.WafAttackLogDetailReq) (
 		weblog.ShardName = wafdb.LiveLogName()
 	}
 	// 报文单独存在 event_payload 里，按主键点查补回来；没有报文行的（正常请求未采样）保持窄字段
-	FillShardPayloads(shardName, []*innerbean.WebLog{&weblog})
+	FillShardPayloads(ctx, shardName, []*innerbean.WebLog{&weblog})
 	return weblog, nil
 }
 
 // GetListApi 日志列表查询。条件组装、分区解析与跨分区扇出都在 waf_log_query.go，
-// 这里保留旧签名给不关心「这次查了哪些分区」的调用方。
-func (receiver *WafLogService) GetListApi(req request.WafAttackLogSearch) ([]innerbean.WebLog, int64, error) {
-	rows, total, _, err := receiver.GetListApiWithMeta(req)
+// 这里保留旧签名给不关心「这次查了哪些分区」的调用方；ctx 携带请求租户透传下去。
+func (receiver *WafLogService) GetListApi(ctx context.Context, req request.WafAttackLogSearch) ([]innerbean.WebLog, int64, error) {
+	rows, total, _, err := receiver.GetListApiWithMeta(ctx, req)
 	return rows, total, err
 }
 
-func (receiver *WafLogService) GetListByHostCodeApi(log request.WafAttackLogSearch) ([]innerbean.WebLog, int64, error) {
+// GetListByHostCodeApi 按主机码查询日志（引擎/前端按站点取日志的旧通道）。
+// ctx 携带请求租户：tenant/user 由 before_query 回调自动追加。
+func (receiver *WafLogService) GetListByHostCodeApi(ctx context.Context, log request.WafAttackLogSearch) ([]innerbean.WebLog, int64, error) {
 	var total int64 = 0
 	var weblogs []innerbean.WebLog
 	// tenant/user 由 before_query 自动追加，这里只传 host_code（占位符与参数数须一致，避免参数顺移）
-	global.GWAF_LOCAL_LOG_DB.Where("host_code = ?", log.HostCode).Limit(log.PageSize).Offset(log.PageSize * (log.PageIndex - 1)).Order("create_time desc").Find(&weblogs)
-	global.GWAF_LOCAL_LOG_DB.Where("host_code = ?", log.HostCode).Model(&innerbean.WebLog{}).Count(&total)
+	global.GWAF_LOCAL_LOG_DB.WithContext(ctx).Where("host_code = ?", log.HostCode).Limit(log.PageSize).Offset(log.PageSize * (log.PageIndex - 1)).Order("create_time desc").Find(&weblogs)
+	global.GWAF_LOCAL_LOG_DB.WithContext(ctx).Where("host_code = ?", log.HostCode).Model(&innerbean.WebLog{}).Count(&total)
 	return weblogs, total, nil
 }
 

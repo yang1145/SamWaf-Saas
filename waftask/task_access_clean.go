@@ -1,9 +1,11 @@
 package waftask
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/service/waf_service"
+	"context"
 )
 
 var (
@@ -24,9 +26,10 @@ var (
 func TaskAccessClean() {
 	innerLogName := "TaskAccessClean"
 
+	// 平台级维护任务：清理跨租户的全量过期数据，用平台作用域跳过租户过滤
 	expiredSession, expiredToken, delTicket, delOld :=
 		wafAccessSessionService.CleanExpired(7)
-	delAudit := wafAccessAuditService.CleanExpired(int(global.GCONFIG_ACCESS_AUDIT_RETAIN_DAYS))
+	delAudit := wafAccessAuditService.CleanExpired(wafctx.PlatformScope(context.Background()), int(global.GCONFIG_ACCESS_AUDIT_RETAIN_DAYS))
 
 	if expiredSession+expiredToken+delTicket+delOld+delAudit > 0 {
 		zlog.Info(innerLogName, "统一访问认证数据清理完成",

@@ -67,7 +67,7 @@ func (w *WafLogAPi) GetDetailApi(c *gin.Context) {
 			response.FailWithMessage(err.Error(), c)
 			return
 		}
-		wafLog, err := wafLogService.GetDetailApi(req)
+		wafLog, err := wafLogService.GetDetailApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("获取日志详情失败:"+err.Error(), c)
 			return
@@ -102,7 +102,7 @@ func (w *WafLogAPi) GetListApi(c *gin.Context) {
 			response.FailWithMessage(err.Error(), c)
 			return
 		}
-		wafLogs, total, meta, err2 := wafLogService.GetListApiWithMeta(req)
+		wafLogs, total, meta, err2 := wafLogService.GetListApiWithMeta(c.Request.Context(), req)
 		if err2 != nil {
 			response.FailWithMessage("访问列表失败:"+err2.Error(), c)
 		} else {
@@ -224,7 +224,8 @@ func (w *WafLogAPi) ExportDBApi(c *gin.Context) {
 		if err != nil {
 			_ = os.Remove(downloadFilePath)
 			global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.OpResultMessageInfo{
-				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "DOWNLOAD_LOG", Server: global.GWAF_CUSTOM_SERVER_NAME},
+				// WebSocket 按租户路由：导出结果只推给发起导出的租户（平台租户广播给平台侧连接）
+				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "DOWNLOAD_LOG", Server: global.GWAF_CUSTOM_SERVER_NAME, TenantId: exportTenant},
 				Msg:             "导出失败: " + err.Error(),
 				Success:         "false",
 			})
@@ -233,7 +234,7 @@ func (w *WafLogAPi) ExportDBApi(c *gin.Context) {
 			global.GWAF_RUNTIME_EXPORT_DB_LOG_TENANT = exportTenant
 			//发送websocket 推送消息
 			global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.ExportResultMessageInfo{
-				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "DOWNLOAD_LOG", Server: global.GWAF_CUSTOM_SERVER_NAME},
+				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "DOWNLOAD_LOG", Server: global.GWAF_CUSTOM_SERVER_NAME, TenantId: exportTenant},
 				Msg: fmt.Sprintf("导出完毕（访问日志%d条/安全事件%d条/报文%d条/旧版日志%d条）",
 					counts[wafdb.ExportTierAccess], counts[wafdb.ExportTierEvent],
 					counts[wafdb.ExportTierPayload], counts[wafdb.ExportTierWeblog]),
@@ -291,7 +292,7 @@ func (w *WafLogAPi) GetListByHostCodeApi(c *gin.Context) {
 			response.FailWithMessage("正在切换数据库请等待", c)
 			return
 		}
-		wafLogs, total, _ := wafLogService.GetListByHostCodeApi(req)
+		wafLogs, total, _ := wafLogService.GetListByHostCodeApi(c.Request.Context(), req)
 		response.OkWithDetailed(response.PageResult{
 			List:      wafLogs,
 			Total:     total,
@@ -364,7 +365,7 @@ func (w *WafLogAPi) GetHttpCopyMaskApi(c *gin.Context) {
 			response.FailWithMessage(err.Error(), c)
 			return
 		}
-		wafLog, err := wafLogService.GetDetailApi(req)
+		wafLog, err := wafLogService.GetDetailApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("获取日志详情失败:"+err.Error(), c)
 			return

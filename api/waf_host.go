@@ -321,7 +321,7 @@ func (w *WafHostAPi) GetListApi(c *gin.Context) {
 				hostCodes = append(hostCodes, srcHost.Code)
 			}
 		}
-		todayStatsMap := waf_service.WafStatServiceApp.GetTodaySiteStatsByHostCodes(hostCodes)
+		todayStatsMap := waf_service.WafStatServiceApp.GetTodaySiteStatsByHostCodes(ctx, hostCodes)
 		conflictCodes := wafHostService.HostPortConflictCodes(ctx)
 		// 初始化返回结果列表
 		var repList []response2.HostRep

@@ -117,7 +117,8 @@ func normalizeLookupInput(raw string) (net.IP, string) {
 }
 
 // Lookup 查询一个 IP 的归属情况。sources 为空表示查全部来源。
-func (r *WafIPLookupService) Lookup(ipStr string, sources []string) (*response2.IPLookupResp, error) {
+// Lookup 查询一个 IP 的归属情况（随请求 ctx 按租户过滤名单类数据）。sources 为空表示查全部来源。
+func (r *WafIPLookupService) Lookup(ctx context.Context, ipStr string, sources []string) (*response2.IPLookupResp, error) {
 	ipStr = strings.TrimSpace(ipStr)
 	if ipStr == "" {
 		return nil, fmt.Errorf("请输入要查询的IP")
@@ -166,22 +167,22 @@ func (r *WafIPLookupService) Lookup(ipStr string, sources []string) (*response2.
 	// 名单类共用一份站点名映射，没查名单就不用捞 hosts 表
 	var hostNames map[string]string
 	if pick(srcIPWhite) || pick(srcIPBlack) {
-		hostNames = r.hostNameMap()
+		hostNames = r.hostNameMap(ctx)
 	}
 
 	// 白名单放在最前：命中白名单的 IP 即便同时在黑名单里也会被放行，
 	// 顺序本身就是给用户的排查提示
 	if pick(srcIPWhite) {
-		r.matchAllowList(ipStr, hostNames, resp)
+		r.matchAllowList(ctx, ipStr, hostNames, resp)
 	}
 	if pick(srcIPBlack) {
-		r.matchBlockList(ipStr, hostNames, resp)
+		r.matchBlockList(ctx, ipStr, hostNames, resp)
 	}
 	if pick(srcIPGroup) {
-		r.matchIPGroup(ipStr, resp)
+		r.matchIPGroup(ctx, ipStr, resp)
 	}
 	if pick(srcLogExclude) {
-		r.matchLogExclude(ipStr, resp)
+		r.matchLogExclude(ctx, ipStr, resp)
 	}
 	if pick(srcThreatIP) {
 		r.matchThreatIP(ipStr, parsed, resp)
@@ -193,7 +194,7 @@ func (r *WafIPLookupService) Lookup(ipStr string, sources []string) (*response2.
 		r.matchCCBan(ipStr, resp)
 	}
 	if pick(srcRuleBan) {
-		r.matchRuleBan(ipStr, resp)
+		r.matchRuleBan(ctx, ipStr, resp)
 	}
 	if pick(srcFirewall) {
 		r.matchFirewall(ipStr, resp)
@@ -224,10 +225,10 @@ func (r *WafIPLookupService) location(ipStr string) string {
 }
 
 // hostNameMap 网站唯一码 → 域名，用于把 host_code 翻成用户认得的名字
-func (r *WafIPLookupService) hostNameMap() map[string]string {
+func (r *WafIPLookupService) hostNameMap(ctx context.Context) map[string]string {
 	m := map[string]string{}
 	var hosts []model.Hosts
-	if err := global.GWAF_LOCAL_DB.Select("code", "host").Find(&hosts).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Select("code", "host").Find(&hosts).Error; err != nil {
 		return m
 	}
 	for _, h := range hosts {
@@ -254,10 +255,10 @@ func (r *WafIPLookupService) hostLabel(code string, names map[string]string) str
 	return code + "(站点已不存在，该条不生效)"
 }
 
-func (r *WafIPLookupService) matchAllowList(ip string, names map[string]string, resp *response2.IPLookupResp) {
+func (r *WafIPLookupService) matchAllowList(ctx context.Context, ip string, names map[string]string, resp *response2.IPLookupResp) {
 	var rows []model.IPAllowList
 	//与引擎同口径：停用条目不参与判定，诊断结论才不会背离实际拦截行为
-	if err := global.GWAF_LOCAL_DB.Where("is_enable = 1").Find(&rows).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("is_enable = 1").Find(&rows).Error; err != nil {
 		resp.Degraded = append(resp.Degraded, srcIPWhite)
 		return
 	}
@@ -279,9 +280,9 @@ func (r *WafIPLookupService) matchAllowList(ip string, names map[string]string, 
 	}
 }
 
-func (r *WafIPLookupService) matchBlockList(ip string, names map[string]string, resp *response2.IPLookupResp) {
+func (r *WafIPLookupService) matchBlockList(ctx context.Context, ip string, names map[string]string, resp *response2.IPLookupResp) {
 	var rows []model.IPBlockList
-	if err := global.GWAF_LOCAL_DB.Where("is_enable = 1").Find(&rows).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("is_enable = 1").Find(&rows).Error; err != nil {
 		resp.Degraded = append(resp.Degraded, srcIPBlack)
 		return
 	}
@@ -304,9 +305,9 @@ func (r *WafIPLookupService) matchBlockList(ip string, names map[string]string, 
 
 // matchIPGroup IP 组本身不决定放行还是拦截——取决于哪个名单引用了它，
 // 所以 effect 记 none，另外把引用它的名单列出来，用户才知道命中意味着什么
-func (r *WafIPLookupService) matchIPGroup(ip string, resp *response2.IPLookupResp) {
+func (r *WafIPLookupService) matchIPGroup(ctx context.Context, ip string, resp *response2.IPLookupResp) {
 	var groups []model.IPGroup
-	if err := global.GWAF_LOCAL_DB.Find(&groups).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Find(&groups).Error; err != nil {
 		resp.Degraded = append(resp.Degraded, srcIPGroup)
 		return
 	}
@@ -316,7 +317,7 @@ func (r *WafIPLookupService) matchIPGroup(ip string, resp *response2.IPLookupRes
 
 	// 一次把所有组条目捞出来按组分桶，避免每组一次查询
 	var items []model.IPGroupItem
-	if err := global.GWAF_LOCAL_DB.Find(&items).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Find(&items).Error; err != nil {
 		resp.Degraded = append(resp.Degraded, srcIPGroup)
 		return
 	}
@@ -325,8 +326,8 @@ func (r *WafIPLookupService) matchIPGroup(ip string, resp *response2.IPLookupRes
 		byGroup[it.GroupCode] = append(byGroup[it.GroupCode], it)
 	}
 
-	refs := r.groupRefs()
-	logRefs := r.logExcludeGroupRefs()
+	refs := r.groupRefs(ctx)
+	logRefs := r.logExcludeGroupRefs(ctx)
 	for _, g := range groups {
 		for _, it := range byGroup[g.GroupCode] {
 			if it.Ip == "" || !utils.MatchIPPattern(ip, it.Ip) {
@@ -364,12 +365,12 @@ type groupRef struct {
 }
 
 // groupRefs 统计每个 IP 组被黑/白名单引用的情况
-func (r *WafIPLookupService) groupRefs() map[string]groupRef {
+func (r *WafIPLookupService) groupRefs(ctx context.Context) map[string]groupRef {
 	refs := map[string]groupRef{}
 
 	var blockRows []model.IPBlockList
 	//引用统计同样只算启用条目，与引擎侧组短码抽取同口径
-	global.GWAF_LOCAL_DB.Where("ip_type = ? and is_enable = 1", model.IPEntryTypeGroup).Find(&blockRows)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("ip_type = ? and is_enable = 1", model.IPEntryTypeGroup).Find(&blockRows)
 	for _, row := range blockRows {
 		if row.GroupCode == "" {
 			continue
@@ -378,7 +379,7 @@ func (r *WafIPLookupService) groupRefs() map[string]groupRef {
 	}
 
 	var allowRows []model.IPAllowList
-	global.GWAF_LOCAL_DB.Where("ip_type = ? and is_enable = 1", model.IPEntryTypeGroup).Find(&allowRows)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("ip_type = ? and is_enable = 1", model.IPEntryTypeGroup).Find(&allowRows)
 	for _, row := range allowRows {
 		if row.GroupCode == "" {
 			continue
@@ -595,7 +596,7 @@ func (r *WafIPLookupService) matchCCBan(ip string, resp *response2.IPLookupResp)
 }
 
 // matchRuleBan 规则封禁命中（自定义规则 RF.Ban 写入，站点作用域）。
-func (r *WafIPLookupService) matchRuleBan(ip string, resp *response2.IPLookupResp) {
+func (r *WafIPLookupService) matchRuleBan(ctx context.Context, ip string, resp *response2.IPLookupResp) {
 	if global.GCACHE_WAFCACHE == nil {
 		resp.Degraded = append(resp.Degraded, srcRuleBan)
 		return
@@ -616,7 +617,7 @@ func (r *WafIPLookupService) matchRuleBan(ip string, resp *response2.IPLookupRes
 		detail += "，剩余" + remain
 	}
 	if hitHostCode != "" {
-		names := r.hostNameMap()
+		names := r.hostNameMap(ctx)
 		if label := r.hostLabel(hitHostCode, names); label != "" {
 			detail += "，站点 " + label
 		}
@@ -769,13 +770,13 @@ type logExcludeList struct {
 }
 
 // collectLogExcludeLists 收齐全局与各站点的排除清单（空的跳过）
-func (r *WafIPLookupService) collectLogExcludeLists() []logExcludeList {
+func (r *WafIPLookupService) collectLogExcludeLists(ctx context.Context) []logExcludeList {
 	lists := make([]logExcludeList, 0, 4)
 	if strings.TrimSpace(global.GCONFIG_EXCLUDE_IP_LOG) != "" {
 		lists = append(lists, logExcludeList{scope: "全局", raw: global.GCONFIG_EXCLUDE_IP_LOG})
 	}
 	var hosts []model.Hosts
-	if err := global.GWAF_LOCAL_DB.Where("exclude_ip_log <> ''").Find(&hosts).Error; err == nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("exclude_ip_log <> ''").Find(&hosts).Error; err == nil {
 		for _, h := range hosts {
 			if strings.TrimSpace(h.EXCLUDE_IP_LOG) == "" {
 				continue
@@ -791,8 +792,8 @@ func (r *WafIPLookupService) collectLogExcludeLists() []logExcludeList {
 }
 
 // matchLogExclude 查这个 IP 是否被某份日志排除清单命中，直接命中与经由 IP 组命中都要报出来
-func (r *WafIPLookupService) matchLogExclude(ip string, resp *response2.IPLookupResp) {
-	for _, l := range r.collectLogExcludeLists() {
+func (r *WafIPLookupService) matchLogExclude(ctx context.Context, ip string, resp *response2.IPLookupResp) {
+	for _, l := range r.collectLogExcludeLists(ctx) {
 		patterns, codes := ipset.ParseListText(l.raw)
 
 		// 直接写在清单里的模式
@@ -829,9 +830,9 @@ func (r *WafIPLookupService) matchLogExclude(ip string, resp *response2.IPLookup
 }
 
 // logExcludeGroupRefs 返回被日志排除清单引用的组短码 → 说明文案
-func (r *WafIPLookupService) logExcludeGroupRefs() map[string]string {
+func (r *WafIPLookupService) logExcludeGroupRefs(ctx context.Context) map[string]string {
 	refs := map[string]string{}
-	for _, l := range r.collectLogExcludeLists() {
+	for _, l := range r.collectLogExcludeLists(ctx) {
 		for _, code := range ipset.GroupCodesOf(l.raw) {
 			if old, ok := refs[code]; ok {
 				refs[code] = old + "、" + l.scope

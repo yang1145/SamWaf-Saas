@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"context"
 	"SamWaf/cache"
 	"SamWaf/global"
 	"SamWaf/innerbean"
@@ -90,7 +91,7 @@ func TestLookupIPFailureEffect(t *testing.T) {
 
 	lookup := func() (string, string) {
 		t.Helper()
-		resp, err := WafIPLookupServiceApp.Lookup(ip, []string{"ip_failure"})
+		resp, err := WafIPLookupServiceApp.Lookup(context.Background(), ip, []string{"ip_failure"})
 		if err != nil {
 			t.Fatalf("查询失败: %v", err)
 		}
@@ -122,7 +123,7 @@ func TestLookupIPFailureEffect(t *testing.T) {
 
 	// 阶段3：清除记录 → 不再命中
 	manager.ClearIPFailure(ip)
-	resp, err := WafIPLookupServiceApp.Lookup(ip, []string{"ip_failure"})
+	resp, err := WafIPLookupServiceApp.Lookup(context.Background(), ip, []string{"ip_failure"})
 	if err != nil {
 		t.Fatalf("查询失败: %v", err)
 	}

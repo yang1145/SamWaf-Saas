@@ -2,7 +2,6 @@ package batch
 
 import (
 	"SamWaf/common/uuid"
-	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/customtype"
 	"SamWaf/enums"
@@ -35,14 +34,14 @@ type IPGroupProcessor struct {
 	seen      map[string]struct{} // 覆盖模式下本次源里出现过的全部条目，供收尾时做差集删除
 }
 
-// ProcessBatch 处理一批IP
-func (p *IPGroupProcessor) ProcessBatch(items []string, task model.BatchTask, progress *BatchProgress) bool {
+// ProcessBatch 处理一批IP（ctx 携带任务归属租户：目标组校验/去重/写入均限定该租户）
+func (p *IPGroupProcessor) ProcessBatch(ctx context.Context, items []string, task model.BatchTask, progress *BatchProgress) bool {
 	if len(items) == 0 {
 		return false
 	}
 
 	logName := "BatchTask-IPGroupBatch"
-	if !p.resolve(task, logName) {
+	if !p.resolve(ctx, task, logName) {
 		return false
 	}
 
@@ -59,7 +58,7 @@ func (p *IPGroupProcessor) ProcessBatch(items []string, task model.BatchTask, pr
 		}
 	}
 
-	existMap := p.GetExistingItems(items, task, nil)
+	existMap := p.GetExistingItems(ctx, items, task, nil)
 
 	// 追加与覆盖在「入库」这一步行为相同：组内已有的原样保留（不刷备注，避免无谓写放大），
 	// 缺的补进来。两者的差别只在收尾要不要删除源中已不存在的条目。
@@ -71,11 +70,10 @@ func (p *IPGroupProcessor) ProcessBatch(items []string, task model.BatchTask, pr
 		}
 		// 同一批内可能有重复行，先占位避免重复插入
 		existMap[ip] = struct{}{}
+		// 租户归属不手工写死：before_create 回调按 ctx（任务归属租户）盖章
 		toInsert = append(toInsert, &model.IPGroupItem{
 			BaseOrm: baseorm.BaseOrm{
 				Id:          uuid.GenUUID(),
-				USER_CODE:   global.GWAF_USER_CODE,
-				Tenant_ID:   global.GWAF_TENANT_ID,
 				CREATE_TIME: customtype.JsonTime(time.Now()),
 				UPDATE_TIME: customtype.JsonTime(time.Now()),
 			},
@@ -89,7 +87,7 @@ func (p *IPGroupProcessor) ProcessBatch(items []string, task model.BatchTask, pr
 		return false
 	}
 
-	if err := global.GWAF_LOCAL_DB.CreateInBatches(toInsert, 500).Error; err != nil {
+	if err := global.GWAF_LOCAL_DB.WithContext(ctx).CreateInBatches(toInsert, 500).Error; err != nil {
 		zlog.Error(logName, "批量插入IP组条目失败: "+err.Error())
 		return false
 	}
@@ -98,14 +96,14 @@ func (p *IPGroupProcessor) ProcessBatch(items []string, task model.BatchTask, pr
 	return true
 }
 
-// GetExistingItems 获取组内已存在的条目
-func (p *IPGroupProcessor) GetExistingItems(items []string, task model.BatchTask, config interface{}) map[string]interface{} {
+// GetExistingItems 获取组内已存在的条目（按任务归属租户过滤）
+func (p *IPGroupProcessor) GetExistingItems(ctx context.Context, items []string, task model.BatchTask, config interface{}) map[string]interface{} {
 	existMap := make(map[string]interface{})
 	if p.groupCode == "" {
 		return existMap
 	}
 	var existItems []model.IPGroupItem
-	global.GWAF_LOCAL_DB.Where("group_code = ? AND ip IN (?)", p.groupCode, items).Find(&existItems)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("group_code = ? AND ip IN (?)", p.groupCode, items).Find(&existItems)
 	for _, item := range existItems {
 		existMap[item.Ip] = item
 	}
@@ -120,12 +118,12 @@ func (p *IPGroupProcessor) GetExistingItems(items []string, task model.BatchTask
 //  3. 源里至少要有一条有效条目——远程源返回空/404页面时不能把组抹平
 //
 // 组可能正被白名单引用，误删即全站失去豁免；被黑名单引用则是瞬间放行。宁可少删不可错删。
-func (p *IPGroupProcessor) Finalize(task model.BatchTask, progress *BatchProgress, sourceComplete bool) bool {
+func (p *IPGroupProcessor) Finalize(ctx context.Context, task model.BatchTask, progress *BatchProgress, sourceComplete bool) bool {
 	if task.BatchExecuteMethod != enums.BATCHTASK_EXECUTEMETHODOVERWRITE {
 		return false
 	}
 	logName := "BatchTask-IPGroupBatch"
-	if !p.resolve(task, logName) {
+	if !p.resolve(ctx, task, logName) {
 		return false
 	}
 	if !sourceComplete {
@@ -138,7 +136,7 @@ func (p *IPGroupProcessor) Finalize(task model.BatchTask, progress *BatchProgres
 	}
 
 	var existItems []model.IPGroupItem
-	global.GWAF_LOCAL_DB.Where("group_code = ?", p.groupCode).Find(&existItems)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("group_code = ?", p.groupCode).Find(&existItems)
 
 	staleIds := make([]string, 0, 64)
 	for i := range existItems {
@@ -158,7 +156,7 @@ func (p *IPGroupProcessor) Finalize(task model.BatchTask, progress *BatchProgres
 		if end > len(staleIds) {
 			end = len(staleIds)
 		}
-		if err := global.GWAF_LOCAL_DB.Where("id IN ?", staleIds[start:end]).Delete(&model.IPGroupItem{}).Error; err != nil {
+		if err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id IN ?", staleIds[start:end]).Delete(&model.IPGroupItem{}).Error; err != nil {
 			zlog.Error(logName, "覆盖模式清理IP组条目失败: "+err.Error())
 			// 已删掉的部分仍需重建匹配集，所以返回 deleted > 0 而不是 false
 			return deleted > 0
@@ -172,15 +170,16 @@ func (p *IPGroupProcessor) Finalize(task model.BatchTask, progress *BatchProgres
 // NotifyEngine 重建该组的匹配集并原子发布。
 //
 // 一次原子替换即让所有引用方生效，不需要给任何站点下发通道消息。
-func (p *IPGroupProcessor) NotifyEngine(task model.BatchTask) {
+func (p *IPGroupProcessor) NotifyEngine(ctx context.Context, task model.BatchTask) {
 	if p.groupCode == "" {
 		return
 	}
-	waf_service.WafIPGroupServiceApp.RebuildGroupMatcher(wafctx.PlatformScope(context.Background()), p.groupCode)
+	waf_service.WafIPGroupServiceApp.RebuildGroupMatcher(ctx, p.groupCode)
 }
 
 // resolve 解析并校验目标 IP 组，结果缓存，多批次只解析一次。
-func (p *IPGroupProcessor) resolve(task model.BatchTask, logName string) bool {
+// 组存在性按任务归属租户过滤：他租户的同名组码在这里就是"不存在"，杜绝跨租户写入他人组。
+func (p *IPGroupProcessor) resolve(ctx context.Context, task model.BatchTask, logName string) bool {
 	if p.resolved {
 		return p.groupCode != ""
 	}
@@ -201,7 +200,7 @@ func (p *IPGroupProcessor) resolve(task model.BatchTask, logName string) bool {
 	}
 
 	var cnt int64
-	global.GWAF_LOCAL_DB.Model(&model.IPGroup{}).Where("group_code = ?", config.GroupCode).Count(&cnt)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.IPGroup{}).Where("group_code = ?", config.GroupCode).Count(&cnt)
 	if cnt == 0 {
 		zlog.Error(logName, "目标IP组不存在，任务终止 组:"+config.GroupCode)
 		return false

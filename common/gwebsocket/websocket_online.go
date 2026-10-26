@@ -31,7 +31,11 @@ type WebSocketConnection struct {
 	UserKey   string
 	// KeyID 是该连接建连时声明的传输会话密钥标识（v2 客户端才有，旧客户端为空）。
 	// 广播时按连接各自加密，所以这个值必须跟着连接走。
-	KeyID     string
+	KeyID string
+	// TenantID 是该连接所属租户（多租户路由用）。空串表示「平台侧」连接：
+	// 平台管理员监管全部租户，因此平台侧连接可以收到任何租户路由消息；
+	// 非空的租户连接只收到本租户的消息。调用方负责把平台租户登记为空串。
+	TenantID  string
 	CreatedAt time.Time
 
 	writeMux sync.Mutex // 该连接的写出口互斥锁，禁止并发写
@@ -82,8 +86,16 @@ func (wafWebsocket *WebSocketOnline) AddWebSocket(userKey string, conn *Wssocket
 	return wafWebsocket.AddWebSocketWithKey(userKey, "", conn)
 }
 
-// AddWebSocketWithKey 同 AddWebSocket，并记下该连接声明的传输会话密钥标识
+// AddWebSocketWithKey 同 AddWebSocket，并记下该连接声明的传输会话密钥标识。
+// 未提供租户信息，按平台侧连接登记（空租户）。
 func (wafWebsocket *WebSocketOnline) AddWebSocketWithKey(userKey string, keyID string, conn *Wssocket.Conn) string {
+	return wafWebsocket.AddWebSocketWithKeyAndTenant(userKey, keyID, "", conn)
+}
+
+// AddWebSocketWithKeyAndTenant 同 AddWebSocketWithKey，并登记连接所属租户。
+// tenantID 为空串表示平台侧连接（可收到所有租户路由消息）；
+// 调用方应先把平台租户 ID 归一化为空串再传入（本包不依赖 global，无法自行判断）。
+func (wafWebsocket *WebSocketOnline) AddWebSocketWithKeyAndTenant(userKey string, keyID string, tenantID string, conn *Wssocket.Conn) string {
 	wafWebsocket.Mux.Lock()
 	defer wafWebsocket.Mux.Unlock()
 
@@ -95,6 +107,7 @@ func (wafWebsocket *WebSocketOnline) AddWebSocketWithKey(userKey string, keyID s
 		SessionID: sessionID,
 		UserKey:   userKey,
 		KeyID:     keyID,
+		TenantID:  tenantID,
 		CreatedAt: time.Now(),
 	}
 
@@ -154,31 +167,56 @@ func (wafWebsocket *WebSocketOnline) SendToSession(sessionID string, messageType
 	return wsConn.SafeWriteMessage(messageType, data)
 }
 
-// Broadcast 广播给所有在线连接，返回发送成功的连接数。
+// Broadcast 广播给所有在线连接（不区分租户），返回发送成功的连接数。
+// 注意：这是全量广播，只能用于与具体租户无关的系统级消息（如系统级公告）；
+// 凡是携带租户属性的消息（引擎事件、封禁告警、导出结果等）必须走
+// BroadcastToTenant / BroadcastBuildToTenant，否则会造成跨租户信息泄露。
 // 写失败的连接直接关闭并摘除：死连接留在表里只会让后续每一轮广播都白等一次写超时。
 func (wafWebsocket *WebSocketOnline) Broadcast(messageType int, data []byte) int {
-	successCount := 0
-	for _, wsConn := range wafWebsocket.snapshot() {
-		if wsConn == nil {
-			continue
-		}
-		if err := wsConn.SafeWriteMessage(messageType, data); err != nil {
-			wafWebsocket.CloseSession(wsConn.SessionID)
-			continue
-		}
-		successCount++
-	}
-	return successCount
+	return wafWebsocket.broadcastBuildMatch(func(*WebSocketConnection) bool { return true }, messageType,
+		func(keyID string) ([]byte, error) { return data, nil })
 }
 
-// BroadcastBuild 广播给所有在线连接，但报文按连接单独组装——v2 通道下每条连接的
+// BroadcastBuild 广播给所有在线连接（不区分租户），但报文按连接单独组装——v2 通道下每条连接的
 // 会话密钥不同，没法像 Broadcast 那样一份密文发给所有人。
 // build 收到该连接的 KeyID（旧客户端为空串），返回该连接要收到的字节；返回错误则跳过这条连接。
 // 加解密逻辑放在调用方，本包不依赖 wafsec。
+// 注意：与 Broadcast 相同，只能用于与具体租户无关的系统级消息；
+// 带租户属性的消息必须走 BroadcastBuildToTenant，防止跨租户泄露。
 func (wafWebsocket *WebSocketOnline) BroadcastBuild(messageType int, build func(keyID string) ([]byte, error)) int {
+	return wafWebsocket.broadcastBuildMatch(func(*WebSocketConnection) bool { return true }, messageType, build)
+}
+
+// BroadcastToTenant 按租户广播同一段报文：只发给该租户的连接与平台侧连接（平台管理员监管一切）。
+// tenantID 为空时表示消息未携带租户信息，按失败关闭原则只投递给平台侧连接，绝不投给任何租户连接。
+func (wafWebsocket *WebSocketOnline) BroadcastToTenant(tenantID string, messageType int, data []byte) int {
+	return wafWebsocket.broadcastBuildMatch(matchTenantRouted(tenantID), messageType,
+		func(keyID string) ([]byte, error) { return data, nil })
+}
+
+// BroadcastBuildToTenant 按租户广播并按连接单独组装报文（组合了 BroadcastBuild 的逐连接加密
+// 与 BroadcastToTenant 的租户路由）。投递范围：该租户的连接 + 平台侧连接。
+// tenantID 为空时按失败关闭原则只投递给平台侧连接——未携带租户信息的事件不允许到达租户连接。
+func (wafWebsocket *WebSocketOnline) BroadcastBuildToTenant(tenantID string, messageType int, build func(keyID string) ([]byte, error)) int {
+	return wafWebsocket.broadcastBuildMatch(matchTenantRouted(tenantID), messageType, build)
+}
+
+// matchTenantRouted 生成租户路由的连接筛选条件：
+//   - 平台侧连接（TenantID 为空）始终可见（平台管理员监管全部租户）；
+//   - 租户连接只在消息租户与自身租户一致时可见；
+//   - 消息未携带租户（tenantID 为空）时只有平台侧连接可见（失败关闭）。
+func matchTenantRouted(tenantID string) func(*WebSocketConnection) bool {
+	return func(wsConn *WebSocketConnection) bool {
+		return wsConn.TenantID == "" || wsConn.TenantID == tenantID
+	}
+}
+
+// broadcastBuildMatch 向满足 match 条件的在线连接逐连接组装并发送，返回发送成功的连接数。
+// Broadcast / BroadcastBuild / BroadcastToTenant / BroadcastBuildToTenant 的公共实现。
+func (wafWebsocket *WebSocketOnline) broadcastBuildMatch(match func(*WebSocketConnection) bool, messageType int, build func(keyID string) ([]byte, error)) int {
 	successCount := 0
 	for _, wsConn := range wafWebsocket.snapshot() {
-		if wsConn == nil {
+		if wsConn == nil || !match(wsConn) {
 			continue
 		}
 		data, err := build(wsConn.KeyID)

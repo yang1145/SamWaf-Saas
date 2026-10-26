@@ -9,6 +9,7 @@ import (
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
 	"SamWaf/service/waf_service"
+	"context"
 	"time"
 )
 
@@ -26,7 +27,9 @@ func InitTaskDb() []model.Task {
 	// 预置后返回的列表带上它，main.go 既有调度循环即按每日定时挂载。
 	ensureTenantExpireTaskRow()
 
-	list, total, err := wafTaskService.GetList()
+	// 阶段0：调度器仍只装载平台租户（全局）的任务行，与改造前一致；
+	// 无租户上下文时查询回调回退全局过滤。租户自建任务的调度装载属后续阶段。
+	list, total, err := wafTaskService.GetList(context.Background())
 	if err != nil {
 		zlog.Error("加载任务列表失败", "error", err.Error())
 		return []model.Task{}

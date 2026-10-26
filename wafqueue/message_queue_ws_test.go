@@ -18,5 +18,6 @@ func TestSendToWebSocket_NilOnlineTable(t *testing.T) {
 		}
 	}()
 
-	sendToWebSocket("测试通知", "内容", nil, "Test")
+	// 租户参数传空串：按失败关闭只投平台侧，在线表为 nil 时与租户取值无关，均不应 panic
+	sendToWebSocket("", "测试通知", "内容", nil, "Test")
 }

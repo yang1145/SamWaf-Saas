@@ -1,9 +1,11 @@
 package wafenginecore
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/global"
 	"SamWaf/innerbean"
 	"SamWaf/model"
+	"context"
 	"strings"
 	"time"
 )
@@ -62,6 +64,25 @@ func ccBanLog(log *innerbean.WebLog, responseCode int) *innerbean.WebLog {
 	return &recorded
 }
 
+// ccBanTenantID 从封禁键反查该封禁事件所属租户，供 WebSocket 按租户投递。
+// 站点作用域的键带有站点码，可反查站点归属租户；全局作用域（hostCode 为空）查不到归属租户，
+// 按失败关闭原则返回空串——消息只会到达平台侧连接，绝不误投给某个租户。
+// notifyCCBanOnce 对同一封禁键 5 分钟节流一次，这里的一次轻量查询代价可以接受。
+func ccBanTenantID(hitKey string) string {
+	_, hostCode, _, ok := model.ParseCCBanKey(hitKey)
+	if !ok || hostCode == "" || global.GWAF_LOCAL_DB == nil {
+		return ""
+	}
+	var tenantID string
+	// 数据面加载语义（PlatformScope）：站点码本身不含租户信息，需跨租户检索
+	if err := global.GWAF_LOCAL_DB.WithContext(wafctx.PlatformScope(context.Background())).
+		Model(&model.Hosts{}).Select("tenant_id").Where("code = ?", hostCode).
+		Scan(&tenantID).Error; err != nil {
+		return ""
+	}
+	return tenantID
+}
+
 // notifyCCBanOnce 推送 CC 封禁提醒，同一封禁键在节流窗口内只推一条。
 func notifyCCBanOnce(hitKey, clientIP string, region []string) {
 	throttleKey := "cc_ban_notify_" + hitKey
@@ -85,6 +106,7 @@ func notifyCCBanOnce(hitKey, clientIP string, region []string) {
 		BaseMessageInfo: innerbean.BaseMessageInfo{
 			OperaType: "CC封禁提醒",
 			Server:    serverName,
+			TenantId:  ccBanTenantID(hitKey),
 		},
 		Ip:               clientIP + " (" + strings.Join(region, ",") + ")",
 		Reason:           "CC攻击，访问频次过高",

@@ -49,9 +49,9 @@ func (w *WafNotifyChannelApi) AddApi(c *gin.Context) {
 		if req.AccessToken == waf_service.ConfigClearSentinel {
 			req.AccessToken = ""
 		}
-		err = wafNotifyChannelService.CheckIsExistApi(req)
+		err = wafNotifyChannelService.CheckIsExistApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
-			err = wafNotifyChannelService.AddApi(req)
+			err = wafNotifyChannelService.AddApi(c.Request.Context(), req)
 			if err == nil {
 				response.OkWithMessage("添加成功", c)
 			} else {
@@ -81,7 +81,7 @@ func (w *WafNotifyChannelApi) GetDetailApi(c *gin.Context) {
 	var req request.WafNotifyChannelDetailReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		bean := wafNotifyChannelService.GetDetailApi(req)
+		bean := wafNotifyChannelService.GetDetailApiCtx(c.Request.Context(), req)
 		waf_service.MaskNotifyChannelSecret(&bean)
 		response.OkWithDetailed(bean, "获取成功", c)
 	} else {
@@ -103,7 +103,7 @@ func (w *WafNotifyChannelApi) GetListApi(c *gin.Context) {
 	var req request.WafNotifyChannelSearchReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		beans, total, _ := wafNotifyChannelService.GetListApi(req)
+		beans, total, _ := wafNotifyChannelService.GetListApi(c.Request.Context(), req)
 		for i := range beans {
 			waf_service.MaskNotifyChannelSecret(&beans[i])
 		}
@@ -132,7 +132,7 @@ func (w *WafNotifyChannelApi) DelApi(c *gin.Context) {
 	var req request.WafNotifyChannelDelReq
 	err := c.ShouldBind(&req)
 	if err == nil {
-		err = wafNotifyChannelService.DelApi(req)
+		err = wafNotifyChannelService.DelApi(c.Request.Context(), req)
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithMessage("请检测参数", c)
 		} else if err != nil {
@@ -164,10 +164,10 @@ func (w *WafNotifyChannelApi) ModifyApi(c *gin.Context) {
 			return
 		}
 		// Secret/AccessToken：留空=保持原值(不回显导致的空提交不该冲掉)，清空需提交哨兵值。
-		existing := wafNotifyChannelService.GetDetailApi(request.WafNotifyChannelDetailReq{Id: req.Id})
+		existing := wafNotifyChannelService.GetDetailApiCtx(c.Request.Context(), request.WafNotifyChannelDetailReq{Id: req.Id})
 		req.Secret = resolveMaskedSecret(req.Secret, existing.Secret)
 		req.AccessToken = resolveMaskedSecret(req.AccessToken, existing.AccessToken)
-		err = wafNotifyChannelService.ModifyApi(req)
+		err = wafNotifyChannelService.ModifyApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("编辑发生错误", c)
 		} else {
@@ -183,7 +183,7 @@ func (w *WafNotifyChannelApi) TestApi(c *gin.Context) {
 	var req request.WafNotifyChannelTestReq
 	err := c.ShouldBindJSON(&req)
 	if err == nil {
-		err = wafNotifyChannelService.TestChannelApi(req)
+		err = wafNotifyChannelService.TestChannelApi(c.Request.Context(), req)
 		if err != nil {
 			response.FailWithMessage("测试失败: "+err.Error(), c)
 		} else {

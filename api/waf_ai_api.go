@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"SamWaf/global"
 	"SamWaf/innerbean"
 	"SamWaf/model"
@@ -348,7 +349,7 @@ func runAIExport(req request.WafAIExportReq, maxCount int) (outPath string, nAtt
 	for i := range rows {
 		fillRows = append(fillRows, &rows[i])
 	}
-	waf_service.FillLivePayloads(fillRows)
+	waf_service.FillLivePayloads(context.Background(), fillRows)
 
 	dir := filepath.Join(utils.GetCurrentDir(), "data", aiExportDir)
 	if err = os.MkdirAll(dir, 0750); err != nil {

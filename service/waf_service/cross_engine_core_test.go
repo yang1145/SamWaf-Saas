@@ -284,61 +284,61 @@ func runCoreCRUDCases(t *testing.T, db *gorm.DB) {
 
 	t.Run("NotifyChannel", func(t *testing.T) {
 		name := "nc_" + sfx()
-		fatalIf(t, WafNotifyChannelServiceApp.AddApi(request.WafNotifyChannelAddReq{Name: name, Type: "dingtalk", WebhookURL: "http://x", Status: 1}))
+		fatalIf(t, WafNotifyChannelServiceApp.AddApi(context.Background(), request.WafNotifyChannelAddReq{Name: name, Type: "dingtalk", WebhookURL: "http://x", Status: 1}))
 		var bean model.NotifyChannel
 		firstBy(t, db, &bean, "name = ?", name)
-		fatalIf(t, WafNotifyChannelServiceApp.ModifyApi(request.WafNotifyChannelEditReq{Id: bean.Id, Name: name, Type: "feishu", WebhookURL: "http://y", Status: 0}))
-		got := WafNotifyChannelServiceApp.GetDetailApi(request.WafNotifyChannelDetailReq{Id: bean.Id})
+		fatalIf(t, WafNotifyChannelServiceApp.ModifyApi(context.Background(), request.WafNotifyChannelEditReq{Id: bean.Id, Name: name, Type: "feishu", WebhookURL: "http://y", Status: 0}))
+		got := WafNotifyChannelServiceApp.GetDetailApiCtx(context.Background(), request.WafNotifyChannelDetailReq{Id: bean.Id})
 		if got.Type != "feishu" || got.WebhookURL != "http://y" {
 			t.Fatalf("NotifyChannel 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafNotifyChannelServiceApp.DelApi(request.WafNotifyChannelDelReq{Id: bean.Id}))
+		fatalIf(t, WafNotifyChannelServiceApp.DelApi(context.Background(), request.WafNotifyChannelDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.NotifyChannel{}, bean.Id)
 	})
 
 	t.Run("NotifySubscription", func(t *testing.T) {
 		ch := "chan_" + sfx()
-		fatalIf(t, WafNotifySubscriptionServiceApp.AddApi(request.WafNotifySubscriptionAddReq{ChannelId: ch, MessageType: "attack", Recipients: "a@b.com", Status: 1}))
+		fatalIf(t, WafNotifySubscriptionServiceApp.AddApi(context.Background(), request.WafNotifySubscriptionAddReq{ChannelId: ch, MessageType: "attack", Recipients: "a@b.com", Status: 1}))
 		var bean model.NotifySubscription
 		firstBy(t, db, &bean, "channel_id = ? and message_type = ?", ch, "attack")
-		fatalIf(t, WafNotifySubscriptionServiceApp.ModifyApi(request.WafNotifySubscriptionEditReq{Id: bean.Id, ChannelId: ch, MessageType: "attack", Recipients: "c@d.com", Status: 0}))
-		got := WafNotifySubscriptionServiceApp.GetDetailApi(request.WafNotifySubscriptionDetailReq{Id: bean.Id})
+		fatalIf(t, WafNotifySubscriptionServiceApp.ModifyApi(context.Background(), request.WafNotifySubscriptionEditReq{Id: bean.Id, ChannelId: ch, MessageType: "attack", Recipients: "c@d.com", Status: 0}))
+		got := WafNotifySubscriptionServiceApp.GetDetailApi(context.Background(), request.WafNotifySubscriptionDetailReq{Id: bean.Id})
 		if got.Recipients != "c@d.com" {
 			t.Fatalf("NotifySubscription 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafNotifySubscriptionServiceApp.DelApi(request.WafNotifySubscriptionDelReq{Id: bean.Id}))
+		fatalIf(t, WafNotifySubscriptionServiceApp.DelApi(context.Background(), request.WafNotifySubscriptionDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.NotifySubscription{}, bean.Id)
 	})
 
 	t.Run("Task", func(t *testing.T) {
 		method := "m_" + sfx()
-		fatalIf(t, WafTaskServiceApp.AddApi(request.WafTaskAddReq{TaskName: "n_" + sfx(), TaskUnit: "day", TaskValue: 1, TaskMethod: method}))
+		fatalIf(t, WafTaskServiceApp.AddApi(context.Background(), request.WafTaskAddReq{TaskName: "n_" + sfx(), TaskUnit: "day", TaskValue: 1, TaskMethod: method}))
 		var bean model.Task
 		firstBy(t, db, &bean, "task_method = ?", method)
-		fatalIf(t, WafTaskServiceApp.ModifyApi(request.WafTaskEditReq{Id: bean.Id, TaskName: "n2_" + sfx(), TaskUnit: "hour", TaskValue: 2, TaskMethod: method}))
-		got := WafTaskServiceApp.GetDetailByIdApi(bean.Id)
+		fatalIf(t, WafTaskServiceApp.ModifyApi(context.Background(), request.WafTaskEditReq{Id: bean.Id, TaskName: "n2_" + sfx(), TaskUnit: "hour", TaskValue: 2, TaskMethod: method}))
+		got := WafTaskServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.TaskUnit != "hour" || got.TaskValue != 2 {
 			t.Fatalf("Task 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafTaskServiceApp.DelApi(request.WafTaskDelReq{Id: bean.Id}))
+		fatalIf(t, WafTaskServiceApp.DelApi(context.Background(), request.WafTaskDelReq{Id: bean.Id}))
 		assertGone(t, db, &model.Task{}, bean.Id)
 	})
 
 	t.Run("BatchTask", func(t *testing.T) {
 		name := "bt_" + sfx()
-		fatalIf(t, WafBatchServiceApp.AddApi(request.BatchTaskAddReq{
+		fatalIf(t, WafBatchServiceApp.AddApi(context.Background(), request.BatchTaskAddReq{
 			BatchTaskName: name, BatchType: "ipdeny", BatchSourceType: "local", BatchTriggerType: "manual", BatchSource: "/tmp/x", BatchExecuteMethod: "append",
 		}))
 		var bean model.BatchTask
 		firstBy(t, db, &bean, "batch_task_name = ?", name)
-		fatalIf(t, WafBatchServiceApp.ModifyApi(request.BatchTaskEditReq{
+		fatalIf(t, WafBatchServiceApp.ModifyApi(context.Background(), request.BatchTaskEditReq{
 			Id: bean.Id, BatchTaskName: name, BatchType: "ipdeny", BatchSourceType: "local", BatchTriggerType: "manual", BatchSource: "/tmp/y", BatchExecuteMethod: "append",
 		}))
-		got := WafBatchServiceApp.GetDetailByIdApi(bean.Id)
+		got := WafBatchServiceApp.GetDetailByIdApi(context.Background(), bean.Id)
 		if got.BatchSource != "/tmp/y" {
 			t.Fatalf("BatchTask 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafBatchServiceApp.DelApi(request.BatchTaskDeleteReq{Id: bean.Id}))
+		fatalIf(t, WafBatchServiceApp.DelApi(context.Background(), request.BatchTaskDeleteReq{Id: bean.Id}))
 		assertGone(t, db, &model.BatchTask{}, bean.Id)
 	})
 

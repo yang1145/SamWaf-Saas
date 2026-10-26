@@ -38,6 +38,15 @@ func openTrafficTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+// testOwners 给站点挂上平台全局租户归属（对齐旧行为：测试行用全局常量建行）
+func testOwners(codes ...string) map[string]trafficHostOwner {
+	m := make(map[string]trafficHostOwner, len(codes))
+	for _, c := range codes {
+		m[c] = trafficHostOwner{TenantID: global.GWAF_TENANT_ID, UserCode: global.GWAF_USER_CODE}
+	}
+	return m
+}
+
 func TestWriteTrafficStats_CreateThenAccumulate(t *testing.T) {
 	db := openTrafficTestDB(t)
 
@@ -51,7 +60,7 @@ func TestWriteTrafficStats_CreateThenAccumulate(t *testing.T) {
 	}
 
 	// 第一轮：表里没有行 → 应新建
-	if err := writeTrafficStats(db, snap(100, 1000)); err != nil {
+	if err := writeTrafficStats(db, snap(100, 1000), testOwners("h1")); err != nil {
 		t.Fatalf("首轮落库失败: %v", err)
 	}
 	var days []model.StatsSiteDay
@@ -69,7 +78,7 @@ func TestWriteTrafficStats_CreateThenAccumulate(t *testing.T) {
 	}
 
 	// 第二轮：同一天同整点 → 必须在原行上累加，而不是再插一行
-	if err := writeTrafficStats(db, snap(50, 500)); err != nil {
+	if err := writeTrafficStats(db, snap(50, 500), testOwners("h1")); err != nil {
 		t.Fatalf("二轮落库失败: %v", err)
 	}
 	days = nil
@@ -119,7 +128,7 @@ func TestWriteTrafficStats_DoesNotClobberExistingCounts(t *testing.T) {
 	if err := writeTrafficStats(db, []global.TrafficSnapshot{{
 		TrafficKey: global.TrafficKey{HostCode: "h1", Host: "a.com", Day: day, HourTime: hour},
 		In:         7, Out: 9,
-	}}); err != nil {
+	}}, testOwners("h1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -145,7 +154,7 @@ func TestWriteTrafficStats_MultiHostMultiDay(t *testing.T) {
 		{TrafficKey: global.TrafficKey{HostCode: "h1", Host: "a.com", Day: 20260819, HourTime: 90000}, In: 5, Out: 6},
 		{TrafficKey: global.TrafficKey{HostCode: "h2", Host: "b.com", Day: 20260818, HourTime: 1000}, In: 7, Out: 8},
 	}
-	if err := writeTrafficStats(db, list); err != nil {
+	if err := writeTrafficStats(db, list, testOwners("h1", "h2")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -184,7 +193,7 @@ func TestWriteTrafficStats_RollsBackOnError(t *testing.T) {
 	if err := writeTrafficStats(db, []global.TrafficSnapshot{{
 		TrafficKey: global.TrafficKey{HostCode: "h1", Host: "a.com", Day: 20260818, HourTime: 1000},
 		In:         10, Out: 10,
-	}}); err != nil {
+	}}, testOwners("h1")); err != nil {
 		t.Fatal(err)
 	}
 	// 把小时表删掉，制造「天表能写、小时表必失败」的场景
@@ -195,7 +204,7 @@ func TestWriteTrafficStats_RollsBackOnError(t *testing.T) {
 	err := writeTrafficStats(db, []global.TrafficSnapshot{{
 		TrafficKey: global.TrafficKey{HostCode: "h1", Host: "a.com", Day: 20260818, HourTime: 1000},
 		In:         999, Out: 999,
-	}})
+	}}, testOwners("h1"))
 	if err == nil {
 		t.Fatal("小时表不存在时应返回错误")
 	}
@@ -206,5 +215,34 @@ func TestWriteTrafficStats_RollsBackOnError(t *testing.T) {
 	}
 	if got.TrafficIn != 10 {
 		t.Fatalf("事务没回滚：天表被写成 %d，期望仍是 10（否则退回内存重试会重复计数）", got.TrafficIn)
+	}
+}
+
+// 归属未知的站点：整桶跳过、绝不落进平台桶（fail-closed，防止跨租户串数据）
+func TestWriteTrafficStats_SkipsUnknownOwner(t *testing.T) {
+	db := openTrafficTestDB(t)
+
+	list := []global.TrafficSnapshot{
+		{TrafficKey: global.TrafficKey{HostCode: "h1", Host: "a.com", Day: 20260818, HourTime: 1000}, In: 10, Out: 20},
+		{TrafficKey: global.TrafficKey{HostCode: "ghost", Host: "ghost.com", Day: 20260818, HourTime: 1000}, In: 1, Out: 2},
+	}
+	// 只有 h1 能解析归属，ghost 不在映射里
+	if err := writeTrafficStats(db, list, testOwners("h1")); err != nil {
+		t.Fatalf("落库失败: %v", err)
+	}
+
+	var days []model.StatsSiteDay
+	if err := db.Find(&days).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 1 || days[0].HostCode != "h1" {
+		t.Fatalf("未知归属的桶应被跳过，实际天级行: %+v", days)
+	}
+	var hours []model.StatsSiteHour
+	if err := db.Find(&hours).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(hours) != 1 || hours[0].HostCode != "h1" {
+		t.Fatalf("未知归属的小时桶也应被跳过，实际: %+v", hours)
 	}
 }

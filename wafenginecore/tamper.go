@@ -244,6 +244,7 @@ func (waf *WafEngine) onTamperDetected(rule *model.TamperRule, weblog *innerbean
 	domain := weblog.HOST
 	srcIp := weblog.SRC_IP
 	url := weblog.URL
+	tenantId := weblog.TenantId
 	go func() {
 		now := time.Now().Format("2006-01-02 15:04:05")
 		global.GWAF_LOCAL_DB.Model(&model.TamperRule{}).Where("id=?", ruleId).Updates(map[string]interface{}{
@@ -255,7 +256,7 @@ func (waf *WafEngine) onTamperDetected(rule *model.TamperRule, weblog *innerbean
 			ruleInfo = "检测到网页被篡改，已回吐正确副本：" + url
 		}
 		global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.RuleMessageInfo{
-			BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "网页防篡改", Server: global.GWAF_CUSTOM_SERVER_NAME},
+			BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "网页防篡改", Server: global.GWAF_CUSTOM_SERVER_NAME, TenantId: tenantId},
 			Domain:          domain,
 			RuleInfo:        ruleInfo,
 			Ip:              fmt.Sprintf("%s (%s)", srcIp, utils.GetCountry(srcIp)),

@@ -2,6 +2,7 @@ package waf_service
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/customtype"
 	"SamWaf/enums"
 	"SamWaf/global"
@@ -10,6 +11,7 @@ import (
 	"SamWaf/model/baseorm"
 	"SamWaf/model/request"
 	"SamWaf/utils"
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +20,24 @@ import (
 type WafSecurityAuditService struct{}
 
 var WafSecurityAuditServiceApp = new(WafSecurityAuditService)
+
+// securityAuditTenantScope 安全审计域的租户归属限定（语义同账号域的 accountTenantScope）。
+//
+// model.SecurityAuditLog 在 tenantExemptModels 平台豁免清单里，租户回调既不给它
+// 过滤也不给它盖章——审计行的归属限定必须在这里手工完成：
+//   - 写路径（WriteCtx）：返回非空租户码时行落该租户名下，否则落平台（全局）名下；
+//   - 读路径（GetListApi）：返回非空租户码时列表只看该租户的行，平台视角
+//     （无租户上下文/平台作用域/平台自身租户）不加过滤，作为平台监督入口看全部。
+func securityAuditTenantScope(ctx context.Context) string {
+	if ctx == nil || wafctx.PlatformScoped(ctx) {
+		return ""
+	}
+	tenantID, _, hasCtx := wafctx.TenantFrom(ctx)
+	if !hasCtx || tenantID == "" || tenantID == global.GWAF_TENANT_ID {
+		return ""
+	}
+	return tenantID
+}
 
 // deniedThrottleMinutes 「未认证被拦」事件的审计节流窗口。
 //
@@ -48,14 +68,24 @@ type AuditEntry struct {
 	Message     string
 }
 
-// Write 落一条审计。
+// Write 落一条审计（兼容入口：无租户上下文，行落平台/全局名下）。
+//
+// 保留原签名供两类调用点：引擎数据面（wafenginecore/wafworker.go，评估的是访客请求，
+// 没有管理端请求上下文）与尚未接入 ctx 的管理端调用点。携带请求上下文的调用方
+// （如批量任务执行审计）应改用 WriteCtx，让审计行落请求租户名下。
+//
+// 约束：Message 里绝不能出现密码、Cookie、票据明文。审计日志的可见性比业务日志更广。
+func (receiver *WafSecurityAuditService) Write(e AuditEntry) {
+	receiver.WriteCtx(context.Background(), e)
+}
+
+// WriteCtx 落一条审计，行归属按 ctx 手工盖章（本模型在豁免清单，回调不代劳）：
+// 非平台租户的请求产生的审计行落请求租户名下；平台视角落平台（全局）名下。
 //
 // 同步写库而非走 GQEQUE_LOG_DB 队列：除 denied 外都是低频事件（登录、踢人、票据异常），
 // 同步写对热路径没有影响，却省掉了改队列消费端的一整套改动。
 // denied 由 WriteDenied 做节流后再进来。
-//
-// 约束：Message 里绝不能出现密码、Cookie、票据明文。审计日志的可见性比业务日志更广。
-func (receiver *WafSecurityAuditService) Write(e AuditEntry) {
+func (receiver *WafSecurityAuditService) WriteCtx(ctx context.Context, e AuditEntry) {
 	if global.GWAF_LOCAL_LOG_DB == nil {
 		return
 	}
@@ -66,11 +96,19 @@ func (receiver *WafSecurityAuditService) Write(e AuditEntry) {
 	if e.Country == "" && e.City == "" {
 		e.Country, e.City = accessLookupLocation(e.ClientIP)
 	}
+	// 租户归属手工盖章：豁免模型不走回调，写路径必须在这里显式落列
+	tenantID, userCode := global.GWAF_TENANT_ID, global.GWAF_USER_CODE
+	if scope := securityAuditTenantScope(ctx); scope != "" {
+		tenantID = scope
+		if ctxUserCode, _, ok := wafctx.TenantFrom(ctx); ok && ctxUserCode != "" {
+			userCode = ctxUserCode
+		}
+	}
 	bean := model.SecurityAuditLog{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
-			USER_CODE:   global.GWAF_USER_CODE,
-			Tenant_ID:   global.GWAF_TENANT_ID,
+			USER_CODE:   userCode,
+			Tenant_ID:   tenantID,
 			CREATE_TIME: customtype.JsonTime(now),
 			UPDATE_TIME: customtype.JsonTime(now),
 		},
@@ -90,7 +128,7 @@ func (receiver *WafSecurityAuditService) Write(e AuditEntry) {
 		Message:     truncate(e.Message, 500),
 		Day:         day,
 	}
-	global.GWAF_LOCAL_LOG_DB.Create(&bean)
+	global.GWAF_LOCAL_LOG_DB.WithContext(ctx).Create(&bean)
 
 	receiver.notify(bean, now)
 }
@@ -181,12 +219,16 @@ func (receiver *WafSecurityAuditService) WriteDenied(e AuditEntry) {
 	receiver.WriteThrottled(e)
 }
 
-func (receiver *WafSecurityAuditService) GetListApi(req request.WafAccessAuditSearchReq) ([]model.SecurityAuditLog, int64, error) {
+func (receiver *WafSecurityAuditService) GetListApi(ctx context.Context, req request.WafAccessAuditSearchReq) ([]model.SecurityAuditLog, int64, error) {
 	var list []model.SecurityAuditLog
 	var total int64 = 0
 
-	db := global.GWAF_LOCAL_LOG_DB.Model(&model.SecurityAuditLog{}).
-		Where("user_code = ? and tenant_id = ?", global.GWAF_USER_CODE, global.GWAF_TENANT_ID)
+	// 本模型平台豁免，租户可见性在这里手工限定：非平台租户只看自己名下的行，
+	// 平台视角（平台作用域/平台自身租户/无上下文）不加过滤，作为平台监督入口。
+	db := global.GWAF_LOCAL_LOG_DB.WithContext(ctx).Model(&model.SecurityAuditLog{})
+	if scope := securityAuditTenantScope(ctx); scope != "" {
+		db = db.Where("tenant_id = ?", scope)
+	}
 	if strings.TrimSpace(req.Category) != "" {
 		db = db.Where("category = ?", strings.TrimSpace(req.Category))
 	}
@@ -219,11 +261,12 @@ func (receiver *WafSecurityAuditService) GetListApi(req request.WafAccessAuditSe
 }
 
 // CleanExpired 按保留天数清理，由定时任务调用。
-func (receiver *WafSecurityAuditService) CleanExpired(keepDays int) int64 {
+// 平台维护动作：cron 侧以 PlatformScope 调用，跨租户清理全部过期审计行。
+func (receiver *WafSecurityAuditService) CleanExpired(ctx context.Context, keepDays int) int64 {
 	if keepDays <= 0 {
 		keepDays = 90
 	}
 	cutoffDay, _ := strconv.Atoi(time.Now().AddDate(0, 0, -keepDays).Format("20060102"))
-	r := global.GWAF_LOCAL_LOG_DB.Where("day < ?", cutoffDay).Delete(&model.SecurityAuditLog{})
+	r := global.GWAF_LOCAL_LOG_DB.WithContext(ctx).Where("day < ?", cutoffDay).Delete(&model.SecurityAuditLog{})
 	return r.RowsAffected
 }
