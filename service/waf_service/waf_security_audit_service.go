@@ -39,6 +39,25 @@ func securityAuditTenantScope(ctx context.Context) string {
 	return tenantID
 }
 
+// auditTenantOf 决定审计行的租户归属：
+//  1. 请求上下文声明了租户 → 用请求租户（管理端操作）；
+//  2. 否则用调用方显式指定的 e.TenantID（引擎数据面按站点归属带下来，没有请求上下文）；
+//  3. 都没有 → 平台/全局桶。
+func auditTenantOf(ctx context.Context, e AuditEntry) (tenantID, userCode string) {
+	tenantID, userCode = global.GWAF_TENANT_ID, global.GWAF_USER_CODE
+	if scope := securityAuditTenantScope(ctx); scope != "" {
+		tenantID = scope
+		if _, ctxUserCode, ok := wafctx.TenantFrom(ctx); ok && ctxUserCode != "" {
+			userCode = ctxUserCode
+		}
+		return tenantID, userCode
+	}
+	if e.TenantID != "" {
+		tenantID = e.TenantID
+	}
+	return tenantID, userCode
+}
+
 // deniedThrottleMinutes 「未认证被拦」事件的审计节流窗口。
 //
 // 这是本表唯一的高频事件：一次目录扫描就是几千个未认证请求。不节流的话，
@@ -66,6 +85,9 @@ type AuditEntry struct {
 	Fingerprint string
 	Result      int
 	Message     string
+	// TenantID 事件归属租户。引擎数据面评估访客请求，没有管理端请求上下文，
+	// 由调用方按站点归属显式带下来；请求链路调用方留空，以 ctx 为准。
+	TenantID string
 }
 
 // Write 落一条审计（兼容入口：无租户上下文，行落平台/全局名下）。
@@ -97,13 +119,7 @@ func (receiver *WafSecurityAuditService) WriteCtx(ctx context.Context, e AuditEn
 		e.Country, e.City = accessLookupLocation(e.ClientIP)
 	}
 	// 租户归属手工盖章：豁免模型不走回调，写路径必须在这里显式落列
-	tenantID, userCode := global.GWAF_TENANT_ID, global.GWAF_USER_CODE
-	if scope := securityAuditTenantScope(ctx); scope != "" {
-		tenantID = scope
-		if ctxUserCode, _, ok := wafctx.TenantFrom(ctx); ok && ctxUserCode != "" {
-			userCode = ctxUserCode
-		}
-	}
+	tenantID, userCode := auditTenantOf(ctx, e)
 	bean := model.SecurityAuditLog{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
@@ -169,7 +185,8 @@ func (receiver *WafSecurityAuditService) notify(bean model.SecurityAuditLog, now
 	if !ok || global.GQEQUE_MESSAGE_DB == nil {
 		return
 	}
-	key := enums.CACHE_ACCESS_NOTIFY + bean.Event + ":" + bean.ClientIP
+	// 节流键带租户：同 IP 在不同租户站点触发同名事件时互不抑制
+	key := enums.CACHE_ACCESS_NOTIFY + bean.Tenant_ID + ":" + bean.Event + ":" + bean.ClientIP
 	if global.GCACHE_WAFCACHE.IsKeyExist(key) {
 		return
 	}
@@ -184,6 +201,9 @@ func (receiver *WafSecurityAuditService) notify(bean model.SecurityAuditLog, now
 		BaseMessageInfo: innerbean.BaseMessageInfo{
 			OperaType: "统一访问认证",
 			Server:    serverName,
+			// 审计行归属租户在 WriteCtx 里已落列，这里跟着行归属走：
+			// 租户管理员才看得到自己站点的认证事件回执
+			TenantId: bean.Tenant_ID,
 		},
 		Event:       bean.Event,
 		EventName:   model.AccessEventName(bean.Event),
@@ -204,7 +224,9 @@ func (receiver *WafSecurityAuditService) notify(bean model.SecurityAuditLog, now
 // 不节流的话，一次目录扫描或一轮爆破就能把审计表刷爆，
 // 真正有价值的登录/踢人/票据异常记录反而被淹没，同时放大同步写库的压力。
 func (receiver *WafSecurityAuditService) WriteThrottled(e AuditEntry) {
-	key := enums.CACHE_ACCESS_AUDIT + e.Event + ":" + e.ClientIP + ":" + e.Host
+	// 节流键带租户：同 IP 同域名在不同租户下是两条独立事件，不能被另一租户的记录压掉
+	throttleTenant, _ := auditTenantOf(context.Background(), e)
+	key := enums.CACHE_ACCESS_AUDIT + throttleTenant + ":" + e.Event + ":" + e.ClientIP + ":" + e.Host
 	if global.GCACHE_WAFCACHE.IsKeyExist(key) {
 		return
 	}

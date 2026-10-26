@@ -40,7 +40,7 @@ func runSideCases(t *testing.T, x *xdb) {
 		if got.Status != 0 || got.Remarks != "r2" {
 			t.Fatalf("Account 更新未落库: %+v", got)
 		}
-		fatalIf(t, WafAccountServiceApp.DelApi(request.WafAccountDelReq{Id: bean.Id}))
+		fatalIf(t, WafAccountServiceApp.DelApi(context.Background(), request.WafAccountDelReq{Id: bean.Id}, enums.ROLE_SUPER_ADMIN, ""))
 		assertGone(t, x.core, &model.Account{}, bean.Id)
 	})
 
@@ -53,14 +53,14 @@ func runSideCases(t *testing.T, x *xdb) {
 			UNIX_ADD_TIME: time.Now().Unix(), CREATE_TIME: time.Now().Format("2006-01-02 15:04:05"),
 		}).Error)
 		// 打标 normal（避免 attack 触发自动分类的 wafai 依赖）
-		fatalIf(t, WafAILabelServiceApp.MarkApi(request.WafAILabelMarkReq{ReqUuid: uid, HostCode: "h1", Mark: "normal"}))
+		fatalIf(t, WafAILabelServiceApp.MarkApi(context.Background(), request.WafAILabelMarkReq{ReqUuid: uid, HostCode: "h1", Mark: "normal"}))
 		// WafLogLabelMark 实际落在 core 库（MarkApi 用 GWAF_LOCAL_DB），仅 WebLog 快照读 log 库
 		var mark model.WafLogLabelMark
 		firstBy(t, x.core, &mark, "req_uuid = ?", uid)
 		if mark.Mark != "normal" {
 			t.Fatalf("AILabel 标记未落库: %+v", mark)
 		}
-		fatalIf(t, WafAILabelServiceApp.UnmarkApi(uid))
+		fatalIf(t, WafAILabelServiceApp.UnmarkApi(context.Background(), uid))
 		if n := countBy(t, x.core, &model.WafLogLabelMark{}, "req_uuid = ?", uid); n != 0 {
 			t.Fatalf("AILabel 取消标记后仍存在 %d 条", n)
 		}
@@ -69,7 +69,7 @@ func runSideCases(t *testing.T, x *xdb) {
 	t.Run("Analysis", func(t *testing.T) {
 		today := time.Now().Format("20060102")
 		// 只读聚合（log+stats），空数据返回空切片即可，重点是方言 SQL 在三库能执行不崩
-		_ = WafAnalysisServiceApp.StatAnalysisDayCountryRangeApi(request.WafStatsAnalysisDayRangeCountryReq{StartDay: today, EndDay: today})
-		_ = WafAnalysisServiceApp.AnalysisSpiderApi(request.WafAnalysisSpiderReq{StartDay: today, EndDay: today})
+		_ = WafAnalysisServiceApp.StatAnalysisDayCountryRangeApi(context.Background(), request.WafStatsAnalysisDayRangeCountryReq{StartDay: today, EndDay: today})
+		_ = WafAnalysisServiceApp.AnalysisSpiderApi(context.Background(), request.WafAnalysisSpiderReq{StartDay: today, EndDay: today})
 	})
 }

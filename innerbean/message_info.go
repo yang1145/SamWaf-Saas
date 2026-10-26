@@ -25,6 +25,10 @@ type BaseMessageInfo struct {
 	TenantId string `json:"-"`
 }
 
+// Tenant 返回事件归属租户。所有消息结构都内嵌 BaseMessageInfo，方法被提升后
+// 发送侧可以统一取租户，不必对每种消息类型逐个 type switch。
+func (b BaseMessageInfo) Tenant() string { return b.TenantId }
+
 /*
 **
 域名信息:

@@ -1,6 +1,7 @@
 package wafenginecore
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/enums"
 	"SamWaf/global"
 	"SamWaf/innerbean"
@@ -10,6 +11,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -205,6 +207,14 @@ func (waf *WafEngine) serveTamperBaseline(resp *http.Response, rule *model.Tampe
 	resp.Status = "200 OK"
 }
 
+// tamperRuleCtx 请求期改写规则行的作用域 ctx：按规则行自身的租户过滤。
+// UPDATE 回调只在 ctx 显式携带租户时追加 tenant_id/user_code 条件，不带 ctx 就是
+// 裸按 id 改行（跨租户可写面）。行租户为空（未盖章的存量数据）时 WithTenant 等于
+// 未声明，保持原有无过滤行为。goroutine 脱离请求生命周期，故从 Background 派生。
+func tamperRuleCtx(tenantID, userCode string) context.Context {
+	return wafctx.WithTenant(context.Background(), tenantID, userCode)
+}
+
 // captureTamperBaseline 被动捕获基线（异步、按规则去重），完成后触发热重载
 func (waf *WafEngine) captureTamperBaseline(rule *model.TamperRule, body []byte, contentType string, statusCode int, cfg model.TamperConfig) {
 	if _, loaded := tamperLearning.LoadOrStore(rule.Id, struct{}{}); loaded {
@@ -212,6 +222,7 @@ func (waf *WafEngine) captureTamperBaseline(rule *model.TamperRule, body []byte,
 	}
 	ruleId := rule.Id
 	hostCode := rule.HostCode
+	ruleCtx := tamperRuleCtx(rule.Tenant_ID, rule.USER_CODE)
 	contentCopy := make([]byte, len(body))
 	copy(contentCopy, body)
 
@@ -233,7 +244,7 @@ func (waf *WafEngine) captureTamperBaseline(rule *model.TamperRule, body []byte,
 			upd["BaselineStatus"] = 1
 			upd["BaselineMsg"] = ""
 		}
-		global.GWAF_LOCAL_DB.Model(&model.TamperRule{}).Where("id=?", ruleId).Updates(upd)
+		global.GWAF_LOCAL_DB.WithContext(ruleCtx).Model(&model.TamperRule{}).Where("id=?", ruleId).Updates(upd)
 		waf.notifyTamperReload(hostCode)
 	}()
 }
@@ -241,13 +252,14 @@ func (waf *WafEngine) captureTamperBaseline(rule *model.TamperRule, body []byte,
 // onTamperDetected 命中篡改后异步累计次数并发告警；replaced 区分是否已回吐正确副本
 func (waf *WafEngine) onTamperDetected(rule *model.TamperRule, weblog *innerbean.WebLog, replaced bool) {
 	ruleId := rule.Id
+	ruleCtx := tamperRuleCtx(rule.Tenant_ID, rule.USER_CODE)
 	domain := weblog.HOST
 	srcIp := weblog.SRC_IP
 	url := weblog.URL
 	tenantId := weblog.TenantId
 	go func() {
 		now := time.Now().Format("2006-01-02 15:04:05")
-		global.GWAF_LOCAL_DB.Model(&model.TamperRule{}).Where("id=?", ruleId).Updates(map[string]interface{}{
+		global.GWAF_LOCAL_DB.WithContext(ruleCtx).Model(&model.TamperRule{}).Where("id=?", ruleId).Updates(map[string]interface{}{
 			"TamperCount":    gorm.Expr("tamper_count + 1"),
 			"LastTamperTime": now,
 		})
@@ -264,10 +276,12 @@ func (waf *WafEngine) onTamperDetected(rule *model.TamperRule, weblog *innerbean
 	}()
 }
 
-// notifyTamperReload 重新读取该站点防篡改规则并推送到引擎热更新
+// notifyTamperReload 重新读取该站点防篡改规则并推送到引擎热更新。
+// 与启动加载同语义走 engineLoadCtx()（平台作用域，读全部租户）：不带 ctx 时租户
+// 过滤回调回退全局常量，租户站点的规则查出来是空表，热更新会把已加载的保护清空。
 func (waf *WafEngine) notifyTamperReload(hostCode string) {
 	var list []model.TamperRule
-	global.GWAF_LOCAL_DB.Where("host_code=?", hostCode).Find(&list)
+	global.GWAF_LOCAL_DB.WithContext(engineLoadCtx()).Where("host_code=?", hostCode).Find(&list)
 	global.GWAF_CHAN_MSG <- spec.ChanCommonHost{
 		HostCode: hostCode,
 		Type:     enums.ChanTypeTamperRule,

@@ -75,9 +75,9 @@ func xengines() []xengine {
 // registerTenantScope 复刻 wafdb.before_query：所有 GORM 查询自动加租户/用户过滤，
 // 保持与生产一致（Raw/Exec 不受影响）。
 func registerTenantScope(db *gorm.DB) {
-	_ = db.Callback().Query().Before("gorm:query").Register("tenant_plugin:before_query", func(d *gorm.DB) {
-		d.Where("tenant_id = ? and user_code = ?", global.GWAF_TENANT_ID, global.GWAF_USER_CODE)
-	})
+	// 与生产同款回调链（Query/Row/Update/Delete/Create）：本轮之后 service 大量改用
+	// ctx + 回调盖章，旧的「只挂 Query + 恒用全局常量」桩会造出无归属行、查询永远落空。
+	wafdb.RegisterTenantScopeCallbacks(db)
 }
 
 // runRealMigrations 在给定连接上跑真实建表迁移并注册租户回调。

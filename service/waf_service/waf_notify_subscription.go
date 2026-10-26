@@ -2,6 +2,7 @@ package waf_service
 
 import (
 	"SamWaf/common/uuid"
+	"SamWaf/common/wafctx"
 	"SamWaf/customtype"
 	"SamWaf/global"
 	"SamWaf/model"
@@ -16,9 +17,8 @@ import (
 // 本文件分两类入口：
 //  - 管理端 CRUD（AddApi/ModifyApi/DelApi/Get*Api/CheckIsExistApi）：已接入请求 ctx，
 //    读写均随请求租户过滤，租户只能看到/操作自己的通知订阅；
-//  - 配置与发送侧（GetById/SaveConfig*/GetSubscriptions*）：调用方在
-//    api/waf_notify_subscription_config.go 与 waf_notify_sender.go（通知工作流，本次未接入 ctx），
-//    暂保持无 ctx 签名（回退全局租户），待通知工作流 ctx 化后一并迁移。
+//  - 配置与发送侧（GetById/SaveConfig*/GetSubscriptions*）：GetSubscriptionsForEvent
+//    已按事件归属租户取数（租户桶 + 平台桶），其余配置读取仍走调用方传入的 ctx。
 
 type WafNotifySubscriptionService struct{}
 
@@ -189,9 +189,37 @@ func (receiver *WafNotifySubscriptionService) GetSubscriptionsByMessageTypeAllCt
 	return subs
 }
 
-// GetSubscriptionsByMessageType 根据消息类型获取订阅
-func (receiver *WafNotifySubscriptionService) GetSubscriptionsByMessageType(messageType string) []model.NotifySubscription {
+// GetSubscriptionsByMessageType 根据消息类型获取启用中的订阅（随 ctx 租户过滤）
+func (receiver *WafNotifySubscriptionService) GetSubscriptionsByMessageType(ctx context.Context, messageType string) []model.NotifySubscription {
 	var subscriptions []model.NotifySubscription
-	global.GWAF_LOCAL_DB.Where("message_type = ? and "+dialect.Q("status")+" = ?", messageType, 1).Find(&subscriptions)
+	global.GWAF_LOCAL_DB.WithContext(ctx).Where("message_type = ? and "+dialect.Q("status")+" = ?", messageType, 1).Find(&subscriptions)
 	return subscriptions
+}
+
+// GetSubscriptionsForEvent 按事件归属租户取启用中的订阅。
+//
+// 租户事件同时投给「该租户的订阅」和「平台侧订阅」：平台管理员配的订阅是跨租户监管，
+// 口径与 WebSocket「平台侧连接可总览」一致；只投平台桶会让租户收不到自己的告警，
+// 只投租户桶又会让平台的监管订阅噤声。
+// 事件未携带租户（=平台事件或无归属）时只取平台桶，维持失败关闭。
+func (receiver *WafNotifySubscriptionService) GetSubscriptionsForEvent(tenantID, messageType string) []model.NotifySubscription {
+	scopes := []context.Context{context.Background()}
+	if tenantID != "" && tenantID != global.GWAF_TENANT_ID {
+		scopes = []context.Context{
+			wafctx.WithTenant(context.Background(), tenantID, ""),
+			context.Background(),
+		}
+	}
+	seen := make(map[string]struct{})
+	var list []model.NotifySubscription
+	for _, ctx := range scopes {
+		for _, sub := range receiver.GetSubscriptionsByMessageType(ctx, messageType) {
+			if _, ok := seen[sub.Id]; ok {
+				continue
+			}
+			seen[sub.Id] = struct{}{}
+			list = append(list, sub)
+		}
+	}
+	return list
 }

@@ -4,6 +4,7 @@ import (
 	"SamWaf/common/uuid"
 	"SamWaf/common/wafctx"
 	"SamWaf/customtype"
+	"SamWaf/enums"
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/model/baseorm"
@@ -25,6 +26,17 @@ import (
 
 type WafCommonApi struct {
 }
+
+// requestTenantID 取请求所属租户，用于给操作反馈类消息标注归属。
+// 无租户上下文（平台侧请求）回落平台租户：WebSocket 侧会把平台租户归一到平台连接，
+// 与未标注时「只推平台连接」的效果一致。
+func requestTenantID(ctx context.Context) string {
+	if tid, _, ok := wafctx.TenantFrom(ctx); ok && tid != "" {
+		return tid
+	}
+	return global.GWAF_TENANT_ID
+}
+
 type ReturnImportData struct {
 	SuccessInt int
 	FailInt    int
@@ -274,7 +286,7 @@ func processImportData(ctx context.Context, dataType interface{}, tableName stri
 					} else {
 						fieldVal.SetString(val)
 					}
-				case reflect.Int:
+				case reflect.Int, reflect.Int64:
 					intVal, err := strconv.Atoi(val)
 					if err != nil {
 						*msg += fmt.Sprintf("行 %d, 字段 %s 转换为 int 错误: %v |", rowNumber, fieldName, err)
@@ -316,19 +328,29 @@ func processImportData(ctx context.Context, dataType interface{}, tableName stri
 			}
 		}
 		if isBadData == false {
-			if err := global.GWAF_LOCAL_DB.WithContext(ctx).Create(newInstance.Interface()); err != nil {
-				errGorm := err.Error
-				if errGorm != nil {
-					*msg += fmt.Sprintf("行 %d 插入失败: %v |", rowNumber, err.Error)
-					*failInt++
-				} else {
-					*successInt++
-				}
+			if err := checkImportQuota(ctx, tableName); err != nil {
+				*msg += fmt.Sprintf("行 %d, %v |", rowNumber, err)
+				*failInt++
+			} else if dbResult := global.GWAF_LOCAL_DB.WithContext(ctx).Create(newInstance.Addr().Interface()); dbResult.Error != nil {
+				*msg += fmt.Sprintf("行 %d 插入失败: %v |", rowNumber, dbResult.Error)
+				*failInt++
+			} else {
+				*successInt++
 			}
 		}
 
 		rowNumber++
 	}
+}
+
+// checkImportQuota 导入行的租户配额校验：按行判定，而不是在导入入口只查一次——
+// 一次导入可落库几十行，入口校验会让 tenants.max_hosts 直接被批量导入绕过。
+// 目前只有站点维度有配额，其它导入表返回 nil。
+func checkImportQuota(ctx context.Context, tableName string) error {
+	if tableName != "hosts" {
+		return nil
+	}
+	return wafTenantService.CheckTenantQuota(ctx, enums.TenantQuotaKindHost)
 }
 
 // checkHostData 检查host信息是否合法

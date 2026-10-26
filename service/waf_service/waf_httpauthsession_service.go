@@ -103,11 +103,20 @@ func (receiver *WafHttpAuthSessionService) newSession(host model.Hosts, authType
 
 	now := time.Now()
 	country, city := accessLookupLocation(clientIP)
+	// 会话行归属站点所属租户：引擎数据面用 PlatformScope 建会话（要按 host_code 跨租户操作），
+	// 平台作用域不会盖章，这里必须显式落租户列，否则租户站点的会话全落进平台桶
+	tenantID, userCode := host.Tenant_ID, host.USER_CODE
+	if tenantID == "" {
+		tenantID = global.GWAF_TENANT_ID
+	}
+	if userCode == "" {
+		userCode = global.GWAF_USER_CODE
+	}
 	return model.HttpAuthSession{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
-			USER_CODE:   global.GWAF_USER_CODE,
-			Tenant_ID:   global.GWAF_TENANT_ID,
+			USER_CODE:   userCode,
+			Tenant_ID:   tenantID,
 			CREATE_TIME: customtype.JsonTime(now),
 			UPDATE_TIME: customtype.JsonTime(now),
 		},
@@ -420,9 +429,9 @@ func (receiver *WafHttpAuthSessionService) GetListApi(ctx context.Context, req r
 	if strings.TrimSpace(req.HostCode) == "" {
 		return nil, 0, errors.New("站点编码不能为空")
 	}
+	// 租户过滤交给 GORM 回调（按请求 ctx）：这里再手写全局租户条件会把租户请求挡成空结果
 	db := global.GWAF_LOCAL_DB.WithContext(ctx).Model(&model.HttpAuthSession{}).
-		Where("user_code = ? and tenant_id = ? and host_code = ?",
-			global.GWAF_USER_CODE, global.GWAF_TENANT_ID, strings.TrimSpace(req.HostCode))
+		Where("host_code = ?", strings.TrimSpace(req.HostCode))
 	if v := strings.TrimSpace(req.UserName); v != "" {
 		db = db.Where("user_name like ?", "%"+v+"%")
 	}
@@ -458,8 +467,9 @@ func (receiver *WafHttpAuthSessionService) KickApi(ctx context.Context, req requ
 		return errors.New("会话标识不能为空")
 	}
 	var bean model.HttpAuthSession
-	err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ? and user_code = ? and tenant_id = ?",
-		strings.TrimSpace(req.Id), global.GWAF_USER_CODE, global.GWAF_TENANT_ID).First(&bean).Error
+	// 按主键取行，租户过滤由 GORM 回调按请求 ctx 追加；
+	// 手写全局租户条件会让租户管理员踢不了本租户站点上的会话
+	err := global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ?", strings.TrimSpace(req.Id)).First(&bean).Error
 	if err != nil || bean.Id == "" {
 		return errors.New("会话不存在")
 	}
@@ -467,7 +477,7 @@ func (receiver *WafHttpAuthSessionService) KickApi(ctx context.Context, req requ
 		return nil
 	}
 	receiver.revokeRow(ctx, &bean, model.HttpAuthRevokeByAdmin)
-	WafSecurityAuditServiceApp.Write(AuditEntry{
+	WafSecurityAuditServiceApp.WriteCtx(ctx, AuditEntry{
 		Event:       model.HttpAuthEventKick,
 		AccountName: bean.UserName,
 		SessionCode: bean.TokenCode,
@@ -490,7 +500,7 @@ func (receiver *WafHttpAuthSessionService) KickByUserApi(ctx context.Context, re
 	n := receiver.RevokeByUser(ctx, strings.TrimSpace(req.HostCode), strings.TrimSpace(req.UserName),
 		model.HttpAuthRevokeByAdmin)
 	if n > 0 {
-		WafSecurityAuditServiceApp.Write(AuditEntry{
+		WafSecurityAuditServiceApp.WriteCtx(ctx, AuditEntry{
 			Event:       model.HttpAuthEventKick,
 			AccountName: strings.TrimSpace(req.UserName),
 			HostCode:    strings.TrimSpace(req.HostCode),
@@ -508,7 +518,7 @@ func (receiver *WafHttpAuthSessionService) KickAllApi(ctx context.Context, req r
 	}
 	n := receiver.RevokeByHostCode(ctx, strings.TrimSpace(req.HostCode), model.HttpAuthRevokeByAdmin)
 	if n > 0 {
-		WafSecurityAuditServiceApp.Write(AuditEntry{
+		WafSecurityAuditServiceApp.WriteCtx(ctx, AuditEntry{
 			Event:    model.HttpAuthEventKick,
 			HostCode: strings.TrimSpace(req.HostCode),
 			Result:   model.AccessAuditOK,
@@ -520,14 +530,28 @@ func (receiver *WafHttpAuthSessionService) KickAllApi(ctx context.Context, req r
 
 // ─────────────────────────── 清理 ───────────────────────────
 
+// ExpiredGroup 一轮清理中按租户汇总的到期会话数。
+type ExpiredGroup struct {
+	TenantID string
+	UserCode string
+	Count    int64
+}
+
 // CleanExpired 由定时任务调用：先把到期的有效会话标记失效，再删掉超过保留期的历史行。
-// 返回 (本次标记到期数, 删除历史行数)。
-func (receiver *WafHttpAuthSessionService) CleanExpired(ctx context.Context, keepDays int) (int64, int64) {
+// 返回 (本次标记到期数, 删除历史行数, 按租户分组的到期汇总)。
+func (receiver *WafHttpAuthSessionService) CleanExpired(ctx context.Context, keepDays int) (int64, int64, []ExpiredGroup) {
 	if keepDays <= 0 {
 		keepDays = 30
 	}
 	now := time.Now()
 	db := global.GWAF_LOCAL_DB.WithContext(ctx)
+	// 分组要赶在状态翻转之前取：翻成 revoked 之后就分不清是自然到期还是被踢/被清理了
+	var groups []ExpiredGroup
+	_ = db.Model(&model.HttpAuthSession{}).
+		Select("tenant_id, user_code, count(*) as count").
+		Where("status = ? and expire_time < ?", model.HttpAuthStatusValid, now).
+		Group("tenant_id, user_code").
+		Scan(&groups).Error
 	r1 := db.Model(&model.HttpAuthSession{}).
 		Where("status = ? and expire_time < ?", model.HttpAuthStatusValid, now).
 		Updates(map[string]interface{}{
@@ -538,5 +562,5 @@ func (receiver *WafHttpAuthSessionService) CleanExpired(ctx context.Context, kee
 	// 缓存里留着的副本不会让一条已过期的会话继续放行。
 	r2 := db.Where("status = ? and update_time < ?",
 		model.HttpAuthStatusRevoked, now.AddDate(0, 0, -keepDays)).Delete(&model.HttpAuthSession{})
-	return r1.RowsAffected, r2.RowsAffected
+	return r1.RowsAffected, r2.RowsAffected, groups
 }

@@ -118,6 +118,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 					BaseMessageInfo: innerbean.BaseMessageInfo{
 						OperaType: "SSL证书申请成功",
 						Server:    serverName,
+						TenantId:  bean.Tenant_ID,
 					},
 					OperaCnt: sslSuccess,
 				})
@@ -153,6 +154,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 				BaseMessageInfo: innerbean.BaseMessageInfo{
 					OperaType: "SSL证书申请失败",
 					Server:    serverName,
+					TenantId:  bean.Tenant_ID,
 				},
 				OperaCnt: sslError,
 			})
@@ -232,6 +234,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 					BaseMessageInfo: innerbean.BaseMessageInfo{
 						OperaType: "SSL证书续期成功",
 						Server:    serverName,
+						TenantId:  bean.Tenant_ID,
 					},
 					OperaCnt: sslSuccess,
 				})
@@ -266,6 +269,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 				BaseMessageInfo: innerbean.BaseMessageInfo{
 					OperaType: "SSL证书续期失败",
 					Server:    serverName,
+					TenantId:  bean.Tenant_ID,
 				},
 				OperaCnt: sslError,
 			})
@@ -279,7 +283,7 @@ func (waf *WafEngine) ApplySSLOrder(chanType int, bean model.SslOrder) {
 // 一律只记录日志和系统日志，绝不影响证书申请/续期本身的成败判定。
 // 之所以在这里额外发一条通知：续期是低频事件（一张证书 60 天一次），静默失败的话
 // 用户要等到外部程序拿着过期证书报错才会发现。
-func exportSslConfigFile(sslConfigId string, domain string, scene string) {
+func exportSslConfigFile(sslConfigId string, domain string, scene string, tenantID string) {
 	msg, err := wafSslConfigService.ExportById(wafctx.PlatformScope(context.Background()), sslConfigId)
 	if err != nil {
 		exportErrMsg := fmt.Sprintf("SSL证书导出失败 - 域名: %s, 场景: %s, 错误: %v", domain, scene, err.Error())
@@ -306,6 +310,7 @@ func exportSslConfigFile(sslConfigId string, domain string, scene string) {
 			BaseMessageInfo: innerbean.BaseMessageInfo{
 				OperaType: "SSL证书导出失败",
 				Server:    serverName,
+				TenantId:  tenantID,
 			},
 			OperaCnt: exportErrMsg,
 		})
@@ -317,11 +322,18 @@ func exportSslConfigFile(sslConfigId string, domain string, scene string) {
 }
 
 func (waf *WafEngine) processSSL(updateSSLOrder model.SslOrder, bean model.SslOrder) error {
+	// 证书夹随订单归属：引擎侧用 PlatformScope 写库（要跨租户按 host_code 找站点），
+	// 平台作用域不会盖章，必须显式把订单的租户写到新证书夹上，
+	// 否则租户自己申请的证书会落进平台证书夹，租户列表里看不到。
+	sslUserCode := bean.USER_CODE
+	if sslUserCode == "" {
+		sslUserCode = global.GWAF_USER_CODE
+	}
 	newSslConfig := model.SslConfig{
 		BaseOrm: baseorm.BaseOrm{
 			Id:          uuid.GenUUID(),
-			USER_CODE:   global.GWAF_USER_CODE,
-			Tenant_ID:   global.GWAF_TENANT_ID,
+			USER_CODE:   sslUserCode,
+			Tenant_ID:   bean.Tenant_ID,
 			CREATE_TIME: customtype.JsonTime(time.Now()),
 			UPDATE_TIME: customtype.JsonTime(time.Now()),
 		},
@@ -380,7 +392,7 @@ func (waf *WafEngine) processSSL(updateSSLOrder model.SslOrder, bean model.SslOr
 			wafSslConfigService.ModifyInner(wafctx.PlatformScope(context.Background()), newSslConfig)
 
 			//证书导出(落盘)：申请/续期成功后把新证书同步成实体文件，供 nginx 等外部程序使用
-			exportSslConfigFile(newSslConfig.Id, bean.ApplyDomain, "证书申请/续期")
+			exportSslConfigFile(newSslConfig.Id, bean.ApplyDomain, "证书申请/续期", bean.Tenant_ID)
 
 			//若管理端证书绑定了该证书夹条目，顺带刷新管理端证书
 			waf_service.RefreshManagerCertBySslConfig(newSslConfig.Id, newSslConfig.CertContent, newSslConfig.KeyContent)

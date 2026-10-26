@@ -64,7 +64,7 @@ func (w *WafTunnelApi) AddApi(c *gin.Context) {
 
 			if isUsed {
 				global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.OpResultMessageInfo{
-					BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "端口告警", Server: global.GWAF_CUSTOM_SERVER_NAME},
+					BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "端口告警", Server: global.GWAF_CUSTOM_SERVER_NAME, TenantId: requestTenantID(c.Request.Context())},
 					Msg:             fmt.Sprintf("%s端口 %d 已被占用", strings.ToUpper(protocol), port),
 					Success:         "true",
 				})

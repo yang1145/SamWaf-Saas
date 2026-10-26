@@ -145,6 +145,7 @@ func (w *WafLogAPi) ExportDBApi(c *gin.Context) {
 			BaseMessageInfo: innerbean.BaseMessageInfo{
 				OperaType: "导出失败",
 				Server:    serverName,
+				TenantId:  requestTenantID(c.Request.Context()),
 			},
 			Msg:     "当前不允许导出",
 			Success: "false",
@@ -257,6 +258,7 @@ func (w *WafLogAPi) DownloadApi(c *gin.Context) {
 			BaseMessageInfo: innerbean.BaseMessageInfo{
 				OperaType: "下载失败",
 				Server:    serverName,
+				TenantId:  requestTenantID(c.Request.Context()),
 			},
 			Msg:     "当前不允许下载",
 			Success: "false",

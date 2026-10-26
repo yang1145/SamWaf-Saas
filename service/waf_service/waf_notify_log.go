@@ -70,16 +70,15 @@ func (receiver *WafNotifyLogService) AddLogDetailCtx(ctx context.Context, bean m
 	return bean.Id, global.GWAF_LOCAL_LOG_DB.WithContext(ctx).Create(&bean).Error
 }
 
-// AddSuppressLog 记录一条"被抑制"的通知日志
+// AddSuppressLogCtx 记录一条"被抑制"的通知日志（行归属按订阅 ctx 盖章）
 //
 // 频控引擎保证一个抑制窗口只会调用一次，所以这里不会因为抑制量大而刷库。
-// 调用方（通知发送管线）无请求上下文，行归属回退全局租户，见 AddLogDetail 注释。
-func (receiver *WafNotifyLogService) AddSuppressLog(bean model.NotifyLog) (string, error) {
+func (receiver *WafNotifyLogService) AddSuppressLogCtx(ctx context.Context, bean model.NotifyLog) (string, error) {
 	bean.Status = model.NotifyLogStatusSuppress
 	if bean.SuppressCount <= 0 {
 		bean.SuppressCount = 1
 	}
-	return receiver.AddLogDetail(bean)
+	return receiver.AddLogDetailCtx(ctx, bean)
 }
 
 // UpdateSuppressCount 回填抑制条数（抑制窗口结束时调用）。

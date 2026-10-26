@@ -179,7 +179,7 @@ func (s *WafSslConfigApi) auditExport(c *gin.Context, msg string, exportErr erro
 	if exportErr != nil {
 		result, detail = model.AccessAuditFail, "导出失败/被拒: "+exportErr.Error()
 	}
-	wafAccessAuditService.Write(waf_service.AuditEntry{
+	wafAccessAuditService.WriteCtx(c.Request.Context(), waf_service.AuditEntry{
 		Event:       model.AuditEventConfigSSLExportWrite,
 		AccountName: accountStr,
 		ClientIP:    utils.GetManageClientIP(c),

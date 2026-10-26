@@ -1,10 +1,12 @@
 package waf_service
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/global"
 	"SamWaf/model"
 	"SamWaf/model/request"
 	response2 "SamWaf/model/response"
+	"context"
 	"fmt"
 
 	"gorm.io/gorm"
@@ -14,9 +16,35 @@ type WafAIService struct{}
 
 var WafAIServiceApp = new(WafAIService)
 
+// AIScopeCtx AI 语料/标注的读取作用域：平台侧（无租户上下文或平台自身租户）看全租户——
+// AI 模型是平台级能力，训练语料必须覆盖所有租户；租户侧只看自己的日志。
+func AIScopeCtx(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if tid, _, ok := wafctx.TenantFrom(ctx); ok && tid != "" && tid != global.GWAF_TENANT_ID {
+		return ctx
+	}
+	return wafctx.PlatformScope(ctx)
+}
+
+// AIScopeTenant 与 AIScopeCtx 对应：标注行/租户条件应落的值。
+func AIScopeTenant(ctx context.Context) (tenantID, userCode string) {
+	if ctx != nil {
+		if tid, ucode, ok := wafctx.TenantFrom(ctx); ok && tid != "" && tid != global.GWAF_TENANT_ID {
+			if ucode == "" {
+				ucode = global.GWAF_USER_CODE
+			}
+			return tid, ucode
+		}
+	}
+	return global.GWAF_TENANT_ID, global.GWAF_USER_CODE
+}
+
 // DashboardApi 聚合 AI 检测看板数据：按类别汇总、分数分布、observe/block 趋势。
 // 数据源为 security_event 中 ai_score>0 的命中子集（AI 命中的请求必是安全事件），按 day 范围/站点过滤。
-func (receiver *WafAIService) DashboardApi(req request.WafAIDashboardReq) response2.WafAIDashboard {
+// 平台侧聚合全部租户（不能只看平台切片），租户侧只看自己的命中。
+func (receiver *WafAIService) DashboardApi(ctx context.Context, req request.WafAIDashboardReq) response2.WafAIDashboard {
 	var res response2.WafAIDashboard
 	res.Categories = []response2.WafAINameValue{}
 	res.Trend = []response2.WafAITrendPoint{}
@@ -25,10 +53,11 @@ func (receiver *WafAIService) DashboardApi(req request.WafAIDashboardReq) respon
 		res.ScoreHist = buildEmptyScoreHist()
 		return res
 	}
+	logDB := global.GWAF_LOCAL_LOG_DB.WithContext(AIScopeCtx(ctx))
 
 	// 每次查询都用全新的 where 链，避免 GORM 条件被复用污染
 	base := func() *gorm.DB {
-		q := global.GWAF_LOCAL_LOG_DB.Model(&model.SecurityEvent{}).Where("ai_score > 0")
+		q := logDB.Model(&model.SecurityEvent{}).Where("ai_score > 0")
 		if req.StartDay > 0 && req.EndDay > 0 {
 			q = q.Where("day between ? and ?", req.StartDay, req.EndDay)
 		}

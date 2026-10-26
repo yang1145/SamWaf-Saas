@@ -85,6 +85,8 @@ func (w *WafLoginApi) LoginApi(c *gin.Context) {
 					BaseMessageInfo: innerbean.BaseMessageInfo{
 						OperaType: "登录错误",
 						Server:    serverName,
+						// 账号归属租户：该租户管理员也能看到自己账号的被爆破告警
+						TenantId: bean.Tenant_ID,
 					},
 					ErrorType: "登录失败",
 					ErrorMsg:  fmt.Sprintf("密码错误超限，IP:%s (%s)", clientIP, clientCountryStr),
@@ -214,6 +216,8 @@ func (w *WafLoginApi) LoginApi(c *gin.Context) {
 				BaseMessageInfo: innerbean.BaseMessageInfo{
 					OperaType: "登录信息",
 					Server:    serverName,
+					// 登录通知属于该账号所属租户：租户管理员要能看到自己账号的登录回执
+					TenantId: bean.Tenant_ID,
 				},
 				Username:     bean.LoginAccount,
 				Ip:           clientIP + " (" + clientArea + ")",

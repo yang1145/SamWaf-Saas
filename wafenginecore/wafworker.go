@@ -678,6 +678,8 @@ func (waf *WafEngine) httpAuthAudit(hostSafe *wafenginmodel.HostSafe, r *http.Re
 		URL:         r.URL.Path, // 只记路径：查询串里可能带业务参数，审计表没有必要留
 		ClientIP:    clientIP,
 		UserAgent:   r.UserAgent(),
+		// 引擎数据面没有管理端请求上下文，审计行归属只能按站点带下来
+		TenantID: hostSafe.Host.Tenant_ID,
 	}
 }
 

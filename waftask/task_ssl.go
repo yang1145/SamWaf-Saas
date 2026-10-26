@@ -183,7 +183,7 @@ func SSLOrderReload() {
 								hostBean.Host)
 							zlog.Error(innerLogName, msg)
 							global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.OpResultMessageInfo{
-								BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "提示信息", Server: global.GWAF_CUSTOM_SERVER_NAME},
+								BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "提示信息", Server: global.GWAF_CUSTOM_SERVER_NAME, TenantId: hostBean.Tenant_ID},
 								Msg:             msg,
 								Success:         "false",
 							})
@@ -238,7 +238,7 @@ func SSLExpireCheck() {
 			expireBean.VisitLog = ""
 
 			// 检查证书是否即将过期，并发送通知
-			checkAndNotifySSLExpire(expireBean.Domain, expiryTime)
+			checkAndNotifySSLExpire(expireBean.Domain, expireBean.Port, expiryTime)
 		}
 		//更新数据
 		wafSslExpireService.Modify(wafctx.PlatformScope(context.Background()), expireBean)
@@ -272,8 +272,25 @@ func SyncHostToSslCheck() {
 	}
 }
 
+// sslExpireTenantID 按域名+端口反查站点归属租户。
+// ssl_expire 行由平台任务统一维护、行租户恒为平台租户，不能拿来当事件归属；
+// 查不到站点（已删除）返回空串，按失败关闭只推平台连接。
+func sslExpireTenantID(domain string, port int) string {
+	if global.GWAF_LOCAL_DB == nil || domain == "" {
+		return ""
+	}
+	var tenantID string
+	if err := global.GWAF_LOCAL_DB.WithContext(wafctx.PlatformScope(context.Background())).
+		Model(&model.Hosts{}).Select("tenant_id").
+		Where("host = ? and port = ?", domain, port).
+		Limit(1).Scan(&tenantID).Error; err != nil {
+		return ""
+	}
+	return tenantID
+}
+
 // checkAndNotifySSLExpire 检查SSL证书是否即将过期，并发送通知
-func checkAndNotifySSLExpire(domain string, expiryTime time.Time) {
+func checkAndNotifySSLExpire(domain string, port int, expiryTime time.Time) {
 	// 计算剩余天数
 	daysLeft := int(time.Until(expiryTime).Hours() / 24)
 
@@ -369,6 +386,7 @@ func checkAndNotifySSLExpire(domain string, expiryTime time.Time) {
 			BaseMessageInfo: innerbean.BaseMessageInfo{
 				OperaType: "SSL证书过期提醒",
 				Server:    serverName,
+				TenantId:  sslExpireTenantID(domain, port),
 			},
 			Domain:     domain,
 			ExpireTime: expiryTime.Format("2006-01-02 15:04:05"),

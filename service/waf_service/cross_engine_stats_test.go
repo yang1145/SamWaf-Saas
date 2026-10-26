@@ -14,6 +14,7 @@ import (
 	"SamWaf/model"
 	req "SamWaf/model/request"
 	response2 "SamWaf/model/response"
+	"context"
 	"strconv"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ func eq64(t *testing.T, what string, got, want int64) {
 }
 
 func runStatsCases(t *testing.T, statsdb *gorm.DB) {
+	ctx := context.Background()
 	now := time.Now()
 	today := now.Format("20060102")
 	yesterday := now.AddDate(0, 0, -1).Format("20060102")
@@ -82,7 +84,7 @@ func runStatsCases(t *testing.T, statsdb *gorm.DB) {
 	must(t, statsdb.Create(newIPDay("h2", "b.com", todayInt, "4.4.4.4", "放行", 3)).Error)
 
 	t.Run("StatHomeSumDay", func(t *testing.T) {
-		res, err := WafStatServiceApp.StatHomeSumDayApi()
+		res, err := WafStatServiceApp.StatHomeSumDayApi(ctx)
 		fatalIf(t, err)
 		eq64(t, "今日攻击数", res.AttackCountOfToday, 5)
 		eq64(t, "今日访问数", res.VisitCountOfToday, 15)
@@ -124,7 +126,7 @@ func runStatsCases(t *testing.T, statsdb *gorm.DB) {
 		must(t, statsdb.Create(newIPAt("7.7.7.7", prevInt, prevStart.Add(2*time.Hour))).Error)
 		must(t, statsdb.Create(newIPAt("8.8.8.8", prevInt, prevStart.Add(5*time.Hour))).Error)
 
-		attack, visit, illegalIP, hours := WafStatServiceApp.buildDayCompare(dayStart.Add(12 * time.Hour))
+		attack, visit, illegalIP, hours := WafStatServiceApp.buildDayCompare(ctx, dayStart.Add(12*time.Hour))
 		if hours != 12 {
 			t.Fatalf("对比窗口期望 12 小时，实际 %d", hours)
 		}
@@ -145,13 +147,13 @@ func runStatsCases(t *testing.T, statsdb *gorm.DB) {
 		}
 
 		// 零点整不足一个整点小时，直接判定"无对比"
-		if _, _, _, h0 := WafStatServiceApp.buildDayCompare(dayStart); h0 != 0 {
+		if _, _, _, h0 := WafStatServiceApp.buildDayCompare(ctx, dayStart); h0 != 0 {
 			t.Fatalf("零点整期望 0 小时窗口，实际 %d", h0)
 		}
 	})
 
 	t.Run("StatHomeSumDayRange", func(t *testing.T) {
-		res, err := WafStatServiceApp.StatHomeSumDayRangeApi(req.WafStatsDayRangeReq{StartDay: yesterday, EndDay: today})
+		res, err := WafStatServiceApp.StatHomeSumDayRangeApi(ctx, req.WafStatsDayRangeReq{StartDay: yesterday, EndDay: today})
 		fatalIf(t, err)
 		eq64(t, "区间今日攻击数", res.AttackCountOfRange[todayInt], 5)
 		eq64(t, "区间昨日攻击数", res.AttackCountOfRange[yesterdayInt], 3)
@@ -159,7 +161,7 @@ func runStatsCases(t *testing.T, statsdb *gorm.DB) {
 	})
 
 	t.Run("StatHomeSumDayTopIPRange", func(t *testing.T) {
-		res, err := WafStatServiceApp.StatHomeSumDayTopIPRangeApi(req.WafStatsDayRangeReq{StartDay: yesterday, EndDay: today})
+		res, err := WafStatServiceApp.StatHomeSumDayTopIPRangeApi(ctx, req.WafStatsDayRangeReq{StartDay: yesterday, EndDay: today})
 		fatalIf(t, err)
 		if len(res.AttackIPOfRange) != 3 {
 			t.Fatalf("攻击 TopIP 期望 3 条，实际 %d", len(res.AttackIPOfRange))
@@ -176,7 +178,7 @@ func runStatsCases(t *testing.T, statsdb *gorm.DB) {
 	// 本次 #896 回归点：SELECT 非聚合列 host + GROUP BY host_code，
 	// 在 MySQL(ONLY_FULL_GROUP_BY)/PostgreSQL 上会直接报错，必须用聚合函数取值。
 	t.Run("StatSiteOverview", func(t *testing.T) {
-		res, err := WafStatServiceApp.StatSiteOverviewApi(req.WafStatsSiteOverviewReq{StartDay: yesterday, EndDay: today})
+		res, err := WafStatServiceApp.StatSiteOverviewApi(ctx, req.WafStatsSiteOverviewReq{StartDay: yesterday, EndDay: today})
 		fatalIf(t, err)
 		if len(res.SiteList) != 2 {
 			t.Fatalf("站点概览期望 2 个站点，实际 %d", len(res.SiteList))
@@ -202,7 +204,7 @@ func runStatsCases(t *testing.T, statsdb *gorm.DB) {
 	})
 
 	t.Run("GetTodaySiteStatsByHostCodes", func(t *testing.T) {
-		m := WafStatServiceApp.GetTodaySiteStatsByHostCodes([]string{"h1", "h2"})
+		m := WafStatServiceApp.GetTodaySiteStatsByHostCodes(ctx, []string{"h1", "h2"})
 		if len(m) != 2 {
 			t.Fatalf("今日站点统计期望 2 项，实际 %d", len(m))
 		}
@@ -214,7 +216,7 @@ func runStatsCases(t *testing.T, statsdb *gorm.DB) {
 	})
 
 	t.Run("StatSiteDetail_7d", func(t *testing.T) {
-		res, err := WafStatServiceApp.StatSiteDetailApi(req.WafStatsSiteDetailReq{HostCode: "h1", TimeRange: "7d"})
+		res, err := WafStatServiceApp.StatSiteDetailApi(ctx, req.WafStatsSiteDetailReq{HostCode: "h1", TimeRange: "7d"})
 		fatalIf(t, err)
 		if len(res.DayTrend) != 2 {
 			t.Fatalf("7d 趋势期望 2 天，实际 %d", len(res.DayTrend))
@@ -228,7 +230,7 @@ func runStatsCases(t *testing.T, statsdb *gorm.DB) {
 	})
 
 	t.Run("StatSiteDetail_24h", func(t *testing.T) {
-		res, err := WafStatServiceApp.StatSiteDetailApi(req.WafStatsSiteDetailReq{HostCode: "h1", TimeRange: "24h"})
+		res, err := WafStatServiceApp.StatSiteDetailApi(ctx, req.WafStatsSiteDetailReq{HostCode: "h1", TimeRange: "24h"})
 		fatalIf(t, err)
 		if len(res.HourTrend) != 24 {
 			t.Fatalf("24h 趋势期望 24 个点，实际 %d", len(res.HourTrend))

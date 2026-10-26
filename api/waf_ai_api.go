@@ -156,7 +156,7 @@ func (w *WafAIApi) UnloadAIModelApi(c *gin.Context) {
 func (w *WafAIApi) GetAIDashboardApi(c *gin.Context) {
 	var req request.WafAIDashboardReq
 	_ = c.ShouldBindJSON(&req)
-	response.OkWithData(wafAIService.DashboardApi(req), c)
+	response.OkWithData(wafAIService.DashboardApi(c.Request.Context(), req), c)
 }
 
 // MarkLabelApi 标记某条日志的训练标签修正（误报→正常 / 确认攻击 / 忽略）
@@ -166,7 +166,7 @@ func (w *WafAIApi) MarkLabelApi(c *gin.Context) {
 		response.FailWithMessage("参数错误: "+err.Error(), c)
 		return
 	}
-	if err := wafAILabelService.MarkApi(req); err != nil {
+	if err := wafAILabelService.MarkApi(c.Request.Context(), req); err != nil {
 		response.FailWithMessage("标记失败: "+err.Error(), c)
 		return
 	}
@@ -180,7 +180,7 @@ func (w *WafAIApi) UnmarkLabelApi(c *gin.Context) {
 		response.FailWithMessage("参数错误: "+err.Error(), c)
 		return
 	}
-	if err := wafAILabelService.UnmarkApi(req.ReqUuid); err != nil {
+	if err := wafAILabelService.UnmarkApi(c.Request.Context(), req.ReqUuid); err != nil {
 		response.FailWithMessage("取消标记失败: "+err.Error(), c)
 		return
 	}
@@ -191,14 +191,14 @@ func (w *WafAIApi) UnmarkLabelApi(c *gin.Context) {
 func (w *WafAIApi) LabelByUuidsApi(c *gin.Context) {
 	var req request.WafAILabelByUuidsReq
 	_ = c.ShouldBindJSON(&req)
-	response.OkWithData(wafAILabelService.GetMapByUuidsApi(req.ReqUuids), c)
+	response.OkWithData(wafAILabelService.GetMapByUuidsApi(c.Request.Context(), req.ReqUuids), c)
 }
 
 // LabelListApi 标注工作台列表：AI 命中分页 + 标记状态过滤/回显
 func (w *WafAIApi) LabelListApi(c *gin.Context) {
 	var req request.WafAILabelListReq
 	_ = c.ShouldBindJSON(&req)
-	response.OkWithData(wafAILabelService.ListApi(req), c)
+	response.OkWithData(wafAILabelService.ListApi(c.Request.Context(), req), c)
 }
 
 // BatchMarkLabelApi 批量标记训练标签（误报→正常 / 确认攻击 / 忽略）
@@ -208,7 +208,7 @@ func (w *WafAIApi) BatchMarkLabelApi(c *gin.Context) {
 		response.FailWithMessage("参数错误: "+err.Error(), c)
 		return
 	}
-	n, err := wafAILabelService.BatchMarkApi(req)
+	n, err := wafAILabelService.BatchMarkApi(c.Request.Context(), req)
 	if err != nil {
 		response.FailWithMessage(fmt.Sprintf("批量标记失败(已处理%d条): %s", n, err.Error()), c)
 		return
@@ -223,7 +223,7 @@ func (w *WafAIApi) BatchUnmarkLabelApi(c *gin.Context) {
 		response.FailWithMessage("参数错误: "+err.Error(), c)
 		return
 	}
-	n, err := wafAILabelService.BatchUnmarkApi(req.ReqUuids)
+	n, err := wafAILabelService.BatchUnmarkApi(c.Request.Context(), req.ReqUuids)
 	if err != nil {
 		response.FailWithMessage("批量取消标记失败: "+err.Error(), c)
 		return
@@ -266,21 +266,24 @@ func (w *WafAIApi) ExportTrainDataApi(c *gin.Context) {
 		response.FailWithMessage("已有导出任务正在进行，请等待完成", c)
 		return
 	}
+	requesterTenant := requestTenantID(c.Request.Context())
+	// 导出跨请求生命周期异步执行；租户标记同步捕获，日志读取作用域随请求租户
+	exportCtx := context.WithoutCancel(c.Request.Context())
 
 	go func() {
 		defer atomic.StoreInt32(&aiExportRunning, 0)
-		outPath, nAttack, nNormal, nDrop, _, err := runAIExport(req, maxCount)
+		outPath, nAttack, nNormal, nDrop, _, err := runAIExport(exportCtx, req, maxCount)
 		serverName := global.GWAF_CUSTOM_SERVER_NAME
 		if err != nil {
 			global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.OpResultMessageInfo{
-				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "AI训练数据导出", Server: serverName},
+				BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "AI训练数据导出", Server: serverName, TenantId: requesterTenant},
 				Msg:             "AI训练数据导出失败：" + err.Error(),
 				Success:         "false",
 			})
 			return
 		}
 		global.GQEQUE_MESSAGE_DB.Enqueue(innerbean.OpResultMessageInfo{
-			BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "AI训练数据导出", Server: serverName},
+			BaseMessageInfo: innerbean.BaseMessageInfo{OperaType: "AI训练数据导出", Server: serverName, TenantId: requesterTenant},
 			Msg: fmt.Sprintf("AI训练数据导出完毕：%s（写入%d条，攻击%d/正常%d，已忽略%d）",
 				outPath, nAttack+nNormal, nAttack, nNormal, nDrop),
 			Success: "true",
@@ -297,8 +300,11 @@ func (w *WafAIApi) ExportTrainDataApi(c *gin.Context) {
 // 正常请求不再全量落报文，训练要的真实负样本报文只能来自采样池（D2）。
 // 过渡期补充：采样池还没攒起来时，web_logs 里的存量行（升级前写入、尚在保留期内）
 // 照旧能补负样本；它不再写入，随保留期自然退场。
-func runAIExport(req request.WafAIExportReq, maxCount int) (outPath string, nAttack, nNormal, nDrop, total int, err error) {
+func runAIExport(ctx context.Context, req request.WafAIExportReq, maxCount int) (outPath string, nAttack, nNormal, nDrop, total int, err error) {
 	narrowCols := []string{"REQ_UUID", "METHOD", "URL", "RawQuery", "USER_AGENT", "ACTION", "RULE", "LogOnlyMode"}
+	// 平台侧导出全租户语料（AI 模型是平台能力），租户侧只导出自己的日志
+	scopeCtx := waf_service.AIScopeCtx(ctx)
+	logDB := global.GWAF_LOCAL_LOG_DB.WithContext(scopeCtx)
 	cutoff := ""
 	if req.Days > 0 {
 		cutoff = time.Now().AddDate(0, 0, -req.Days).Format("2006-01-02 15:04:05")
@@ -314,7 +320,7 @@ func runAIExport(req request.WafAIExportReq, maxCount int) (outPath string, nAtt
 
 	// 正样本：安全事件
 	var attackRows []innerbean.WebLog
-	err = applyWindow(global.GWAF_LOCAL_LOG_DB.Model(&model.SecurityEvent{}).Select(narrowCols)).
+	err = applyWindow(logDB.Model(&model.SecurityEvent{}).Select(narrowCols)).
 		Order("unix_add_time desc").Limit(maxCount).Find(&attackRows).Error
 	if err != nil {
 		return "", 0, 0, 0, 0, fmt.Errorf("查询安全事件失败: %w", err)
@@ -323,7 +329,7 @@ func runAIExport(req request.WafAIExportReq, maxCount int) (outPath string, nAtt
 
 	// 负样本：采样池（窄行在 access_log，报文在 event_payload kind=sample，按 req_uuid 对齐）
 	var normalRows []innerbean.WebLog
-	err = applyWindow(global.GWAF_LOCAL_LOG_DB.Model(&model.AccessLog{}).Select(narrowCols).
+	err = applyWindow(logDB.Model(&model.AccessLog{}).Select(narrowCols).
 		Where("req_uuid in (select req_uuid from event_payload where kind = 'sample')")).
 		Order("unix_add_time desc").Limit(maxCount).Find(&normalRows).Error
 	if err != nil {
@@ -334,7 +340,7 @@ func runAIExport(req request.WafAIExportReq, maxCount int) (outPath string, nAtt
 	// 过渡期：采样池未攒起来时，从存量 web_logs（不再写入，尚在保留期内的部分）补负样本
 	if len(normalRows) < maxCount && dialect.Get().TableExists(global.GWAF_LOCAL_LOG_DB, "web_logs") {
 		var legacy []innerbean.WebLog
-		err = applyWindow(global.GWAF_LOCAL_LOG_DB.Model(&innerbean.WebLog{}).
+		err = applyWindow(logDB.Model(&innerbean.WebLog{}).
 			Select(append(append([]string{}, narrowCols...), "BODY", "POST_FORM")).
 			Where("ACTION = ? and RULE = ?", "放行", "")).
 			Order("unix_add_time desc").Limit(maxCount - len(normalRows)).Find(&legacy).Error
@@ -349,7 +355,7 @@ func runAIExport(req request.WafAIExportReq, maxCount int) (outPath string, nAtt
 	for i := range rows {
 		fillRows = append(fillRows, &rows[i])
 	}
-	waf_service.FillLivePayloads(context.Background(), fillRows)
+	waf_service.FillLivePayloads(scopeCtx, fillRows)
 
 	dir := filepath.Join(utils.GetCurrentDir(), "data", aiExportDir)
 	if err = os.MkdirAll(dir, 0750); err != nil {
@@ -364,7 +370,7 @@ func runAIExport(req request.WafAIExportReq, maxCount int) (outPath string, nAtt
 	enc := json.NewEncoder(fh)
 
 	// 一次性加载人工标记（含请求快照），人工修正优先于规则弱标签
-	marks := wafAILabelService.GetAllFull()
+	marks := wafAILabelService.GetAllFull(ctx)
 
 	// 1) 过滤窗口内的日志：仅处理"未人工标记"的（已标记的统一在第2步从快照产出，
 	//    确保人工修正不会被时间/条数条件漏掉）

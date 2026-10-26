@@ -24,6 +24,7 @@ import (
 
 // NotifyEvent 结构化通知事件
 type NotifyEvent struct {
+	TenantId        string            // 事件归属租户（发送侧据此取该租户的订阅/渠道/日志）
 	MessageType     string            // 消息类型（model.MSG_TYPE_*）
 	MessageTypeName string            // 消息类型中文名
 	Severity        string            // 严重级别 info/warn/critical

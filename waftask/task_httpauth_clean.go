@@ -27,20 +27,26 @@ const httpAuthSessionKeepDays = 30
 func TaskHttpAuthClean() {
 	innerLogName := "TaskHttpAuthClean"
 
-	expired, deleted := wafHttpAuthSessionService.CleanExpired(wafctx.PlatformScope(context.Background()), httpAuthSessionKeepDays)
+	expired, deleted, groups := wafHttpAuthSessionService.CleanExpired(wafctx.PlatformScope(context.Background()), httpAuthSessionKeepDays)
 	if expired+deleted == 0 {
 		zlog.Debug(innerLogName, "无需清理")
 		return
 	}
 	zlog.Info(innerLogName, "网站密码访问会话清理完成", "标记到期", expired, "删除历史行", deleted)
 
-	// 到期按轮汇总一条审计，不逐条写：一批同时到期的会话逐条记，就是一堆内容雷同的流水，
-	// 把真正要看的登录/踢下线记录淹掉。
+	// 到期按租户各汇总一条：清理动作是平台任务，但到期的会话属于各租户站点，
+	// 租户的审计域里要能看到自己站点的会话到期。逐条记内容雷同的流水会淹没真正的登录/踢人记录。
 	if expired > 0 {
-		waf_service.WafSecurityAuditServiceApp.Write(waf_service.AuditEntry{
-			Event:   model.HttpAuthEventExpired,
-			Result:  model.AccessAuditOK,
-			Message: "网站密码访问会话到期清理，本轮 " + strconv.FormatInt(expired, 10) + " 条",
-		})
+		for _, g := range groups {
+			if g.Count <= 0 {
+				continue
+			}
+			waf_service.WafSecurityAuditServiceApp.Write(waf_service.AuditEntry{
+				Event:    model.HttpAuthEventExpired,
+				Result:   model.AccessAuditOK,
+				Message:  "网站密码访问会话到期清理，本轮 " + strconv.FormatInt(g.Count, 10) + " 条",
+				TenantID: g.TenantID,
+			})
+		}
 	}
 }

@@ -438,8 +438,11 @@ service→service 透传同一 ctx。`NotifyWaf` 中 3 处无 DB 查询的保持
 - **AI 规则生成（aigen/aiprompt）**：原挂安全域（租户可达）消耗平台全局 GPT
   凭据，现处理器层拒绝租户调用（"AI能力使用平台统一配置的模型服务，仅平台侧
   账号可用"）。
-- AI 仪表盘/导出/标注内部走全局回退只看平台切片（方向安全）；完整租户化 AI 语料
-  记为后续待办。
+- **AI 语料作用域（已收口）**：仪表盘/训练数据导出/标注工作台统一走
+  `AIScopeCtx`/`AIScopeTenant`——平台侧查询提升为 `PlatformScope`（监管全部租户
+  命中，不再只看平台切片），租户侧只看本租户；标注行随作用域归属（平台标注为
+  平台公共语料，租户标注归租户自己）。导出 goroutine 用 `context.WithoutCancel`
+  派生并捕获发起者租户，避免后台任务落回平台桶。
 
 ### WebSocket 按租户路由
 
@@ -454,17 +457,48 @@ service→service 透传同一 ctx。`NotifyWaf` 中 3 处无 DB 查询的保持
 任务/批量任务（含后台处理器按任务归属租户写入 IP 名单）、通知渠道/订阅/日志
 （含订阅配置越权写入点收口：按 id 的 UPDATE/READ 随请求租户过滤）、一键修改
 （记录按发起者租户）、IP 观察名单、IP 归属查询辅助名单、Excel 导入（按发起者
-租户盖章+校验）、安全审计日志（豁免模型手工分桶：写盖请求租户、租户只见自己、
-平台总览全量）。
+租户盖章+校验，且逐行过 `max_hosts` 配额——入口只查一次会被批量导入绕过；另修
+两处导入自身缺陷：int64 字段落入"不支持的字段类型"分支导致任何站点行都插不进去，
+`Create` 传结构体值使租户盖章反射赋值不可寻址而 panic）、安全审计日志（豁免模型
+手工分桶：写盖请求租户、租户只见自己、平台总览全量）。
+
+### 引擎请求期防篡改 ctx
+
+`wafenginecore/tamper.go` 三处触库补齐作用域：按 id 的基线学习/篡改计数 UPDATE
+随规则行自身租户过滤（`tamperRuleCtx`，行租户为空时等于未声明，保持原有无过滤
+行为）；`notifyTamperReload` 改走 `engineLoadCtx()`（平台作用域，与启动加载同语义）
+——此前不带 ctx 会回退全局租户常量，租户站点的规则查出空表并推给引擎，热更新把
+已加载的保护静默清空。反代与静态两条链路共用同一组函数，一处修复两处生效。
+
+### 通知 / 操作反馈 / 审计归属收口（本轮）
+
+- **通知发送侧按事件归属租户派发**（`waf_notify_sender.go`/`waf_notify_subscription.go`）：
+  所有消息结构内嵌 `BaseMessageInfo` 并提升出 `Tenant()`（字段 `json:"-"`，前端
+  报文不变）；`GetSubscriptionsForEvent(tenantID, messageType)` 取「租户桶 + 平台
+  桶」——只投平台桶租户收不到自己的告警，只投租户桶平台监管订阅会噤声；事件无
+  归属时只取平台桶（fail-closed）。渠道读取、抑制留痕、发送日志统一用订阅行自身
+  的租户 ctx（`notifySubCtx`），避免租户订阅的通知日志落进平台桶。
+- **操作反馈类 WS 消息补 `TenantId`**：站点增删改/日志导出与下载/端口告警/登录
+  结果/导入回执/SSL 订单结果/SSL 过期提醒/访问认证审计通知等生产方均标注事件
+  归属；SSL 过期任务的行本身是平台戳，改按「域名+端口」反查站点租户（查不到
+  回落平台桶）。仍保持平台级的只有实例级设施：主机登录防护、威胁 IP 同步、
+  管理端证书任务、节点端口监听错误、汇总类系统通知。
+- **安全审计写入归属**（`waf_security_audit_service.go`）：`AuditEntry` 增加显式
+  `TenantID`，归属优先级为「请求 ctx 租户 > 调用方显式租户 > 平台桶」。引擎数据面
+  没有管理端 ctx，由 `httpAuthAudit` 按 `hostTarget.Host.Tenant_ID` 带下来，一处
+  覆盖网站密码访问的 7 个写入点；节流键与认证通知节流键都加入租户，避免跨租户
+  互相压掉。请求链路（诊断导出、SSL 操作、HTTPAuth 会话踢人）改用 `WriteCtx`。
+- **HTTPAuth 会话归属**：引擎建会话时按站点租户显式盖行戳（PlatformScope 下回调
+  不代劳）；列表/踢人去掉与请求租户矛盾的硬编码全局过滤，改由回调按 ctx 限定；
+  过期清理先按 `(tenant_id, user_code)` 分组，再逐租户各写一条审计。
+- **测试**：新增通知订阅分桶、消息租户载体、审计归属优先级、AI 作用域四组单测；
+  `cross_engine_side/stats` 已随新签名移植，crossdb 套件的租户回调桩改为生产同款
+  `wafdb.RegisterTenantScopeCallbacks`（旧桩只挂 Query 且恒用全局常量，ctx 化后的
+  service 写入会造出无归属行），`-tags crossdb` 的 SQLite 套件已全绿；MySQL/PG
+  仍需外部测试库时补跑。
 
 ### 遗留待办（记录不阻塞）
 
-- 通知发送侧（notify_sender）按订阅归属租户派发（当前租户订阅收不到通知，方向
-  为不可达而非泄漏）；
-- 引擎侧安全审计写入（wafworker 7 处）迁移 WriteCtx（需 host→租户映射）；
-  另 api/waf_diagnostic.go、api/waf_ssl.go、waf_httpauthsession_service.go、
-  task_httpauth_clean.go 的审计写入仍在全局桶；
-- crossdb 标签的 cross_engine_side/stats 测试需随本轮签名变更移植；
 - 存量未盖章 host 行的流量统计按"归属不可解析跳过"处理（如需可补回填迁移）。
 
 ## 阶段2 任务清单（数据面多租户化）

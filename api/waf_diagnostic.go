@@ -85,7 +85,7 @@ func (w *WafDiagnosticApi) DownloadPackageApi(c *gin.Context) {
 	if err != nil {
 		result, detail = model.AccessAuditFail, "生成诊断包失败: "+err.Error()
 	}
-	wafAccessAuditService.Write(waf_service.AuditEntry{
+	wafAccessAuditService.WriteCtx(c.Request.Context(), waf_service.AuditEntry{
 		Event:       model.AuditEventConfigDiagPackage,
 		AccountName: accountStr,
 		ClientIP:    utils.GetManageClientIP(c),

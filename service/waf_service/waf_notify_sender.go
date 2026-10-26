@@ -1,6 +1,7 @@
 package waf_service
 
 import (
+	"SamWaf/common/wafctx"
 	"SamWaf/common/zlog"
 	"SamWaf/global"
 	"SamWaf/innerbean"
@@ -13,6 +14,7 @@ import (
 	"SamWaf/wafnotify/serverchan"
 	"SamWaf/wafnotify/webhook"
 	"SamWaf/wafnotify/wechatwork"
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -46,19 +48,32 @@ func (receiver *WafNotifySenderService) SendMessageInfo(messageInfo interface{})
 		zlog.Debug("未识别的通知消息结构，已忽略")
 		return
 	}
+	// 归属租户由消息产生方填写（所有消息结构都内嵌 BaseMessageInfo）。
+	// 取不到就保持空串，发送侧只走平台桶——宁可少送不可错送。
+	if carrier, ok := messageInfo.(interface{ Tenant() string }); ok {
+		ev.TenantId = carrier.Tenant()
+	}
 	receiver.SendEvent(ev)
+}
+
+// notifySubCtx 订阅行自身的作用域 ctx：渠道与通知日志必须和订阅同租户读写，
+// 否则租户订阅落在租户桶、发送日志却记进平台桶。
+func notifySubCtx(sub model.NotifySubscription) context.Context {
+	return wafctx.WithTenant(context.Background(), sub.Tenant_ID, sub.USER_CODE)
 }
 
 // SendEvent 按订阅逐个判定并投递
 //
 // 频控在这里逐订阅判定（而不是像老实现那样在入队前一刀切），
 // 这样钉钉和飞书可以有完全不同的节奏，且频控 key 不再是可被 payload 变换绕过的规则原文。
+// 订阅取数按事件归属租户：租户桶 + 平台桶（平台侧订阅监管全部租户事件，与 WebSocket
+// 的「平台连接可总览」同口径）；事件不带租户时只取平台桶。
 func (receiver *WafNotifySenderService) SendEvent(ev NotifyEvent) {
 	if ev.MessageType == "" {
 		return
 	}
 
-	subscriptions := WafNotifySubscriptionServiceApp.GetSubscriptionsByMessageType(ev.MessageType)
+	subscriptions := WafNotifySubscriptionServiceApp.GetSubscriptionsForEvent(ev.TenantId, ev.MessageType)
 	if len(subscriptions) == 0 {
 		zlog.Debug(fmt.Sprintf("没有找到消息类型 %s 的订阅", ev.MessageType))
 		return
@@ -69,8 +84,9 @@ func (receiver *WafNotifySenderService) SendEvent(ev NotifyEvent) {
 	sem := make(chan struct{}, 3) // 限制最多3个渠道并发发送
 
 	for _, subscription := range subscriptions {
+		subCtx := notifySubCtx(subscription)
 		var channel model.NotifyChannel
-		err := receiver.getChannelById(subscription.ChannelId, &channel)
+		err := receiver.getChannelById(subCtx, subscription.ChannelId, &channel)
 		if err != nil {
 			zlog.Error(fmt.Sprintf("获取渠道信息失败: %v", err))
 			continue
@@ -80,7 +96,7 @@ func (receiver *WafNotifySenderService) SendEvent(ev NotifyEvent) {
 		switch decision.Action {
 		case ThrottleActionSuppress:
 			// 被频控/过滤挡下：不发送，但要留痕，否则用户永远查不到"为什么没收到"
-			receiver.logSuppressed(subscription, channel, ev, decision)
+			receiver.logSuppressed(subCtx, subscription, channel, ev, decision)
 
 		case ThrottleActionAggregate:
 			NotifyAggregatorApp.Add(subscription, channel, ev, decision)
@@ -107,6 +123,7 @@ func (receiver *WafNotifySenderService) DispatchEvents(sub model.NotifySubscript
 	if len(events) == 0 {
 		return
 	}
+	subCtx := notifySubCtx(sub)
 
 	// 结算本次发送之前被压掉的条数：既要写进正文告诉用户"其实发生了很多次"，
 	// 也要回填到那条抑制日志上，让通知日志页显示准确的抑制总数。
@@ -122,7 +139,7 @@ func (receiver *WafNotifySenderService) DispatchEvents(sub model.NotifySubscript
 		title = "[" + global.GWAF_NOTICE_TITLE + "] " + title
 	}
 
-	receiver.sendToChannel(channel, sub, events[0].MessageType, title, content, templateUsed)
+	receiver.sendToChannel(subCtx, channel, sub, events[0].MessageType, title, content, templateUsed)
 
 	if suppressLogID != "" && suppressedCount > 0 {
 		if err := WafNotifyLogServiceApp.UpdateSuppressCount(suppressLogID, suppressedCount); err != nil {
@@ -141,7 +158,7 @@ func (receiver *WafNotifySenderService) SendNotification(messageType, title, con
 //
 // 关键约束：抑制日志本身不能刷库。写不写由频控引擎决定（一个抑制窗口只写一条），
 // 压掉一万条也只会产生 2 次数据库写入。
-func (receiver *WafNotifySenderService) logSuppressed(sub model.NotifySubscription, channel model.NotifyChannel,
+func (receiver *WafNotifySenderService) logSuppressed(ctx context.Context, sub model.NotifySubscription, channel model.NotifyChannel,
 	ev NotifyEvent, decision ThrottleDecision) {
 	action := WafNotifyThrottleServiceApp.OnSuppress(decision.DedupKey)
 
@@ -154,7 +171,7 @@ func (receiver *WafNotifySenderService) logSuppressed(sub model.NotifySubscripti
 		return
 	}
 
-	logID, err := WafNotifyLogServiceApp.AddSuppressLog(model.NotifyLog{
+	logID, err := WafNotifyLogServiceApp.AddSuppressLogCtx(ctx, model.NotifyLog{
 		ChannelId:      channel.Id,
 		ChannelName:    channel.Name,
 		ChannelType:    channel.Type,
@@ -172,13 +189,13 @@ func (receiver *WafNotifySenderService) logSuppressed(sub model.NotifySubscripti
 	WafNotifyThrottleServiceApp.SetSuppressLogID(decision.DedupKey, logID)
 }
 
-// getChannelById 根据ID获取渠道
-func (receiver *WafNotifySenderService) getChannelById(channelId string, channel *model.NotifyChannel) error {
-	return global.GWAF_LOCAL_DB.Where("id = ? and "+dialect.Q("status")+" = ?", channelId, 1).First(channel).Error
+// getChannelById 根据ID获取渠道（随订阅租户过滤：租户只能取到自己的渠道）
+func (receiver *WafNotifySenderService) getChannelById(ctx context.Context, channelId string, channel *model.NotifyChannel) error {
+	return global.GWAF_LOCAL_DB.WithContext(ctx).Where("id = ? and "+dialect.Q("status")+" = ?", channelId, 1).First(channel).Error
 }
 
 // sendToChannel 发送到具体渠道并记录日志
-func (receiver *WafNotifySenderService) sendToChannel(channel model.NotifyChannel, subscription model.NotifySubscription, messageType, title, content, templateUsed string) {
+func (receiver *WafNotifySenderService) sendToChannel(ctx context.Context, channel model.NotifyChannel, subscription model.NotifySubscription, messageType, title, content, templateUsed string) {
 	recipients, err := receiver.deliverToChannel(channel, subscription, messageType, title, content)
 
 	status := 1
@@ -190,7 +207,7 @@ func (receiver *WafNotifySenderService) sendToChannel(channel model.NotifyChanne
 	}
 
 	// 记录日志
-	_, logErr := WafNotifyLogServiceApp.AddLogDetail(model.NotifyLog{
+	_, logErr := WafNotifyLogServiceApp.AddLogDetailCtx(ctx, model.NotifyLog{
 		ChannelId:      channel.Id,
 		ChannelName:    channel.Name,
 		ChannelType:    channel.Type,
@@ -312,7 +329,7 @@ func (receiver *WafNotifySenderService) SendTestToSubscription(sub model.NotifyS
 		status = 0
 		errorMsg = err.Error()
 	}
-	if _, logErr := WafNotifyLogServiceApp.AddLogDetail(model.NotifyLog{
+	if _, logErr := WafNotifyLogServiceApp.AddLogDetailCtx(notifySubCtx(sub), model.NotifyLog{
 		ChannelId:      channel.Id,
 		ChannelName:    channel.Name,
 		ChannelType:    channel.Type,

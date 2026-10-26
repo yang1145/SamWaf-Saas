@@ -493,6 +493,8 @@ func (waf *WafEngine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						BaseMessageInfo: innerbean.BaseMessageInfo{
 							OperaType: "反向代理环路拦截",
 							Server:    serverName,
+							// 环路是站点自身的后端配置问题，告警只推该站点所属租户
+							TenantId: hostTarget.Host.Tenant_ID,
 						},
 						ErrorType: "反向代理环路",
 						ErrorMsg:  fmt.Sprintf("检测到反向代理环路，已拦截。Host:%s 访客IP:%s 跳数:%d(阈值:%d)，请检查该站点后端是否回指SamWaf自身", weblogbean.HOST, weblogbean.SRC_IP, hop, maxHop),
