@@ -157,12 +157,16 @@ max_hosts/max_accounts。注意：Account 在平台豁免清单内，配额统�
 - 启动幂等播种 4 个预置套餐（`InitDefaultPlans`，按套餐码查重）：体验版 free
   （dashboard/host/log，3 站 2 号）、基础版 basic（+security/audit，10 站 5 号）、
   专业版 pro（+system:ops/account:manage，50 站 20 号）、旗舰版 enterprise
-  （租户可分配全集，不限）。播种只补缺，平台后续编辑不被覆盖。
+  （租户可分配全集，不限）。播种只补缺，平台后续编辑不被覆盖；单条失败不阻断
+  其余套餐（汇总 `errors.Join` 返回）。
 - **开通集成**（AddTenantApi）：带 plan_code 时管理员组授权集=套餐权限集，
   配额/宽限期未传（nil）取套餐默认，显式传值（含 0=不限）优先——为此
   `WafTenantAddReq` 配额字段改为指针。套餐不存在/停用则整单拒绝。
 - **换套餐**（EditTenantApi）：plan_code 变化时重写「租户管理员」BuiltIn 组授权集
   （清除套餐回落默认全集）+ 失效组缓存与天花板缓存；配额未显式传值时重置为新套餐默认。
+  `WafTenantEditReq.PlanCode` 为 `*string`：**省略=不修改**、空串=清除套餐、
+  其他=切换套餐。省略若按空串处理会静默清套餐、撤掉天花板并把管理员组还原为
+  默认 7 码，等于借一次"改备注"完成提权，故必须区分"未传"与"清空"。
 - **套餐编辑传播**（propagatePlanPermissions）：套餐权限集变化同步到引用该套餐的
   全部租户的管理员组并失效缓存。配额/宽限期变化**不**回写存量租户（快照语义，
   经租户编辑单独调整）。
@@ -205,14 +209,41 @@ Account 在平台豁免清单里，租户回调不给它追加过滤，账号读
 - 判定顺序：OpenAPI Key（按 Key 授权范围）→ superAdmin → 套餐天花板 →
   权限组 → legacy 角色。
 
+### 元数据端点按 OR 语义授权（本轮修复）
+
+两个只读元数据端点原先都只挂 `permission:manage`，而该码刻意不下放租户，
+导致两处功能实际不可用：
+
+- `/api/v1/permission/group/codes`（权限码目录）：平台套餐页的权限勾选依赖它，
+  但平台运营者通常只有 `platform:admin` → 打开页面即 403，套餐的新增/编辑无法完成。
+  现挂 `RequireAnyPermission([permission:manage, platform:admin])`。
+- `/api/v1/permission/group/options`（本租户可选权限组）：租户管理员持有
+  `account:manage` 建子账号时要选组，却因缺 `permission:manage` 拿不到下拉，
+  建出的子账号无组 = 全无权限。现挂
+  `RequireAnyPermission([permission:manage, account:manage])`。
+
+`RequireAnyPermission` 与 `RequirePermission` 共用判定原语，顺序不变
+（OpenAPI → superAdmin → 天花板 → 组 → legacy），只是候选码之间取"任一通过"；
+天花板仍对每个候选码逐一判定，任一被套餐排除的码不能绕过。
+
+### 分页默认值（本轮加固）
+
+`WafPlanGetListReq` / `WafTenantGetListReq` 的 `pageSize` 缺省时经
+`PageInfo.Normalize(DefaultPageSize, MaxPageSize)` 兜底（默认 20、上限 500）。
+否则 `pageSize=0` 会透传成 GORM 的 `LIMIT 0`，列表恒空——在页面上表现为
+"套餐管理没有任何数据"。
+
 ### 测试锚定
 
 - `service/waf_service/waf_tenant_plan_test.go`：套餐 CRUD 校验/开通按套餐下发/
-  换套餐同步/套餐编辑传播/禁删/天花板矩阵/播种幂等。
+  换套餐同步/套餐编辑传播/禁删/天花板矩阵/播种幂等/租户编辑 PlanCode 指针语义。
 - `service/waf_service/waf_account_tenant_scope_test.go`：账号列表/详情/编辑/删除
   租户限定、建号盖章与配额、哈希不外泄。
-- `router/tenant_authz_e2e_test.go` 追加 5 个子测试：账号域收敛（HTTP 级）、
-  自助建号角色强制、天花板授权集内可访问、组被改大仍 403、换受限套餐立即 403。
+- `router/tenant_authz_e2e_test.go` 追加 6 个子测试：账号域收敛（HTTP 级）、
+  自助建号角色强制、账号域可读权限组下拉但不可读权限码目录、天花板授权集内可访问、
+  组被改大仍 403、换受限套餐立即 403。
+- `middleware/rbac_middleware_test.go`：`RequirePermission` 角色矩阵 +
+  `RequireAnyPermission` 的 OR 语义/天花板短路矩阵。
 - `wafdb/tenant_matrix_test.go` 排除清单登记 Plan（平台注册表）。
 
 ### 待办（后续扩展点）
@@ -222,7 +253,8 @@ Account 在平台豁免清单里，租户回调不给它追加过滤，账号读
   "租户侧组写入与套餐权限集取交集"，防止组内塞平台码。
 - OpenAPI Key 绑定租户（oplatform_key 加租户列后切换注入点）。
 - 计费聚合/按租户账单输出（ZJMF 对接形态见「业务系统对接」章）。
-- 前端（SamWafWeb-Saas 仓库）：套餐管理页面、租户表单选套餐、账号管理页适配。
+- 前端（SamWafWeb-Saas 仓库）：套餐管理页面、租户表单选套餐、账号管理页已就位；
+  本轮修复只动后端授权与分页，接口路径/入参未变，前端无需配合发版。
 
 
 ## 阶段0 的边界说明（历史）

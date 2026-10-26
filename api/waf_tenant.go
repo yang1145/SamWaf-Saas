@@ -141,6 +141,8 @@ func (w *WafTenantApi) GetListApi(c *gin.Context) {
 		response.FailWithMessage("解析失败", c)
 		return
 	}
+	// 分页兜底：缺省 pageSize 若透传会变成 GORM 的 LIMIT 0，列表恒空
+	req.PageInfo.Normalize(request.DefaultPageSize, request.MaxPageSize)
 	list, total, _ := wafTenantService.GetListApi(c.Request.Context(), req)
 	response.OkWithDetailed(response.PageResult{
 		List:      list,

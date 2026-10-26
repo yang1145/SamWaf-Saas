@@ -391,7 +391,7 @@ func TestTenantEditAndDel(t *testing.T) {
 	if _, err := WafPlanServiceApp.AddApi(pctx, request.WafPlanAddReq{
 		PlanCode: "pro", PlanName: "专业版",
 		Permissions: enums.PERM_DASHBOARD + "," + enums.PERM_HOST_MANAGE,
-		MaxHosts: 50, MaxAccounts: 20,
+		MaxHosts:    50, MaxAccounts: 20,
 	}); err != nil {
 		t.Fatalf("播种套餐 pro 失败: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestTenantEditAndDel(t *testing.T) {
 	suspended := enums.TenantStatusSuspended
 	permExpire := "2027-06-30 23:59:59"
 	bean, err := WafTenantServiceApp.EditTenantApi(pctx, request.WafTenantEditReq{
-		TenantID: "t-edit", TenantName: "改名的租户", PlanCode: "pro",
+		TenantID: "t-edit", TenantName: "改名的租户", PlanCode: strPtr("pro"),
 		MaxHosts: &quotaHosts, MaxAccounts: &quotaAccounts, GraceDays: &grace,
 		Status: &suspended, ExpireTime: &permExpire, Remarks: "改备注",
 	})

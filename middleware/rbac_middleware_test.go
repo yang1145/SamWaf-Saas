@@ -60,6 +60,96 @@ func TestRequireRole(t *testing.T) {
 	}
 }
 
+// RequireAnyPermission 的 OR 语义：多码任一命中即放行；天花板对每个候选码独立判定
+// （不能因为某个候选码被拦就整体拒绝）；legacy 角色只在账号未绑定权限组时兜底。
+func TestRequireAnyPermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name        string
+		setup       func(c *gin.Context)
+		codes       []string
+		legacy      []string
+		wantReached bool
+	}{
+		{
+			name:        "superAdmin 恒通过",
+			setup:       func(c *gin.Context) { c.Set("userRole", enums.ROLE_SUPER_ADMIN) },
+			codes:       []string{enums.PERM_GROUP_MANAGE, enums.PERM_PLATFORM_ADMIN},
+			wantReached: true,
+		},
+		{
+			name:        "未绑定权限组的 legacy 角色兜底",
+			setup:       func(c *gin.Context) { c.Set("userRole", enums.ROLE_SYSTEM_ADMIN) },
+			codes:       []string{enums.PERM_GROUP_MANAGE, enums.PERM_PLATFORM_ADMIN},
+			legacy:      []string{enums.ROLE_SYSTEM_ADMIN},
+			wantReached: true,
+		},
+		{
+			name:        "未绑定权限组且 legacy 不命中",
+			setup:       func(c *gin.Context) { c.Set("userRole", enums.ROLE_AUDIT_ADMIN) },
+			codes:       []string{enums.PERM_GROUP_MANAGE, enums.PERM_ACCOUNT_MANAGE},
+			legacy:      []string{enums.ROLE_SYSTEM_ADMIN},
+			wantReached: false,
+		},
+		{
+			name: "OpenAPI Key 授权范围任一命中",
+			setup: func(c *gin.Context) {
+				c.Set("is_openapi", true)
+				c.Set("openapi_perms", map[string]bool{enums.PERM_PLATFORM_ADMIN: true})
+			},
+			codes:       []string{enums.PERM_GROUP_MANAGE, enums.PERM_PLATFORM_ADMIN},
+			wantReached: true,
+		},
+		{
+			name: "OpenAPI Key 授权范围不命中",
+			setup: func(c *gin.Context) {
+				c.Set("is_openapi", true)
+				c.Set("openapi_perms", map[string]bool{enums.PERM_LOG_VIEW: true})
+			},
+			codes:       []string{enums.PERM_GROUP_MANAGE, enums.PERM_PLATFORM_ADMIN},
+			wantReached: false,
+		},
+		{
+			name: "天花板拦住全部候选码时 legacy 不兜底",
+			setup: func(c *gin.Context) {
+				c.Set("userRole", enums.ROLE_SYSTEM_ADMIN)
+				c.Set("tenantPermCeiling", map[string]bool{enums.PERM_DASHBOARD: true})
+			},
+			codes:       []string{enums.PERM_GROUP_MANAGE, enums.PERM_ACCOUNT_MANAGE},
+			legacy:      []string{enums.ROLE_SYSTEM_ADMIN},
+			wantReached: false,
+		},
+		{
+			name: "天花板放行其中一个候选码即可",
+			setup: func(c *gin.Context) {
+				c.Set("userRole", enums.ROLE_SECURITY_ADMIN)
+				c.Set("tenantPermCeiling", map[string]bool{enums.PERM_ACCOUNT_MANAGE: true})
+			},
+			codes:       []string{enums.PERM_GROUP_MANAGE, enums.PERM_ACCOUNT_MANAGE},
+			legacy:      []string{enums.ROLE_SECURITY_ADMIN},
+			wantReached: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := gin.New()
+			r.Use(func(c *gin.Context) {
+				tc.setup(c)
+				c.Next()
+			})
+			r.GET("/t", RequireAnyPermission(tc.codes, tc.legacy...), func(c *gin.Context) {
+				c.String(http.StatusOK, "reached")
+			})
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/t", nil))
+			reached := w.Body.String() == "reached"
+			if reached != tc.wantReached {
+				t.Errorf("reached=%v want=%v (status=%d body=%q)", reached, tc.wantReached, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 // 管理端本地证书接口（generateLocalCert / rotateLocalCa / clearLocalCert）的权限矩阵。
 //
 // 这几个接口都会覆盖或删除管理端证书文件，破坏面与 uploadSslCert / restartManager 同级，

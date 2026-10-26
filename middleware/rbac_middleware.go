@@ -49,6 +49,97 @@ func RequireRole(allowedRoles ...string) gin.HandlerFunc {
 	}
 }
 
+// permissionVerdict 单码判定的三种结果（evaluatePermissionCode 的返回值）。
+type permissionVerdict int
+
+const (
+	// permissionGranted 权限码放行
+	permissionGranted permissionVerdict = iota
+	// permissionRefused 已被套餐天花板/权限组明确拒绝，不再回落 legacy 角色
+	permissionRefused
+	// permissionNoGroup 账号未绑定权限组，交由调用方的 legacyRoles 参数判定
+	permissionNoGroup
+)
+
+// evaluatePermissionCode 单码判定的共享实现（RequirePermission/RequireAnyPermission 共用）：
+// superAdmin → 套餐天花板 → 权限组。不写响应、不处理 OpenAPI Key 与 legacy 角色，
+// 这两者由调用方按各自参数处理。
+//
+// 组权限读取带缓存（权限组增改时由服务层失效缓存）；查询失败 fail-closed。
+func evaluatePermissionCode(c *gin.Context, code string) (permissionVerdict, string) {
+	roleVal, _ := c.Get("userRole")
+	role, _ := roleVal.(string)
+	if enums.NormalizeRole(role) == enums.ROLE_SUPER_ADMIN {
+		return permissionGranted, ""
+	}
+
+	// 套餐天花板（防御纵深）：租户账号请求平台未授权的域时直接拒绝，
+	// 与权限组判定相互独立——先挡一层，组内容再挡一层
+	if ceilingVal, ok := c.Get("tenantPermCeiling"); ok {
+		if ceiling, ok2 := ceilingVal.(map[string]bool); ok2 && !ceiling[code] {
+			return permissionRefused, "当前套餐未包含该功能，请联系平台管理员升级"
+		}
+	}
+
+	groupId, _ := c.Get("userGroupId")
+	groupIdStr, _ := groupId.(string)
+	if groupIdStr == "" {
+		return permissionNoGroup, ""
+	}
+	has, err := waf_service.WafPermissionGroupServiceApp.HasPermission(c.Request.Context(), groupIdStr, code)
+	if err != nil {
+		zlog.Error("权限组判定查询失败，fail-closed", "group_id", groupIdStr, "code", code, "error", err.Error())
+		return permissionRefused, "权限信息获取失败，请稍后重试"
+	}
+	if has {
+		return permissionGranted, ""
+	}
+	return permissionRefused, "当前账号所属权限组无权访问该功能"
+}
+
+// handleOpenApiPermission OpenAPI Key 通道的判定（两个中间件共用）。
+// 返回 true 表示已处理完（已放行并 c.Next，或已写拒绝响应并 Abort），调用方应立即 return。
+//
+// Key 授权范围（审计 M4 收口）：空集合=全部权限（存量 Key 兼容），非空集合要求
+// codes 中任一命中——单码端点只有一个候选码，多码端点按「任一」语义。
+func handleOpenApiPermission(c *gin.Context, codes []string) bool {
+	isOpenApi, ok := c.Get("is_openapi")
+	if !ok {
+		return false
+	}
+	if b, _ := isOpenApi.(bool); !b {
+		return false
+	}
+	if permsVal, ok := c.Get("openapi_perms"); ok {
+		if set, ok2 := permsVal.(map[string]bool); ok2 && len(set) > 0 {
+			for _, code := range codes {
+				if set[code] {
+					c.Next()
+					return true
+				}
+			}
+			response.ForbiddenWithMessage("当前 API Key 无权访问该接口", c)
+			c.Abort()
+			return true
+		}
+	}
+	c.Next()
+	return true
+}
+
+// roleInLegacyRoles 判断当前账号的 legacy 角色是否命中允许列表。
+func roleInLegacyRoles(c *gin.Context, legacyRoles []string) bool {
+	roleVal, _ := c.Get("userRole")
+	role, _ := roleVal.(string)
+	role = enums.NormalizeRole(role)
+	for _, allowed := range legacyRoles {
+		if role == allowed {
+			return true
+		}
+	}
+	return false
+}
+
 // RequirePermission 权限组判定中间件（多租户自定义角色）。
 //
 // 判定顺序：
@@ -65,73 +156,66 @@ func RequireRole(allowedRoles ...string) gin.HandlerFunc {
 // 必须挂载在 Auth() 之后。
 func RequirePermission(code string, legacyRoles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if isOpenApi, ok := c.Get("is_openapi"); ok {
-			if b, _ := isOpenApi.(bool); b {
-				// Key 授权范围判定（审计 M4 收口）：空集合=全部权限（存量 Key 兼容），
-				// 非空集合按权限码判定——Key 不再无条件绕过角色/权限门
-				if permsVal, ok := c.Get("openapi_perms"); ok {
-					if set, ok2 := permsVal.(map[string]bool); ok2 && len(set) > 0 {
-						if set[code] {
-							c.Next()
-							return
-						}
-						response.ForbiddenWithMessage("当前 API Key 无权访问该接口", c)
-						c.Abort()
-						return
-					}
-				}
-				c.Next()
-				return
-			}
-		}
-
-		roleVal, _ := c.Get("userRole")
-		role, _ := roleVal.(string)
-		role = enums.NormalizeRole(role)
-		if role == enums.ROLE_SUPER_ADMIN {
-			c.Next()
+		if handleOpenApiPermission(c, []string{code}) {
 			return
 		}
-
-		// 套餐天花板（防御纵深）：租户账号请求平台未授权的域时直接 403，
-		// 与权限组判定相互独立——先挡一层，组内容再挡一层
-		if ceilingVal, ok := c.Get("tenantPermCeiling"); ok {
-			if ceiling, ok2 := ceilingVal.(map[string]bool); ok2 {
-				if !ceiling[code] {
-					response.ForbiddenWithMessage("当前套餐未包含该功能，请联系平台管理员升级", c)
-					c.Abort()
-					return
-				}
-			}
-		}
-
-		groupId, _ := c.Get("userGroupId")
-		groupIdStr, _ := groupId.(string)
-		if groupIdStr != "" {
-			has, err := waf_service.WafPermissionGroupServiceApp.HasPermission(c.Request.Context(), groupIdStr, code)
-			if err != nil {
-				zlog.Error("权限组判定查询失败，fail-closed", "group_id", groupIdStr, "code", code, "error", err.Error())
-				response.ForbiddenWithMessage("权限信息获取失败，请稍后重试", c)
-				c.Abort()
-				return
-			}
-			if has {
-				c.Next()
-				return
-			}
-			response.ForbiddenWithMessage("当前账号所属权限组无权访问该功能", c)
+		verdict, reason := evaluatePermissionCode(c, code)
+		switch verdict {
+		case permissionGranted:
+			c.Next()
+			return
+		case permissionRefused:
+			response.ForbiddenWithMessage(reason, c)
 			c.Abort()
 			return
 		}
+		if roleInLegacyRoles(c, legacyRoles) {
+			c.Next()
+			return
+		}
+		response.ForbiddenWithMessage("当前账号角色无权访问该功能", c)
+		c.Abort()
+	}
+}
 
-		for _, allowed := range legacyRoles {
-			if role == allowed {
+// RequireAnyPermission 多码任一命中即放行（OR 语义）。
+//
+// 用于被多个权限域共用的端点，避免页面功能被单一域“卡死”：
+//   - /permission/group/codes（静态权限码目录）：权限组管理与套餐管理共用；
+//   - /permission/group/options（本租户权限组下拉）：权限组管理与账号绑定共用。
+//
+// 判定顺序与 RequirePermission 一致；候选码逐个走「天花板 → 权限组」，
+// 任一码通过即放行。天花板对每个码独立判定，不存在“一个码的天花板放行另一个码”；
+// 未绑定权限组的账号在全部候选码都无组授权时按 legacyRoles 兜底。
+func RequireAnyPermission(codes []string, legacyRoles ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if handleOpenApiPermission(c, codes) {
+			return
+		}
+		firstReason := ""
+		noGroup := false
+		for _, code := range codes {
+			verdict, reason := evaluatePermissionCode(c, code)
+			switch verdict {
+			case permissionGranted:
 				c.Next()
 				return
+			case permissionNoGroup:
+				noGroup = true
+			default:
+				if firstReason == "" {
+					firstReason = reason
+				}
 			}
 		}
-
-		response.ForbiddenWithMessage("当前账号角色无权访问该功能", c)
+		if noGroup && roleInLegacyRoles(c, legacyRoles) {
+			c.Next()
+			return
+		}
+		if firstReason == "" {
+			firstReason = "当前账号角色无权访问该功能"
+		}
+		response.ForbiddenWithMessage(firstReason, c)
 		c.Abort()
 	}
 }

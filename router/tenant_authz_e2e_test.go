@@ -283,6 +283,17 @@ func setupTenantAuthzE2E(t *testing.T) *e2eEnv {
 	pgGroup.Use(middleware.RequirePermission(enums.PERM_GROUP_MANAGE, enums.ROLE_SYSTEM_ADMIN))
 	ApiGroupApp.InitPermissionGroupRouter(pgGroup)
 
+	// 共享只读元数据端点：生产挂 RequireAnyPermission（OR 语义），此处同款挂载。
+	// /codes 供权限组编辑器与套餐编辑器共用；/options 供账号绑组与权限组管理共用。
+	codesGroup := authGroup.Group("")
+	codesGroup.Use(middleware.RequireAnyPermission(
+		[]string{enums.PERM_GROUP_MANAGE, enums.PERM_PLATFORM_ADMIN}, enums.ROLE_SYSTEM_ADMIN))
+	ApiGroupApp.InitPermissionCodesRouter(codesGroup)
+	optionsGroup := authGroup.Group("")
+	optionsGroup.Use(middleware.RequireAnyPermission(
+		[]string{enums.PERM_GROUP_MANAGE, enums.PERM_ACCOUNT_MANAGE}, enums.ROLE_SYSTEM_ADMIN))
+	ApiGroupApp.InitPermissionGroupOptionsRouter(optionsGroup)
+
 	// 账号域（生产挂 TokenOnly 组 + account:manage 权限门，此处同款权限门挂载；
 	// 生产还挂 TokenOnlyAuth 拒 Key，本测试无 Key 通道，不重复挂）
 	accountGroup := authGroup.Group("")
@@ -926,6 +937,24 @@ func TestTenantAuthzE2E(t *testing.T) {
 	})
 
 	// ===========================================================================
+	// 权限细化：账号域需要「权限组下拉」才能建出带组的子账号，但不应看到权限码目录。
+	// 两个端点都是只读元数据，按 OR 语义分别放开给账号管理与平台套餐编辑。
+	// ===========================================================================
+	t.Run("权限细化：账号域可读权限组下拉，不能读权限码目录", func(t *testing.T) {
+		if env.defectMsg != "" {
+			t.Skipf("%s（本次观测：%s）", skipE2ETenantDefectMsg, env.defectMsg)
+		}
+		// 租户管理员持有 account:manage → /options 放行（否则子账号建出来没有组、寸步难行）
+		if status, reply := getE2E(t, env.g, "/api/v1/permission/group/options", env.tokenA); status != http.StatusOK || reply.Code != 0 {
+			t.Fatalf("账号管理应可读权限组下拉 http=%d code=%d msg=%s", status, reply.Code, reply.Msg)
+		}
+		// /codes 是权限组编辑器与套餐编辑器的目录：租户侧不应看到
+		if _, reply := getE2E(t, env.g, "/api/v1/permission/group/codes", env.tokenA); reply.Code == 0 {
+			t.Errorf("租户管理员不应能读权限码目录")
+		}
+	})
+
+	// ===========================================================================
 	// 套餐与权限天花板（本轮新增）：套餐驱动租户差异化——授权集内的域可访问；
 	// 权限组被手工改大也越不出套餐边界（防御纵深）；换套餐立即生效。
 	// 注意顺序：放在最后执行，避免套餐收紧影响前面的用例。
@@ -949,8 +978,9 @@ func TestTenantAuthzE2E(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("创建套餐失败: %v", err)
 		}
+		planCode := "e2e-pro"
 		if _, err := waf_service.WafTenantServiceApp.EditTenantApi(pctx, request.WafTenantEditReq{
-			TenantID: e2eTenantA, TenantName: "租户A", PlanCode: "e2e-pro",
+			TenantID: e2eTenantA, TenantName: "租户A", PlanCode: &planCode,
 		}); err != nil {
 			t.Fatalf("绑定套餐失败: %v", err)
 		}
@@ -988,8 +1018,9 @@ func TestTenantAuthzE2E(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("创建套餐失败: %v", err)
 		}
+		planCode := "e2e-free"
 		if _, err := waf_service.WafTenantServiceApp.EditTenantApi(pctx, request.WafTenantEditReq{
-			TenantID: e2eTenantB, TenantName: "租户B", PlanCode: "e2e-free",
+			TenantID: e2eTenantB, TenantName: "租户B", PlanCode: &planCode,
 		}); err != nil {
 			t.Fatalf("换套餐失败: %v", err)
 		}

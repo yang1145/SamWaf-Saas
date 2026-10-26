@@ -41,11 +41,14 @@ type WafTenantRenewReq struct {
 }
 
 // WafTenantEditReq 编辑租户：租户名/套餐/配额/宽限期/状态/到期时间可改。
-// 指针字段 nil=不修改（避免部分提交把配额清成 0=不限）；ExpireTime 指向空串=永久。
+// 指针字段 nil=不修改（避免部分提交把配额清成 0=不限）。PlanCode 同为指针语义：
+// nil=保持现有套餐，指向空串=显式清除套餐（回落默认授权集并解除天花板），
+// 其他值=切换套餐——把缺省当空串会让「只改状态」的部分提交静默清掉套餐、
+// 解除权限天花板，等于给租户提权。
 type WafTenantEditReq struct {
 	TenantID    string  `json:"tenant_id" binding:"required"`
 	TenantName  string  `json:"tenant_name" binding:"required"`
-	PlanCode    string  `json:"plan_code"`
+	PlanCode    *string `json:"plan_code"` //nil=不修改；空串=清除套餐；其他=切换套餐
 	MaxHosts    *int    `json:"max_hosts"`
 	MaxAccounts *int    `json:"max_accounts"`
 	GraceDays   *int    `json:"grace_days"`

@@ -277,6 +277,26 @@ func (web *WafWebManager) initRouter(r *gin.Engine) {
 		{
 			router.ApiGroupApp.InitPermissionGroupRouter(permissionGroupAdmin)
 		}
+
+		// 权限码目录（只读静态表）：权限组编辑器与套餐编辑器共用，任一域可读。
+		// 套餐页依赖它渲染勾选列表——只给 permission:manage 会让「仅有 platform:admin
+		// 的平台管理员」打开套餐页后拿不到权限码，添加/编辑套餐直接不可用。
+		permissionCodesGroup := RouterGroup.Group("")
+		permissionCodesGroup.Use(middleware.RequireAnyPermission(
+			[]string{enums.PERM_GROUP_MANAGE, enums.PERM_PLATFORM_ADMIN}, enums.ROLE_SYSTEM_ADMIN))
+		{
+			router.ApiGroupApp.InitPermissionCodesRouter(permissionCodesGroup)
+		}
+
+		// 权限组下拉（只读，按 ctx 租户过滤）：账号编辑绑组（account:manage）与
+		// 权限组管理共用。租户管理员持有 account:manage 但永远没有 permission:manage，
+		// 只挂后者会让租户自助建号时权限组下拉为空、建出的子账号无任何授权。
+		permissionOptionsGroup := RouterGroup.Group("")
+		permissionOptionsGroup.Use(middleware.RequireAnyPermission(
+			[]string{enums.PERM_GROUP_MANAGE, enums.PERM_ACCOUNT_MANAGE}, enums.ROLE_SYSTEM_ADMIN))
+		{
+			router.ApiGroupApp.InitPermissionGroupOptionsRouter(permissionOptionsGroup)
+		}
 	}
 
 	// 仅允许后台 Token 登录访问，拒绝 API Key 访问（安全敏感接口）

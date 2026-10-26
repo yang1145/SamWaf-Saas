@@ -15,6 +15,9 @@ import (
 	"SamWaf/model/request"
 )
 
+// strPtr 取字符串指针（编辑请求的指针字段语义测试用）。
+func strPtr(v string) *string { return &v }
+
 // addPlanForTest 建一个测试套餐（失败即终止）。
 func addPlanForTest(t *testing.T, code, permissions string, maxHosts, maxAccounts int) model.Plan {
 	t.Helper()
@@ -120,8 +123,8 @@ func TestProvisionWithPlan(t *testing.T) {
 	// 显式传值（含 0=不限）优先于套餐默认
 	bean2, err := WafTenantServiceApp.AddTenantApi(pctx, request.WafTenantAddReq{
 		TenantID: "t-lite2", TenantName: "显式配额", PlanCode: "lite",
-		MaxHosts:    intPtr(10),
-		MaxAccounts: intPtr(0),
+		MaxHosts:     intPtr(10),
+		MaxAccounts:  intPtr(0),
 		AdminAccount: "lite2admin", AdminPassword: "Lite@2026pwd",
 	})
 	if err != nil {
@@ -189,7 +192,7 @@ func TestPlanEditPropagation(t *testing.T) {
 
 	// 换租户套餐后旧套餐可删
 	if _, err := WafTenantServiceApp.EditTenantApi(pctx, request.WafTenantEditReq{
-		TenantID: "t-prop", TenantName: "传播租户", PlanCode: "",
+		TenantID: "t-prop", TenantName: "传播租户", PlanCode: strPtr(""),
 	}); err != nil {
 		t.Fatalf("清除套餐失败: %v", err)
 	}
@@ -222,7 +225,7 @@ func TestTenantPlanChangeSync(t *testing.T) {
 
 	// 换到 plan-b：未显式传配额 → 重置为 plan-b 默认
 	bean, err := WafTenantServiceApp.EditTenantApi(pctx, request.WafTenantEditReq{
-		TenantID: "t-sync", TenantName: "换套餐", PlanCode: "plan-b",
+		TenantID: "t-sync", TenantName: "换套餐", PlanCode: strPtr("plan-b"),
 	})
 	if err != nil {
 		t.Fatalf("换套餐失败: %v", err)
@@ -241,9 +244,63 @@ func TestTenantPlanChangeSync(t *testing.T) {
 
 	// 换到不存在的套餐 → 拒绝且数据不动
 	if _, err := WafTenantServiceApp.EditTenantApi(pctx, request.WafTenantEditReq{
-		TenantID: "t-sync", TenantName: "换套餐", PlanCode: "ghost",
+		TenantID: "t-sync", TenantName: "换套餐", PlanCode: strPtr("ghost"),
 	}); err == nil || !strings.Contains(err.Error(), "套餐不存在") {
 		t.Fatalf("换到不存在套餐应被拒绝，实际 %v", err)
+	}
+}
+
+// TestTenantEditPlanCodePointerSemantics plan_code 指针语义：nil=不修改（只改状态/
+// 备注不能清掉套餐、不能解除天花板），空串=显式清除（管理员组回落默认授权集、
+// 天花板解除）。
+func TestTenantEditPlanCodePointerSemantics(t *testing.T) {
+	openTenantTestDB(t)
+	pctx := wafctx.PlatformScope(context.Background())
+	if err := WafPermissionGroupServiceApp.InitDefaultPermissionGroups(); err != nil {
+		t.Fatalf("播种预置组失败: %v", err)
+	}
+	addPlanForTest(t, "plan-ptr", enums.PERM_DASHBOARD+","+enums.PERM_HOST_MANAGE, 5, 3)
+	if _, err := WafTenantServiceApp.AddTenantApi(pctx, request.WafTenantAddReq{
+		TenantID: "t-ptr", TenantName: "指针语义", PlanCode: "plan-ptr",
+		AdminAccount: "ptradmin", AdminPassword: "Ptr@2026pwd",
+	}); err != nil {
+		t.Fatalf("开通失败: %v", err)
+	}
+
+	// 只改状态（不带 plan_code）：套餐/配额/天花板/管理员组都必须原样保留
+	suspended := enums.TenantStatusSuspended
+	bean, err := WafTenantServiceApp.EditTenantApi(pctx, request.WafTenantEditReq{
+		TenantID: "t-ptr", TenantName: "指针语义", Status: &suspended,
+	})
+	if err != nil {
+		t.Fatalf("局部编辑失败: %v", err)
+	}
+	if bean.PlanCode != "plan-ptr" || bean.MaxHosts != 5 || bean.MaxAccounts != 3 {
+		t.Fatalf("未传 plan_code 不应改动套餐/配额，实际 %+v", bean)
+	}
+	if c := WafTenantServiceApp.TenantPermissionCeiling("t-ptr"); c == nil || !c[enums.PERM_HOST_MANAGE] {
+		t.Fatalf("未传 plan_code 不应解除天花板: %+v", c)
+	}
+	if got := adminGroupOf(t, "t-ptr").Permissions; !permissionListContains(got, enums.PERM_HOST_MANAGE) ||
+		permissionListContains(got, enums.PERM_SECURITY) {
+		t.Fatalf("未传 plan_code 不应重写管理员组，实际 %s", got)
+	}
+
+	// 显式空串：清除套餐 → 管理员组回落默认授权集、天花板解除
+	bean, err = WafTenantServiceApp.EditTenantApi(pctx, request.WafTenantEditReq{
+		TenantID: "t-ptr", TenantName: "指针语义", PlanCode: strPtr(""),
+	})
+	if err != nil {
+		t.Fatalf("清除套餐失败: %v", err)
+	}
+	if bean.PlanCode != "" {
+		t.Fatalf("显式空串应清除套餐，实际 %q", bean.PlanCode)
+	}
+	if c := WafTenantServiceApp.TenantPermissionCeiling("t-ptr"); c != nil {
+		t.Fatalf("清除套餐后天花板应解除，实际 %+v", c)
+	}
+	if got := adminGroupOf(t, "t-ptr").Permissions; !permissionListContains(got, enums.PERM_SECURITY) {
+		t.Fatalf("清除套餐后管理员组应回落默认授权集，实际 %s", got)
 	}
 }
 

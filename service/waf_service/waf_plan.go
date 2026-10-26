@@ -3,6 +3,7 @@ package waf_service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -227,31 +228,35 @@ func (receiver *WafPlanService) InitDefaultPlans() error {
 		{
 			code: "free", name: "体验版",
 			permissions: joinCodes(enums.PERM_DASHBOARD, enums.PERM_HOST_MANAGE, enums.PERM_LOG_VIEW),
-			maxHosts: 3, maxAccounts: 2,
+			maxHosts:    3, maxAccounts: 2,
 			remarks: "预置套餐：基础查看与建站，小配额体验",
 		},
 		{
 			code: "basic", name: "基础版",
 			permissions: joinCodes(enums.PERM_DASHBOARD, enums.PERM_HOST_MANAGE, enums.PERM_LOG_VIEW, enums.PERM_SECURITY, enums.PERM_AUDIT),
-			maxHosts: 10, maxAccounts: 5,
+			maxHosts:    10, maxAccounts: 5,
 			remarks: "预置套餐：含防护策略与审计日志",
 		},
 		{
 			code: "pro", name: "专业版",
 			permissions: joinCodes(enums.PERM_DASHBOARD, enums.PERM_HOST_MANAGE, enums.PERM_LOG_VIEW, enums.PERM_SECURITY, enums.PERM_AUDIT, enums.PERM_SYSTEM_OPS, enums.PERM_ACCOUNT_MANAGE),
-			maxHosts: 50, maxAccounts: 20,
+			maxHosts:    50, maxAccounts: 20,
 			remarks: "预置套餐：租户侧权限全集，可自助管理账号与运维配置",
 		},
 		{
 			code: "enterprise", name: "旗舰版",
 			permissions: strings.Join(enums.TenantAssignableCodes(), ","),
-			remarks:      "预置套餐：租户可分配权限全集，配额不限",
+			remarks:     "预置套餐：租户可分配权限全集，配额不限",
 		},
 	}
+	var errs []error
 	for _, d := range defaults {
 		var cnt int64
 		if err := db.Model(&model.Plan{}).Where("plan_code = ?", d.code).Count(&cnt).Error; err != nil {
-			return err
+			// 单个套餐失败不阻断其余套餐：否则首条写失败会让套餐列表整体为空，
+			// 平台管理员在页面上看到「没有任何套餐」却不知道是播种出错
+			errs = append(errs, fmt.Errorf("检查预置套餐 %s 失败: %w", d.code, err))
+			continue
 		}
 		if cnt > 0 {
 			continue //幂等：已有同码套餐跳过
@@ -274,10 +279,10 @@ func (receiver *WafPlanService) InitDefaultPlans() error {
 			Remarks:     d.remarks,
 		}
 		if err := db.Create(bean).Error; err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("播种预置套餐 %s 失败: %w", d.code, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // propagatePlanPermissions 把套餐权限集同步到引用该套餐的全部租户：

@@ -562,9 +562,10 @@ func (receiver *WafTenantService) RenewTenantApi(ctx context.Context, req reques
 }
 
 // EditTenantApi 编辑租户：租户名/套餐/配额/宽限期/状态/到期时间可改，失效策略缓存。
-// Status/ExpireTime 的 nil 表示不修改；ExpireTime 指向空串 = 永不过期。
+// Status/ExpireTime/PlanCode 的 nil 表示不修改；ExpireTime 指向空串 = 永不过期，
+// PlanCode 指向空串 = 显式清除套餐。
 //
-// 换套餐（plan_code 变化）时：新套餐必须存在且启用；租户管理员组授权集重写为新套餐
+// 换套餐（plan_code 实际变化）时：新套餐必须存在且启用；租户管理员组授权集重写为新套餐
 // 权限集（清除套餐则回落默认全集）；配额/宽限期未显式传值（nil）时重置为新套餐
 // 默认值（清除套餐重置为 0=不限），显式传值（含 0）优先；天花板缓存失效立即生效。
 func (receiver *WafTenantService) EditTenantApi(ctx context.Context, req request.WafTenantEditReq) (model.Tenant, error) {
@@ -591,24 +592,32 @@ func (receiver *WafTenantService) EditTenantApi(ctx context.Context, req request
 		return model.Tenant{}, errors.New("租户不存在")
 	}
 
-	newPlanCode := strings.TrimSpace(req.PlanCode)
-	planChanged := newPlanCode != bean.PlanCode
+	// plan_code 指针语义：nil=保持现有套餐。清除套餐会把管理员组回落默认授权集
+	// 并解除天花板，缺省值绝不能当空串处理（否则只改状态的部分提交等于给租户提权）。
+	planChanged := false
+	newPlanCode := bean.PlanCode
 	var newPlan model.Plan
-	if planChanged && newPlanCode != "" {
-		newPlan = WafPlanServiceApp.GetByCodeApi(wafctx.PlatformScope(ctx), newPlanCode)
-		if newPlan.Id == "" {
-			return model.Tenant{}, errors.New("套餐不存在: " + newPlanCode)
-		}
-		if newPlan.Status != 1 {
-			return model.Tenant{}, errors.New("套餐已停用: " + newPlanCode)
+	if req.PlanCode != nil {
+		newPlanCode = strings.TrimSpace(*req.PlanCode)
+		planChanged = newPlanCode != bean.PlanCode
+		if planChanged && newPlanCode != "" {
+			newPlan = WafPlanServiceApp.GetByCodeApi(wafctx.PlatformScope(ctx), newPlanCode)
+			if newPlan.Id == "" {
+				return model.Tenant{}, errors.New("套餐不存在: " + newPlanCode)
+			}
+			if newPlan.Status != 1 {
+				return model.Tenant{}, errors.New("套餐已停用: " + newPlanCode)
+			}
 		}
 	}
 
 	updates := map[string]interface{}{
 		"tenant_name": tenantName,
-		"plan_code":   newPlanCode,
 		"remarks":     strings.TrimSpace(req.Remarks),
 		"UPDATE_TIME": customtype.JsonTime(time.Now()),
+	}
+	if req.PlanCode != nil {
+		updates["plan_code"] = newPlanCode
 	}
 	if req.MaxHosts != nil {
 		updates["max_hosts"] = *req.MaxHosts
